@@ -88,7 +88,7 @@ Point every downstream step at a **full path or full reference** (`.worktrees/co
 | Blocking edges correct? | A ticket blocks only what cannot compile or run without it. |
 | Browser or end-to-end tests first? | No: behaviour first at the seam, browser tests after it works. |
 | Which file to edit, CLAUDE.md or AGENTS.md? | Whichever exists; create neither. |
-| Commit or open a PR? | Commit on the ticket branch; merge into the run branch. No push, no PR, unless the objective asks or the tracker is already GitHub. |
+| Commit or open a PR? | Commit on the ticket branch; merge into the run branch. No push, no PR, unless the objective explicitly authorizes remote push (tracker configuration alone is not push authority). |
 | defensive-design tier when consequence is unclear? | One tier higher than the module's inputs suggest; log it. |
 | zero-tech-debt "approve this deletion"? | Approve when pre-flight passed and no external caller remains; otherwise keep and log. |
 | Anything touching auth, secrets, prod data, a remote push, money? | Do not perform it; record it as a blocker and continue every independent stage. |
@@ -100,18 +100,18 @@ Point every downstream step at a **full path or full reference** (`.worktrees/co
 - **Cache kun**: `kun/<sha>/` present in the control plane; SHA in NOW.
 - **Setup**: `docs/agents/issue-tracker.md`, `docs/agents/domain.md`, `docs/agents/triage-labels.md` and the `## Agent skills` block exist in the run branch's history via `goal/bootstrap` (or were already on base).
 - **Control plane + registry**: `goal/control` worktree exists; registry entry with `run_id`; no duplicate running objective.
-- **Environment contract**: NOW carries `commands:`, `packages:` (if monorepo), `per-worktree:` (run-scoped), `max_concurrent_tickets`, `baseline:` (per-test set, 3 runs), `quarantine:`, `nested:`.
+- **Environment contract**: NOW carries `commands:`, `packages:` (if monorepo), `per-worktree:` (run-scoped), `max_concurrent_tickets`, `baseline:` (per-test set, 3 runs), `quarantine:`, `nested:`, `review_base:`.
 - **Route**: classification logged (`bug | issue | refactor | upkeep | fog | greenfield | feature`); flow named; adopted-patterns list, each line `pattern, from /<skill>`; research need logged (`none | targeted | up-front`); `findings.md` exists with repo facts, requirements R1…, open questions Q1….
 - **On-ramp**: the chosen on-ramp's criteria in FLOWS.md § On-ramp completion criteria, or `skipped: plain feature` logged; for route `bug`, the fast-path decision logged with its reason.
 - **Research**: every Q in `findings.md` closed with a sourced fact or logged `research: skipped (no external unknown)`; no "TBD".
-- **Grill + challenge**: frontier empty; every answer logged `(source: kun)` or `(source: default, contested)`; seams named; `CONTEXT.md` changed on disk; ADRs only where all three gates pass.
-- **Spec + reconcile**: every to-spec template section filled; user stories ≥ 8; no file paths or code in Implementation Decisions; the reconciliation gate's list is empty.
-- **Tickets + claims**: one file per ticket; each has a demo path, tier, claims, "Blocked by"; every acceptance criterion executed red at base; no cycles; no two `ready` tickets share a claim; `ready-for-agent` stripped from the parent spec; ticket table in `todo.md`.
+- **Grill + challenge**: frontier empty; every answer logged `(source: kun)` or `(source: default, contested)`; seams named; `CONTEXT.md` changed on disk (or evidence-backed no-change log); ADRs only where all three gates pass.
+- **Spec + reconcile**: every to-spec template section filled; user stories scaled to actual decisions (avoiding manufactured scope); no file paths or code in Implementation Decisions; the reconciliation gate's list is empty.
+- **Tickets + claims**: one file per ticket; each has a demo path, tier, claims, "Blocked by"; acceptance criteria for new behavior confirmed red at base (invariants remain green); no cycles; no two `ready` tickets share a claim; `ready-for-agent` stripped from the parent spec; ticket table in `todo.md`.
 - **Isolate**: run worktree exists on `goal/<slug>`; `.worktrees/` excluded; `ledger.md`, `todo.md`, `log.md` exist and are committed with the base commit recorded.
 - **Every stage**: `bugs.md` has no entry without an action (commit, ticket id, or blocker); NOW rewritten, an event appended, `todo.md` box ticked, all committed on the run branch before the next stage starts.
-- **Build**: every merged ticket recorded as a range on the run branch; per-test comparison against baseline passes; no `TODO`/`FIXME`/`HACK`/skipped test introduced in the diff (`git diff <branch-point>...HEAD | grep -nE 'TODO|FIXME|HACK|\.skip\('` is empty); (GitHub only) draft PR open closing spec and tickets; every ticket branch merged fast-forward into the run branch and its worktree removed; per ticket a defensive-design evidence state per control; per slice a red test preceded the code (visible `tdd` calls in the subagent trace); every ticket's boxes ticked and the ticket closed; typecheck, lint, full suite output captured per ticket; one commit or more per ticket on the current branch.
-- **Final review**: ran in a fresh review subagent against the branch point; cited findings fixed by one fix subagent and committed; suite no worse than baseline; uncited leads listed in the report.
-- **Hand back**: only the user's checkout and the run worktree remain in `git worktree list`; if a PR exists it is marked ready for review.
+- **Build**: every merged ticket recorded as a range on the run branch; per-test comparison against baseline passes; no `TODO`/`FIXME`/`HACK`/skipped test introduced in the diff (`git diff -U0 <review_base>...HEAD | grep '^+' | grep -v '^+++' | grep -nE 'TODO|FIXME|HACK|\.skip\('` is empty); (GitHub only) draft PR open closing spec and tickets only if push is explicitly authorized; every ticket branch merged fast-forward into the run branch and its worktree removed; per ticket a defensive-design evidence state per control; per slice a red test preceded the code (visible `tdd` calls in the subagent trace); every ticket's boxes ticked and the ticket closed; typecheck, lint, full suite output captured per ticket; one commit or more per ticket on the current branch.
+- **Final review**: ran in a fresh review subagent against `review_base`; cited findings fixed by one fix subagent, independently verified against the deliverable snapshot, and committed; suite no worse than baseline; uncited leads listed in the report.
+- **Hand back**: only the user's checkout, the persistent `.worktrees/control`, the run worktree, and active peer run worktrees remain in `git worktree list`; if an authorized PR exists it is marked ready for review.
 - **Retro**: `retro.md` written with candidates ordered by severity.
 
 ## Decision log

@@ -1,0 +1,2 @@
+to-orc selftest
+  SKIP — the pi CLI is not installed; the dispatcher refuses to run without it

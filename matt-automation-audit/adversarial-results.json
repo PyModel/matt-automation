@@ -1,0 +1,421 @@
+{
+  "schema": "matt-automation.audit-regressions.v1",
+  "reference_commit": "fe49e377695de0081f7951f81a513417a481dff0",
+  "matches_reference_scripts": true,
+  "runtime": {
+    "node": "v22.16.0",
+    "git": "git version 2.47.3",
+    "platform": "linux",
+    "real_pi_used": false,
+    "network_calls": 0
+  },
+  "scope_notes": {
+    "A19-A20": "Injected contradictory relay evidence; not a claim the unavailable real relay emits this.",
+    "A23": "Suggested stronger policy. All-false phase flags alone do not prove no worker was dispatched, so this is not counted as a confirmed contract violation.",
+    "A26-A31": "Disposable Git fixtures reproduce consequences of documented commands/order, not an end-to-end agent run.",
+    "A32": "Controlled slow-terminating relay; demonstrates absent process-tree settlement, not measured live pi behavior."
+  },
+  "source_sha256": {
+    "to-orc/scripts/orc-dispatch.mjs": "882a3a64dd40db7d6055b7e0690f21d0e5f8a61ac74cda16a6b9b9b0fe746ef3",
+    "to-orc/scripts/validate-verdict.mjs": "af6a0367f2d339c02e926e238035c9197d8a16c81af6a730a0a7bffbeb13d99d"
+  },
+  "cases": [
+    {
+      "id": "A01",
+      "name": "A rejected duplicate preserves previous dispatch evidence",
+      "result": "VIOLATION",
+      "expected": "Refuse retry without changing previous status",
+      "observed": {
+        "first": "COMPLIANT",
+        "retry_exit": 77,
+        "stored_after": "PRECONDITION_FAILED"
+      }
+    },
+    {
+      "id": "A02",
+      "name": "Forced retry cannot reuse result.json from an earlier execution",
+      "result": "VIOLATION",
+      "expected": "Missing fresh nonce-bound result is a failure",
+      "observed": {
+        "exit": 0,
+        "status": "COMPLIANT",
+        "reason": "worker completed on the mandated configuration; workspace unchanged"
+      }
+    },
+    {
+      "id": "A03",
+      "name": "Read-only phase catches same-size edits to a large dirty tracked file",
+      "result": "VIOLATION",
+      "expected": "NO_WRITES_VIOLATED",
+      "observed": {
+        "exit": 0,
+        "status": "COMPLIANT",
+        "bytes_changed": true,
+        "git_diff_changed": true
+      }
+    },
+    {
+      "id": "A04",
+      "name": "Read-only detection works when --repo is a Git subdirectory",
+      "result": "VIOLATION",
+      "expected": "Reject invalid root or correctly detect modification",
+      "observed": {
+        "exit": 0,
+        "status": "COMPLIANT",
+        "content": "worker changed content"
+      }
+    },
+    {
+      "id": "A05",
+      "name": "Read-only detection catches untracked symlink retargeting",
+      "result": "VIOLATION",
+      "expected": "Hash link type and readlink target, not followed bytes",
+      "observed": {
+        "exit": 0,
+        "status": "COMPLIANT",
+        "link_now": "two.txt"
+      }
+    },
+    {
+      "id": "A06",
+      "name": "Untracked changes cannot collide in the documented implementation/verification identity",
+      "result": "VIOLATION",
+      "expected": "Any change to the deliverable changes the recorded identity",
+      "observed": {
+        "identical_identity": true,
+        "implement_status": "COMPLIANT",
+        "verify_status": "COMPLIANT"
+      }
+    },
+    {
+      "id": "A07",
+      "name": "Staged changes cannot collide in the documented implementation/verification identity",
+      "result": "VIOLATION",
+      "expected": "Any change to the deliverable changes the recorded identity",
+      "observed": {
+        "identical_identity": true,
+        "implement_status": "COMPLIANT",
+        "verify_status": "COMPLIANT"
+      }
+    },
+    {
+      "id": "A08",
+      "name": "A run directory named ..artifacts inside the workspace is refused",
+      "result": "VIOLATION",
+      "expected": "Containment tests path segments rather than startsWith(\"..\")",
+      "observed": {
+        "exit": 0,
+        "stdout": "orc-dispatch: dry run \u00b7 phase=scout task=P1 writes=none timeout=45m session=fresh\norc-dispatch: dry run \u00b7 relay=/tmp/matt-audit-regressions-nbob4e5p/relay.mjs repo=/tmp/matt-audit-regressions-nbob4e5p/dotdot-directory/repo out=/tmp/matt-audit-regressions-nbob4e5p/dotdot-directory/repo/..artifacts/P1\norc-dispatch: dry run \u00b7 spent=$0.0000\norc-dispatch: dry run \u00b7 all preconditions satisfied; nothing dispatched"
+      }
+    },
+    {
+      "id": "A09",
+      "name": "An outside symlink resolving inside the workspace is refused",
+      "result": "VIOLATION",
+      "expected": "Canonicalize paths before enforcing isolation",
+      "observed": {
+        "exit": 0,
+        "resolved_run_directory": "/tmp/matt-audit-regressions-nbob4e5p/symlink-directory/repo/artifacts"
+      }
+    },
+    {
+      "id": "A10",
+      "name": "An invalid invocation does not write status into the workspace",
+      "result": "VIOLATION",
+      "expected": "Validate containment before any evidence write",
+      "observed": {
+        "exit": 77,
+        "status_written_inside_workspace": true
+      }
+    },
+    {
+      "id": "A11",
+      "name": "Poll mode cannot traverse outside the run directory",
+      "result": "VIOLATION",
+      "expected": "Apply the normal task validator before poll reads or writes",
+      "observed": {
+        "exit": 76,
+        "outside_status_after": "ABORTED"
+      }
+    },
+    {
+      "id": "A12",
+      "name": "Repair requires a known successful implement session",
+      "result": "VIOLATION",
+      "expected": "Reject unknown or wrong-phase session before dispatch",
+      "observed": {
+        "exit": 0,
+        "status": "COMPLIANT"
+      }
+    },
+    {
+      "id": "A13",
+      "name": "A rejected repair does not consume an execution cycle",
+      "result": "VIOLATION",
+      "expected": "Count started/completed repair attempts, not precondition refusals",
+      "observed": {
+        "rejected_exit": 77,
+        "real_attempt_exit": 77,
+        "reason": "cycle limit reached: 1 repair(s) already ran and --cycles is 2 \u2014 stop and report the unresolved defects"
+      }
+    },
+    {
+      "id": "A14",
+      "name": "Total implement/verify cycle cap covers fresh implementations",
+      "result": "VIOLATION",
+      "expected": "A second implementation requires an explicitly new run/budget",
+      "observed": {
+        "first_implement_exit": 0,
+        "verify_exit": 0,
+        "second_implement_exit": 0
+      }
+    },
+    {
+      "id": "A15",
+      "name": "Unreadable spend accounting fails closed instead of resetting the budget",
+      "result": "VIOLATION",
+      "expected": "Corrupt accounting prevents new spending",
+      "observed": {
+        "exit": 0,
+        "status": "COMPLIANT",
+        "new_total": 0.01
+      }
+    },
+    {
+      "id": "A16",
+      "name": "A syntactically valid null result produces terminal typed failure",
+      "result": "VIOLATION",
+      "expected": "EVIDENCE_UNREADABLE/SCHEMA_DRIFT, not an uncaught exception and stale RUNNING",
+      "observed": {
+        "exit": 1,
+        "status": "RUNNING",
+        "uncaught_type_error": true
+      }
+    },
+    {
+      "id": "A17",
+      "name": "An invalid spend schema cannot crash a completed dispatch into RUNNING",
+      "result": "VIOLATION",
+      "expected": "Validate ledger shape and always persist terminal error",
+      "observed": {
+        "exit": 1,
+        "status": "RUNNING",
+        "uncaught_type_error": true
+      }
+    },
+    {
+      "id": "A18",
+      "name": "Only own, declared phase names are accepted",
+      "result": "VIOLATION",
+      "expected": "Reject inherited Object members as invalid phase names",
+      "observed": {
+        "exit": 0,
+        "status": "COMPLIANT"
+      }
+    },
+    {
+      "id": "A19",
+      "name": "Contradictory worker evidence (nonzero-worker) fails closed",
+      "result": "VIOLATION",
+      "expected": "Reject contradictory completed/exit/stop evidence rather than approve",
+      "observed": {
+        "exit": 0,
+        "status": "COMPLIANT",
+        "relay": {
+          "status": "completed",
+          "exitCode": 5,
+          "relayExitCode": 0,
+          "piVersion": "0.85.1",
+          "sessionId": "audit-implement-session",
+          "provider": "zai",
+          "model": "glm-5.3-flash",
+          "requestedModel": "zai/glm-5.3-flash:max",
+          "reasoningTokens": 10,
+          "stopReason": "stop",
+          "artifacts": {
+            "result": "/tmp/matt-audit-regressions-nbob4e5p/nonzero-worker/run/P1/result.json",
+            "finalMessage": "/tmp/matt-audit-regressions-nbob4e5p/nonzero-worker/run/P1/final.txt",
+            "events": "/tmp/matt-audit-regressions-nbob4e5p/nonzero-worker/run/P1/events.jsonl",
+            "stderr": "/tmp/matt-audit-regressions-nbob4e5p/nonzero-worker/run/P1/stderr.txt",
+            "brief": "/tmp/matt-audit-regressions-nbob4e5p/nonzero-worker/run/P1/brief.txt"
+          }
+        }
+      }
+    },
+    {
+      "id": "A20",
+      "name": "Contradictory worker evidence (error-stop) fails closed",
+      "result": "VIOLATION",
+      "expected": "Reject contradictory completed/exit/stop evidence rather than approve",
+      "observed": {
+        "exit": 0,
+        "status": "COMPLIANT",
+        "relay": {
+          "status": "completed",
+          "exitCode": 0,
+          "relayExitCode": 0,
+          "piVersion": "0.85.1",
+          "sessionId": "audit-implement-session",
+          "provider": "zai",
+          "model": "glm-5.3-flash",
+          "requestedModel": "zai/glm-5.3-flash:max",
+          "reasoningTokens": 10,
+          "stopReason": "error",
+          "artifacts": {
+            "result": "/tmp/matt-audit-regressions-nbob4e5p/error-stop/run/P1/result.json",
+            "finalMessage": "/tmp/matt-audit-regressions-nbob4e5p/error-stop/run/P1/final.txt",
+            "events": "/tmp/matt-audit-regressions-nbob4e5p/error-stop/run/P1/events.jsonl",
+            "stderr": "/tmp/matt-audit-regressions-nbob4e5p/error-stop/run/P1/stderr.txt",
+            "brief": "/tmp/matt-audit-regressions-nbob4e5p/error-stop/run/P1/brief.txt"
+          }
+        }
+      }
+    },
+    {
+      "id": "A21",
+      "name": "Control: a structurally consistent PASS is accepted",
+      "result": "PASS",
+      "expected": "Exit 0",
+      "observed": {
+        "exit": 0
+      }
+    },
+    {
+      "id": "A22",
+      "name": "PASS cannot approve an explicitly incomplete plan",
+      "result": "VIOLATION",
+      "expected": "Cross-field rejection",
+      "observed": {
+        "exit": 0,
+        "stdout": "validate-verdict: OK \u2014 valid final message"
+      }
+    },
+    {
+      "id": "A23",
+      "name": "No completed phases require a null correctness score",
+      "result": "ADVISORY",
+      "expected": "Reject fabricated numeric confidence when no execution succeeded",
+      "observed": {
+        "exit": 0,
+        "score": 9
+      }
+    },
+    {
+      "id": "A24",
+      "name": "Null top-level verdict yields structured diagnostic rather than TypeError",
+      "result": "VIOLATION",
+      "expected": "Report top-level type error through normal validator diagnostics",
+      "observed": {
+        "exit": 1,
+        "uncaught_type_error": true
+      }
+    },
+    {
+      "id": "A25",
+      "name": "Backticks inside a JSON string are not mistaken for wrapping Markdown",
+      "result": "VIOLATION",
+      "expected": "Parse JSON successfully and reject only actual wrapping fences",
+      "observed": {
+        "exit": 1,
+        "stderr": "validate-verdict: 1 problem(s)\n  - contains a Markdown fence \u2014 the final message must be raw JSON with no fences"
+      }
+    },
+    {
+      "id": "A26",
+      "name": "Documented no-debt grep permits deleting an old TODO",
+      "result": "VIOLATION",
+      "expected": "Only relevant added lines should be checked, not removals/context",
+      "observed": {
+        "grep_exit": 0,
+        "matched": "6:-TODO: remove stale marker"
+      }
+    },
+    {
+      "id": "A27",
+      "name": "Documented bootstrap selection follows the current default branch",
+      "result": "VIOLATION",
+      "expected": "Existing bootstrap configuration must not freeze the source base",
+      "observed": {
+        "default_sha": "9ff6b120ab9dcd96dc7c9f430c6f940b2359e207",
+        "selected_base_sha": "5a7967c8a033f1dbd1c72a10be07ec7ed1811e9c",
+        "selected_base_has_new_feature": false
+      }
+    },
+    {
+      "id": "A28",
+      "name": "to-new handles its documented existing-repository-with-no-commits case",
+      "result": "VIOLATION",
+      "expected": "Create an initial commit for unborn repositories before worktree setup",
+      "observed": {
+        "exit": 128,
+        "stderr": "fatal: invalid reference: main"
+      }
+    },
+    {
+      "id": "A29",
+      "name": "Bug fast-path final review includes the diagnosis-stage fix",
+      "result": "VIOLATION",
+      "expected": "Capture immutable review_base before any diagnosis/plan mutation",
+      "observed": {
+        "actual_fix_diff_nonempty": true,
+        "documented_review_diff_empty": true
+      }
+    },
+    {
+      "id": "A30",
+      "name": "Documented force-GC primitive preserves uncommitted work",
+      "result": "VIOLATION",
+      "expected": "Refuse dirty/unmerged worktree collection or archive and verify recovery first",
+      "observed": {
+        "uncommitted_file_survives": false,
+        "backup_requested_by_documented_command": false
+      }
+    },
+    {
+      "id": "A31",
+      "name": "Hand-back criterion permits the mandatory persistent control worktree",
+      "result": "VIOLATION",
+      "expected": "The docs require only checkout + run, but must explicitly also allow control and other owned runs",
+      "observed": {
+        "documented_max_worktrees": 2,
+        "minimum_actual_worktrees": 3
+      }
+    },
+    {
+      "id": "A32",
+      "name": "ABORTED is published only after worker writes are fenced",
+      "result": "VIOLATION",
+      "expected": "Terminate/wait for the owned process tree before publishing a settled terminal state",
+      "observed": {
+        "supervisor_exit": 76,
+        "status": "ABORTED",
+        "file_absent_when_supervisor_exited": true,
+        "worker_wrote_afterward": true
+      }
+    },
+    {
+      "id": "A33",
+      "name": "Control: ordinary small-file mutation is detected",
+      "result": "PASS",
+      "expected": "NO_WRITES_VIOLATED",
+      "observed": {
+        "exit": 72
+      }
+    },
+    {
+      "id": "A34",
+      "name": "Control: an ordinary invalid phase is rejected",
+      "result": "PASS",
+      "expected": "PRECONDITION_FAILED",
+      "observed": {
+        "exit": 77
+      }
+    }
+  ],
+  "summary": {
+    "total": 34,
+    "passed": 3,
+    "violations": 30,
+    "advisories": 1
+  }
+}

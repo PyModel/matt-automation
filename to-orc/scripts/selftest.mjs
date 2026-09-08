@@ -22,6 +22,12 @@ const STUB = path.join(root, "stub.mjs");
 let pass = 0;
 const failures = [];
 
+const binDir = path.join(root, "bin");
+fs.mkdirSync(binDir, { recursive: true });
+const piShim = path.join(binDir, "pi");
+fs.writeFileSync(piShim, '#!/bin/sh\n[ "$1" = "--version" ] && { echo "0.85.1"; exit 0; }\necho "pi test shim" >&2\nexit 0\n', { mode: 0o755 });
+process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH || ""}`;
+
 // --- the stub relay: STUB_MODE decides what evidence it leaves behind --------
 fs.writeFileSync(STUB, `
 import fs from "node:fs";
@@ -268,8 +274,9 @@ check("re-using a task id needs --force", () => {
 check("the cycle cap stops a second repair", () => {
   const repo = newRepo("r22");
   const { runDir, brief } = newRun("run22", { accept: ["scout", "research", "implement", "verify"] });
-  eq(dispatch({ phase: "repair", task: "R1", runDir, brief, repo, extra: ["--session", "s1"] }).exit, 0, "first repair");
-  const r = dispatch({ phase: "repair", task: "R2", runDir, brief, repo, extra: ["--session", "s2"] });
+  dispatch({ phase: "implement", task: "P3", runDir, brief, repo });
+  eq(dispatch({ phase: "repair", task: "R1", runDir, brief, repo, extra: ["--session", "sess-ok"] }).exit, 0, "first repair");
+  const r = dispatch({ phase: "repair", task: "R2", runDir, brief, repo, extra: ["--session", "sess-ok"] });
   eq(r.exit, 77, "second repair exit");
   if (!/cycle limit/.test(r.status.reason)) throw new Error("reason does not name the cycle limit");
 });

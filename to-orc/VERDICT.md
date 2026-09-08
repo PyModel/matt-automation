@@ -49,7 +49,7 @@ It rejects fences, wrapping prose, stringified booleans, malformed issues, `APPR
     "task_id": "<actual-task-id>",
     "dispatched_to": "pi / zai:glm-5.3-flash",
     "flags": "--thinking max",
-    "status": "REVISE"
+    "status": "FAIL"
   },
   "phase_audit": {
     "scouting_completed": false,

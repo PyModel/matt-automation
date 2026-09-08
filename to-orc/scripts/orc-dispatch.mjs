@@ -173,7 +173,10 @@ function buildStatus(ctx, orcStatus, reason, extra) {
 
 function writeStatus(out, status) {
   fs.mkdirSync(out, { recursive: true });
-  fs.writeFileSync(path.join(out, "orc-status.json"), `${JSON.stringify(status, null, 2)}\n`);
+  const target = path.join(out, "orc-status.json");
+  const tmp = path.join(out, `.orc-status.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  fs.writeFileSync(tmp, `${JSON.stringify(status, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(tmp, target);
 }
 
 /** Writes the one file the orchestrator reads, then exits with the matching code. */
@@ -208,6 +211,24 @@ function git(repo, args, { maxBuffer = 64 * 1024 * 1024 } = {}) {
 
 const sha = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
 
+function hashFileSync(abs) {
+  const hash = crypto.createHash("sha256");
+  let fd;
+  try {
+    fd = fs.openSync(abs, "r");
+    const buf = Buffer.alloc(64 * 1024);
+    let bytesRead;
+    while ((bytesRead = fs.readSync(fd, buf, 0, buf.length, null)) > 0) {
+      hash.update(buf.subarray(0, bytesRead));
+    }
+    return hash.digest("hex");
+  } catch {
+    return "absent";
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+  }
+}
+
 /**
  * A workspace fingerprint: HEAD, the digests of the index and worktree diffs,
  * and a content digest per dirty path (tracked-modified and untracked alike).
@@ -217,6 +238,9 @@ const sha = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
 function fingerprint(repo) {
   const inside = git(repo, ["rev-parse", "--is-inside-work-tree"]);
   if (!inside || inside.toString().trim() !== "true") return null;
+
+  const rootBuf = git(repo, ["rev-parse", "--show-toplevel"]);
+  const worktreeRoot = rootBuf ? rootBuf.toString().trim() : repo;
 
   const headBuf = git(repo, ["rev-parse", "HEAD"]);
   const head = headBuf ? headBuf.toString().trim() : "unborn";
@@ -233,22 +257,39 @@ function fingerprint(repo) {
     const p = rec.slice(3);
     if (code[0] === "R" || code[0] === "C") i += 1; // consume the origin path record
     if (!p) continue;
-    const abs = path.join(repo, p);
+    const abs = path.join(worktreeRoot, p);
     let digest = "absent";
     try {
-      const st = fs.statSync(abs);
-      if (st.isDirectory()) digest = "dir";
-      else if (st.size > 8 * 1024 * 1024) { digest = `size:${st.size}`; truncated.push(p); }
-      else digest = sha(fs.readFileSync(abs));
+      const lst = fs.lstatSync(abs);
+      if (lst.isSymbolicLink()) {
+        const linkTarget = fs.readlinkSync(abs);
+        digest = `symlink:${sha(Buffer.from(linkTarget))}`;
+      } else if (lst.isDirectory()) {
+        digest = "dir";
+      } else {
+        digest = hashFileSync(abs);
+      }
     } catch { /* deleted paths keep "absent" */ }
     entries[p] = `${code}:${digest}`;
   }
   const idx = git(repo, ["diff", "--cached"]);
   const wt = git(repo, ["diff"]);
+
+  const combined = crypto.createHash("sha256");
+  if (wt) combined.update(wt);
+  if (idx) combined.update(idx);
+  for (const [k, v] of Object.entries(entries).sort()) {
+    combined.update(`${k}:${v}`);
+  }
+  const worktreeDiffSha = combined.digest("hex");
+  const snapshotId = sha(Buffer.from(`${head}:${worktreeDiffSha}`));
+
   return {
     head,
+    snapshotId,
     indexDiffSha: idx ? sha(idx) : null,
-    worktreeDiffSha: wt ? sha(wt) : null,
+    worktreeDiffSha,
+    rawWorktreeDiffSha: wt ? sha(wt) : null,
     entries,
     truncated,
     pathCount: Object.keys(entries).length,
@@ -271,10 +312,13 @@ function diffFingerprints(before, after) {
   const headChanged = before.head !== after.head;
   if (headChanged) detail.unshift(`HEAD ${before.head} -> ${after.head}`);
   if (before.indexDiffSha !== after.indexDiffSha) detail.unshift("index diff changed (files staged or unstaged)");
+  if (before.worktreeDiffSha !== after.worktreeDiffSha && !detail.some((d) => d.includes("diff changed") || d.startsWith("added ") || d.startsWith("changed ") || d.startsWith("cleaned "))) {
+    detail.unshift("worktree diff changed");
+  }
   return {
     verified: true,
     headChanged,
-    pathsChanged: detail.filter((d) => !d.startsWith("HEAD ") && !d.startsWith("index diff")),
+    pathsChanged: detail.filter((d) => !d.startsWith("HEAD ") && !d.startsWith("index diff") && !d.startsWith("worktree diff")),
     detail,
   };
 }
@@ -285,22 +329,39 @@ function recordSpend(runDir, entry) {
   const file = path.join(runDir, "spend.json");
   let ledger = { schema: "to-orc.spend.v1", totalUsd: 0, entries: [] };
   try {
-    if (fs.existsSync(file)) ledger = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (fs.existsSync(file)) {
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (parsed && typeof parsed === "object" && Array.isArray(parsed.entries)) {
+        ledger = parsed;
+      } else {
+        warn(`spend ledger invalid shape, resetting: ${file}`);
+      }
+    }
   } catch { warn(`spend ledger unreadable, starting a new one: ${file}`); }
+  if (!Array.isArray(ledger.entries)) ledger.entries = [];
   ledger.entries.push(entry);
-  ledger.totalUsd = Number(ledger.entries.reduce((s, e) => s + (e.costUsd || 0), 0).toFixed(6));
+  ledger.totalUsd = Number(ledger.entries.reduce((s, e) => s + (typeof e.costUsd === "number" && Number.isFinite(e.costUsd) ? e.costUsd : 0), 0).toFixed(6));
   try {
-    fs.writeFileSync(file, `${JSON.stringify(ledger, null, 2)}\n`);
+    const tmp = path.join(runDir, `.spend.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+    fs.writeFileSync(tmp, `${JSON.stringify(ledger, null, 2)}\n`, { mode: 0o600 });
+    fs.renameSync(tmp, file);
   } catch (e) { warn(`could not write spend ledger — ${e.message}`); }
   return ledger.totalUsd;
 }
 
 function spentSoFar(runDir) {
+  const f = path.join(runDir, "spend.json");
+  if (!fs.existsSync(f)) return 0;
   try {
-    const f = path.join(runDir, "spend.json");
-    if (!fs.existsSync(f)) return 0;
-    return JSON.parse(fs.readFileSync(f, "utf8")).totalUsd || 0;
-  } catch { return 0; }
+    const raw = fs.readFileSync(f, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.entries) || typeof parsed.totalUsd !== "number" || !Number.isFinite(parsed.totalUsd) || parsed.totalUsd < 0) {
+      return NaN;
+    }
+    return parsed.totalUsd;
+  } catch {
+    return NaN;
+  }
 }
 
 /** Every completed dispatch's status file in this run, newest last. */
@@ -346,13 +407,33 @@ function classifyResult(result, relayExit) {
   if (result.actualModel !== ACTUAL_MODEL) bad.push(`actual model=${result.actualModel}`);
   if (bad.length) return ["CONFIG_NON_COMPLIANT", `mandatory worker configuration not proven: ${bad.join(", ")}`];
 
-  if (result.status !== "completed" || relayExit !== 0) {
-    return ["WORKER_FAILED", `worker did not succeed (status=${result.status}, exit=${relayExit}, stopReason=${result.stopReason ?? "n/a"})`];
+  if (result.status !== "completed" || relayExit !== 0 || (typeof result.exitCode === "number" && result.exitCode !== 0) || result.stopReason === "error") {
+    return ["WORKER_FAILED", `worker did not succeed (status=${result.status}, exit=${result.exitCode ?? relayExit}, relayExit=${relayExit}, stopReason=${result.stopReason ?? "n/a"})`];
   }
   return [null, null];
 }
 
 // -------------------------------------------------------------------- main
+
+function canonicalPath(p) {
+  const resolved = path.resolve(p);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    let curr = resolved;
+    const parts = [];
+    while (curr && !fs.existsSync(curr)) {
+      parts.unshift(path.basename(curr));
+      const parent = path.dirname(curr);
+      if (parent === curr) break;
+      curr = parent;
+    }
+    if (fs.existsSync(curr)) {
+      return path.join(fs.realpathSync(curr), ...parts);
+    }
+    return resolved;
+  }
+}
 
 const selfPath = fileURLToPath(import.meta.url);
 const opts = parseArgs(process.argv.slice(2));
@@ -361,7 +442,16 @@ const ctx = { warnings: [], startedAt: new Date().toISOString() };
 // --- poll mode: answer "what happened to that dispatch?" without dispatching
 if (opts.poll) {
   if (!opts.task || !opts.runDir) usageError("--poll needs --task and --run-dir");
-  const file = path.join(path.resolve(opts.runDir), opts.task, "orc-status.json");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(opts.task)) {
+    usageError("--task must match [A-Za-z0-9][A-Za-z0-9._-]{0,63} (it names a directory)");
+  }
+  const canonRunDir = canonicalPath(opts.runDir);
+  const targetTaskDir = path.resolve(canonRunDir, opts.task);
+  const rel = path.relative(canonRunDir, targetTaskDir);
+  if (rel.startsWith(".." + path.sep) || rel === "..") {
+    usageError("--task must not traverse outside --run-dir");
+  }
+  const file = path.join(targetTaskDir, "orc-status.json");
   if (!fs.existsSync(file)) {
     process.stderr.write(`orc-dispatch: no dispatch found at ${file}\n`);
     process.exit(EXIT.PRECONDITION_FAILED);
@@ -396,7 +486,7 @@ if (opts.poll) {
 }
 
 // --- argument validation (every one of these used to be a silent misbehaviour)
-const policy = PHASES[opts.phase];
+const policy = Object.hasOwn(PHASES, opts.phase) ? PHASES[opts.phase] : null;
 if (!policy) usageError(`--phase must be one of ${Object.keys(PHASES).join(", ")}`);
 if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(opts.task)) {
   usageError("--task must match [A-Za-z0-9][A-Za-z0-9._-]{0,63} (it names a directory)");
@@ -417,17 +507,19 @@ const briefPath = path.resolve(opts.brief);
 ctx.repo = repo;
 ctx.out = path.join(runDir, opts.task);
 
-if (!fs.existsSync(repo) || !fs.statSync(repo).isDirectory()) finish(ctx, "PRECONDITION_FAILED", `workspace not found: ${repo}`);
-if (!fs.existsSync(briefPath) || !fs.statSync(briefPath).isFile()) finish(ctx, "PRECONDITION_FAILED", `brief not found: ${briefPath}`);
-if (fs.readFileSync(briefPath, "utf8").trim() === "") finish(ctx, "PRECONDITION_FAILED", `brief is empty: ${briefPath}`);
-
 // The run directory must sit outside the workspace, or its own artifacts show up
-// as writes and every no-write phase fails forever.
-const rel = path.relative(repo, runDir);
-if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) {
-  // Deliberately without ctx.out: writing evidence here would itself pollute the workspace.
+// as writes and every no-write phase fails forever. Validate BEFORE checking brief or writing status!
+const canonRepo = canonicalPath(repo);
+const canonRunDir = canonicalPath(runDir);
+const rel = path.relative(canonRepo, canonRunDir);
+const isInside = rel === "" || (!rel.startsWith(".." + path.sep) && rel !== ".." && !path.isAbsolute(rel));
+if (isInside) {
   finish({ ...ctx, out: null }, "PRECONDITION_FAILED", `--run-dir is inside the workspace (${runDir}); artifacts would register as writes — put it outside the repo`);
 }
+
+if (!fs.existsSync(repo) || !fs.statSync(repo).isDirectory()) finish({ ...ctx, out: null }, "PRECONDITION_FAILED", `workspace not found: ${repo}`);
+if (!fs.existsSync(briefPath) || !fs.statSync(briefPath).isFile()) finish({ ...ctx, out: null }, "PRECONDITION_FAILED", `brief not found: ${briefPath}`);
+if (fs.readFileSync(briefPath, "utf8").trim() === "") finish({ ...ctx, out: null }, "PRECONDITION_FAILED", `brief is empty: ${briefPath}`);
 
 // --- session policy
 if (policy.session === "fresh" && opts.session) {
@@ -447,22 +539,36 @@ if (policy.after) {
 }
 
 const prior = priorDispatches(runDir);
+const priorExecuted = prior.filter((p) => p.orcStatus !== "PRECONDITION_FAILED");
+const implementations = priorExecuted.filter((p) => p.phase === "implement").length;
+const repairs = priorExecuted.filter((p) => p.phase === "repair").length;
+const totalCycles = implementations + repairs;
 
 // --- cycle cap: `cycles` implement→verify rounds means cycles-1 repairs
+if (opts.phase === "implement") {
+  if (implementations >= opts.cycles) {
+    finish(ctx, "PRECONDITION_FAILED", `cycle limit reached: ${implementations} implementation(s) already ran and --cycles is ${opts.cycles} — a second implementation requires a new run or higher budget`);
+  }
+}
+
 if (opts.phase === "repair") {
-  const repairs = prior.filter((p) => p.phase === "repair").length;
-  if (repairs >= opts.cycles - 1) {
+  if (totalCycles >= opts.cycles || repairs >= opts.cycles - 1) {
     finish(ctx, "PRECONDITION_FAILED", `cycle limit reached: ${repairs} repair(s) already ran and --cycles is ${opts.cycles} — stop and report the unresolved defects`);
   }
-  // Resuming a session that was killed mid-turn resumes undefined state.
   const source = prior.filter((p) => p.relay?.sessionId === opts.session).pop();
   if (source && ["TIMEOUT", "ABORTED"].includes(source.orcStatus)) {
     finish(ctx, "PRECONDITION_FAILED", `session ${opts.session} ended as ${source.orcStatus}; its state is undefined — run a fresh implement phase instead of resuming it`);
+  }
+  if (!source || !["implement", "repair"].includes(source.phase) || source.orcStatus !== "COMPLIANT") {
+    finish(ctx, "PRECONDITION_FAILED", `session ${opts.session} is not a known successful implement/repair session in this run`);
   }
 }
 
 // --- budget
 const alreadySpent = spentSoFar(runDir);
+if (Number.isNaN(alreadySpent)) {
+  finish(ctx, "EVIDENCE_UNREADABLE", `spend ledger is corrupt or invalid JSON — fails closed to prevent unbudgeted spending`);
+}
 if (opts.maxCost !== null && alreadySpent >= opts.maxCost) {
   finish(ctx, "PRECONDITION_FAILED", `run has spent $${alreadySpent.toFixed(4)} of its $${opts.maxCost.toFixed(2)} budget — raise --max-cost or stop`);
 }
@@ -478,7 +584,7 @@ if (spawnSync("pi", ["--version"], { stdio: "ignore" }).status !== 0) {
 // --- existing dispatch under this task id
 const statusFile = path.join(ctx.out, "orc-status.json");
 if (fs.existsSync(statusFile) && !opts.force && !opts.childOfBackground) {
-  finish(ctx, "PRECONDITION_FAILED", `${statusFile} already exists — pick a new --task or pass --force to overwrite the evidence`);
+  finish({ ...ctx, out: null }, "PRECONDITION_FAILED", `${statusFile} already exists — pick a new --task or pass --force to overwrite the evidence`);
 }
 
 if (opts.dryRun) {
@@ -487,6 +593,13 @@ if (opts.dryRun) {
   say(`dry run · spent=$${alreadySpent.toFixed(4)}${opts.maxCost !== null ? ` of $${opts.maxCost.toFixed(2)}` : ""}`);
   say("dry run · all preconditions satisfied; nothing dispatched");
   process.exit(0);
+}
+
+// Clean any old artifacts in ctx.out before execution so stale results are never read
+if (fs.existsSync(ctx.out)) {
+  for (const f of ["result.json", "final.txt", "events.jsonl", "stderr.txt", "brief.txt", "relay-ready"]) {
+    try { fs.unlinkSync(path.join(ctx.out, f)); } catch {}
+  }
 }
 
 // --- detach when asked, so no harness command timeout can kill a long phase
@@ -510,7 +623,24 @@ if (opts.background) {
 // A terminal status must exist however this process ends.
 for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
   process.on(sig, () => {
-    if (relayChild) { try { relayChild.kill("SIGTERM"); } catch { /* already gone */ } }
+    if (relayChild) {
+      try {
+        writeStatus(ctx.out, { ...buildStatus(ctx, "ABORTED", `the dispatch received ${sig} — cancelling worker`), relayPid: relayChild.pid });
+      } catch {}
+      try { relayChild.kill("SIGTERM"); } catch {}
+      try { process.kill(-relayChild.pid, "SIGTERM"); } catch {}
+      const t0 = Date.now();
+      while (Date.now() - t0 < 50) {
+        try { process.kill(relayChild.pid, 0); } catch { break; }
+      }
+      try { relayChild.kill("SIGKILL"); } catch {}
+      try { process.kill(-relayChild.pid, "SIGKILL"); } catch {}
+      const t1 = Date.now();
+      while (Date.now() - t1 < 1000) {
+        try { process.kill(relayChild.pid, 0); } catch { break; }
+        spawnSync(process.execPath, ["-e", "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)"]);
+      }
+    }
     if (!finalWritten) finish(ctx, "ABORTED", `the dispatch received ${sig} — any change set is PARTIAL and must not be verified as final`);
     process.exit(EXIT.ABORTED);
   });
@@ -550,6 +680,8 @@ const changeSetOut = {
   headChanged: changeSet.headChanged,
   worktreeDiffSha: after?.worktreeDiffSha ?? null,
   indexDiffSha: after?.indexDiffSha ?? null,
+  snapshotIdBefore: before?.snapshotId ?? null,
+  snapshotIdAfter: after?.snapshotId ?? null,
   pathsChanged: changeSet.pathsChanged,
   detail: changeSet.detail,
 };
@@ -570,8 +702,11 @@ try {
 } catch (e) {
   finish(ctx, "EVIDENCE_UNREADABLE", `result.json is not readable JSON (${e.message}) — the dispatch produced no usable evidence`, { changeSet: changeSetOut });
 }
+if (!result || typeof result !== "object" || Array.isArray(result)) {
+  finish(ctx, "EVIDENCE_UNREADABLE", `result.json is not a JSON object — the dispatch produced no usable evidence`, { changeSet: changeSetOut });
+}
 
-const cost = Number(result.usage?.cost?.total ?? 0);
+const cost = typeof result.usage?.cost?.total === "number" && Number.isFinite(result.usage.cost.total) && result.usage.cost.total >= 0 ? result.usage.cost.total : 0;
 const runTotalUsd = recordSpend(runDir, {
   task: opts.task, phase: opts.phase, costUsd: cost,
   at: new Date().toISOString(), sessionId: result.sessionId ?? null,

@@ -25,8 +25,9 @@ const raw = process.argv[2]
   ? fs.readFileSync(process.argv[2], "utf8")
   : fs.readFileSync(0, "utf8");
 
-if (raw.includes("```")) bad("contains a Markdown fence — the final message must be raw JSON with no fences");
-if (raw.trim() === "") bad("empty input");
+const trimmed = raw.trim();
+if (trimmed.startsWith("```") || trimmed.endsWith("```")) bad("contains a Markdown fence — the final message must be raw JSON with no fences");
+if (trimmed === "") bad("empty input");
 
 let v;
 try {
@@ -35,7 +36,10 @@ try {
   bad(`not parseable as a single JSON object (${e.message}) — no prose may precede or follow it`);
   report();
 }
-if (v === null || typeof v !== "object" || Array.isArray(v)) bad("top level must be a JSON object");
+if (v === null || typeof v !== "object" || Array.isArray(v)) {
+  bad("top level must be a JSON object");
+  report();
+}
 
 const os = v.orchestration_summary;
 if (!os || typeof os !== "object") bad("orchestration_summary missing");
@@ -88,12 +92,14 @@ const status = os?.status;
 if (status === "PASS" && v.next_action !== "APPROVE") bad("status PASS requires next_action APPROVE");
 if (status !== "PASS" && v.next_action === "APPROVE") bad("next_action APPROVE is only valid for status PASS");
 if (status === "PASS" && pa && !PHASE_FLAGS.every((f) => pa[f] === true)) bad("status PASS requires every phase_audit flag to be true");
+if (status === "PASS" && pc && pc.all_steps_completed !== true) bad("status PASS requires plan_compliance.all_steps_completed to be true");
 if (status === "PASS" && ir && Array.isArray(ir.issues_detected) && ir.issues_detected.some((i) => i?.status === "OPEN")) {
   bad("status PASS cannot carry an OPEN issue");
 }
 if (status === "PASS" && ir && ir.correctness_score === null) bad("status PASS requires a correctness_score, not null");
-if (pa && PHASE_FLAGS.every((f) => pa[f] === false) && status !== "FAIL") {
-  bad("no phase completed, so status must be FAIL");
+if (pa && PHASE_FLAGS.every((f) => pa[f] === false)) {
+  if (status !== "FAIL") bad("no phase completed, so status must be FAIL");
+  if (ir && ir.correctness_score !== null) bad("no phase completed, so correctness_score must be null");
 }
 
 report();

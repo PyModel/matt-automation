@@ -30,7 +30,7 @@ The tracker's ticket files under `.worktrees/control/tracker/<feature-slug>/issu
 ## NOW
 - stage: 7 build
 - next: dispatch t04 (unblocked by t02 @ a1b2c3d)
-- base: <base commit>   bootstrap: <sha or none>   run-branch: goal/<slug>   branch-point: <sha>
+- base: <base commit>   review_base: <immutable sha>   bootstrap: <sha or none>   run-branch: goal/<slug>
 - kun: <upstream sha> (cached)   run_id: 3   nested: yes   dirty-checkout: no
 - quarantine: 2 tests (see quarantine.json)
 - commands: install=`pnpm i` typecheck=`pnpm tsc` lint=`pnpm lint` test1=`pnpm vitest run <file>` suite=`pnpm test`
@@ -77,14 +77,14 @@ Rules:
 | 05 | … | 02, 03 | blocked | | |
 ```
 
-Ticket statuses: `blocked` → `ready` → `in-flight` → `returned` → `merged`, or `stuck` (reason: heartbeat / no progress / failing test ×5 / too big / claims breach ×2, named in NOW).
+Ticket statuses: `blocked` → `ready` → `in-flight` → `returned` → `merged`, or `stuck` (reason: heartbeat / no progress / failing test ×5 / too big / claims breach ×2, named in NOW). Prerequisite stuck marks dependent tickets `blocked: prerequisite <id> stuck`.
 
 ## Re-entry protocol
 
 On every entry into the run that is not the first (a loop tick, a resumed or compacted session, a subagent that must orient):
 
 1. Read `ledger.md` NOW, then `todo.md`, then the last 20 events.
-2. Verify NOW against the world: `git worktree list`, `git log -1` on the run branch, each `tickets/<NN>.status.md` for in-flight tickets, the tracker's ticket statuses. A ticket NOW calls active is **stuck** per BUILD.md § Stuck detection (stale heartbeat with dead agent, frozen slice counter, repeated non-quarantined failing test, slice or time cap, agent gone): mark it and re-dispatch once from its status file; never twice.
+2. Verify NOW against the world: `git worktree list`, `git log -1` on the run branch, each `tickets/<NN>.status.md` for in-flight tickets, the tracker's ticket statuses. A ticket NOW calls active is **stuck** per BUILD.md § Stuck detection (stale heartbeat with dead agent, frozen slice counter without active command, repeated non-quarantined failing test, slice or time cap, agent gone): confirm process termination/revoke lease and re-dispatch once from its status file; never twice.
 3. Resume at the first stage whose completion criterion (PIPELINE.md) is unmet. Never redo a stage whose artifacts exist and verify; never trust NOW over the artifacts.
 4. Append a `[re-entry]` event saying what was verified and where the run resumed.
 

@@ -1,0 +1,3 @@
+interface:
+  display_name: "To New"
+  short_description: "Create a new project, package, service, or skill from nothing, autonomously"

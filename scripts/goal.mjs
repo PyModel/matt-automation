@@ -4,9 +4,11 @@
 //
 //   node scripts/goal.mjs control                         create the control plane (orphan goal/control worktree) if missing
 //   node scripts/goal.mjs slug <objective> [--new]        the run slug; --new picks a free -2, -3 … for a deliberate re-run
-//   node scripts/goal.mjs init <slug> <objective>         register the run and create runs/<slug>/ that next can parse; commit
+//   node scripts/goal.mjs init <slug> <objective> [--agent <id>] [--harness <name>]
+//                                                          register the run and create runs/<slug>/ that next can parse; commit
 //   node scripts/goal.mjs next <slug>                     where the run resumes (JSON)
 //   node scripts/goal.mjs stop <slug> <reason>            halt the run: write runs/<slug>/STOP and set the registry status
+//   node scripts/goal.mjs resume <slug>                   undo a stop once its cause is fixed
 //   node scripts/goal.mjs registry <slug> <status>        set the run's status in runs.json and commit
 //   node scripts/goal.mjs frontier <feature>              ticket grammar, frontier, claim overlaps (JSON)
 //   node scripts/goal.mjs take <feature> <n>              atomically flip up to <n> frontier tickets (n = free slots) to in-flight (JSON ids)
@@ -140,6 +142,8 @@ export function setRegistry(repo, slug, status) {
     const runs = readRegistry(control);
     const entry = runs.find((r) => r.slug === slug);
     if (!entry) throw new Error(`no run ${slug} in runs.json`);
+    if (status === 'stopped' && entry.status !== 'stopped') entry.stoppedFrom = entry.status;
+    if (status !== 'stopped') delete entry.stoppedFrom;
     entry.status = status;
     fs.writeFileSync(path.join(control, 'runs.json'), `${JSON.stringify(runs, null, 2)}\n`);
     return commit(repo, `[${slug}] status ${status}`, ['runs.json']);
@@ -156,6 +160,18 @@ export function stop(repo, slug, reason) {
   return `stopped ${slug}`;
 }
 
+/** Undo a stop once its cause is fixed: remove STOP and put back the registry status it replaced. */
+export function resume(repo, slug) {
+  const control = requireControl(repo);
+  const rel = path.join('runs', slug, 'STOP');
+  if (!fs.existsSync(path.join(control, rel))) throw new Error(`${slug} is not stopped`);
+  fs.rmSync(path.join(control, rel));
+  commit(repo, `[${slug}] resume`, [rel]);
+  const entry = readRegistry(control).find((r) => r.slug === slug);
+  if (entry?.status === 'stopped') setRegistry(repo, slug, entry.stoppedFrom ?? 'bootstrapping');
+  return `resumed ${slug}`;
+}
+
 // ---------------------------------------------------------------- next
 
 /** The todo.md stage lines: `- [x] 0b setup` or `- [ ] 7 build`, one per line. Maps stage id → ticked. */
@@ -170,16 +186,17 @@ export function parseTodo(text) {
 
 const resumeAt = (slug, stage, reason) => ({ slug, stage: stage.id, name: stage.name, phase: stage.phase, reason });
 
-export function init(repo, slug, objective) {
+export function init(repo, slug, objective, { agent = null, harness = null } = {}) {
   if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(slug)) throw new Error(`bad slug: ${slug} (kebab-case, at most 40 chars)`);
   const control = requireControl(repo);
   const runDir = path.join(control, 'runs', slug);
-  if (fs.existsSync(runDir)) throw new Error(`runs/${slug}/ already exists; resume it with \`goal.mjs next ${slug}\``);
+  if (fs.existsSync(path.join(runDir, 'STOP'))) throw new Error(`${slug} is stopped; fix the cause, then \`goal.mjs resume ${slug}\``);
+  if (fs.existsSync(path.join(runDir, 'todo.md'))) throw new Error(`runs/${slug}/ already exists; resume it with \`goal.mjs next ${slug}\``);
   withLock(repo, 'registry', () => {
     const runs = readRegistry(control);
     if (runs.some((r) => r.slug === slug)) throw new Error(`${slug} is already registered in runs.json`);
     const runId = runs.reduce((max, r) => Math.max(max, r.run_id ?? 0), 0) + 1;
-    runs.push({ slug, objective, run_id: runId, started: new Date().toISOString(), status: 'bootstrapping', agent: process.ppid });
+    runs.push({ slug, objective, run_id: runId, started: new Date().toISOString(), status: 'bootstrapping', agent, harness });
     fs.writeFileSync(path.join(control, 'runs.json'), `${JSON.stringify(runs, null, 2)}\n`);
     commit(repo, `[${slug}] register run ${runId}`, ['runs.json']);
   });
@@ -201,7 +218,7 @@ export function next(control, slug) {
   }
   if (!fs.existsSync(runDir)) return resumeAt(slug, STAGES[0], 'no run directory yet');
   const todoFile = path.join(runDir, 'todo.md');
-  if (!fs.existsSync(todoFile)) return resumeAt(slug, STAGES[1], 'todo.md missing');
+  if (!fs.existsSync(todoFile)) return resumeAt(slug, STAGES[0], 'todo.md missing; stage 00 is idempotent');
   const tickedById = parseTodo(fs.readFileSync(todoFile, 'utf8'));
   const missingLines = STAGES.filter((s) => !tickedById.has(s.id)).map((s) => s.id);
   if (missingLines.length) return { slug, malformed: true, reason: `todo.md has no line for stage(s) ${missingLines.join(', ')}; restore the lines \`goal.mjs init\` writes` };
@@ -225,7 +242,14 @@ export function parseTicket(text) {
   else if (!STATUSES.has(status)) problems.push(`unknown status ${status}`);
   if (!blocked) problems.push('no **Blocked by:** line');
   if (!claims) problems.push('no **Claims:** line');
-  const blockers = !blocked || blocked === 'None' ? [] : blocked.split(',').map((b) => ticketId(b.trim())).filter(Boolean);
+  const blockers = [];
+  if (blocked && blocked !== 'None') {
+    for (const token of blocked.split(',').map((b) => b.trim()).filter(Boolean)) {
+      const id = ticketId(token);
+      if (id) blockers.push(id);
+      else problems.push(`unreadable blocker "${token}" (use ticket numbers, e.g. 03)`);
+    }
+  }
   const parsed = { exclusive: [], 'shared-regenerate': [], guarded: [] };
   for (const part of (claims ?? '').split(';')) {
     const m = part.trim().match(/^(exclusive|shared-regenerate|guarded):\s*(.*)$/);
@@ -456,8 +480,17 @@ function main(argv) {
     console.log(setRegistry(repo, rest[0], rest[1]));
     return 0;
   }
-  if (command === 'init' && rest.length === 2) {
-    console.log(init(repo, rest[0], rest[1]));
+  if (command === 'init' && rest.length >= 2) {
+    const options = {};
+    for (let i = 2; i < rest.length; i += 2) {
+      if (!['--agent', '--harness'].includes(rest[i]) || !rest[i + 1]) throw new UsageError(`init takes --agent <id> and --harness <name>, got ${rest[i]}`);
+      options[rest[i].slice(2)] = rest[i + 1];
+    }
+    console.log(init(repo, rest[0], rest[1], options));
+    return 0;
+  }
+  if (command === 'resume' && rest.length === 1) {
+    console.log(resume(repo, rest[0]));
     return 0;
   }
   if (command === 'next' && rest.length === 1) {
@@ -496,7 +529,7 @@ function main(argv) {
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }
-  console.error('usage: goal.mjs [--repo <path>] control | slug <objective> [--new] | init <slug> <objective> | next <slug> | stop <slug> <reason> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
+  console.error('usage: goal.mjs [--repo <path>] control | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] | next <slug> | stop <slug> <reason> | resume <slug> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
   return 2;
 }
 

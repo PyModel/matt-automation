@@ -11,6 +11,12 @@ metadata:
 
 Drive one **objective** from question to reviewed commits in a single run, on any harness that speaks Agent Skills. The objective is the argument; if empty, take it from the last user message. `--gc` and `--stop <slug>` are maintenance verbs (BOOTSTRAP.md § Kill switch and GC).
 
+**Every invocation starts the same way**, first run or fiftieth loop tick (`ROOT` is § Loading skills):
+
+1. `node ROOT/scripts/goal.mjs slug "<objective>"` names the run.
+2. `node ROOT/scripts/goal.mjs next <slug>` says where it stands: `stop` → report the reason and end; `done` → reply "done" and end; `malformed` → repair `todo.md` from the events and ask again; otherwise it names the stage and the phase file.
+3. Load that phase file and continue from that stage (LEDGER.md § Re-entry protocol when it is not `00`).
+
 This file is an index. Each phase has one file; load a phase file **only when entering that phase**, and nothing else from this folder until then:
 
 | Phase | Stages | File | Load when |
@@ -25,7 +31,7 @@ Always-on references, pointed at from the phase files: [CONTROL.md](CONTROL.md) 
 ## Rules that hold in every phase
 
 - **Autonomous.** The user is not in the loop from invocation to final report. Never call an ask-the-user tool, never end a turn with a question, never wait. Every question any sub-skill would put to a human goes to `/kun` per KUN.md. Actions that cannot be undone and were not named in the objective (force-push, deleting data, pushing to a remote, spending money, modifying guarded paths without explicit grant) and hard blockers (missing credentials, a tool failing twice) are recorded as **blockers**, not asked; independent work continues.
-- **Ledger.** All run state lives in the control plane (CONTROL.md), committed with `goal.mjs commit` after every write. Read `ledger.md` NOW before every stage; write NOW, an event, and tick the stage's `todo.md` line after it; log every decision in `log.md`. On any entry that is not the first, run the LEDGER.md re-entry protocol: `goal.mjs next <slug>` names the stage to resume.
+- **Ledger.** All run state lives in the control plane (CONTROL.md), committed with `goal.mjs commit` after every write. Read `ledger.md` NOW before every stage; write NOW, an event, and tick the stage's `todo.md` line after it; log every decision in `log.md`. Every entry begins with `goal.mjs next` (above).
 - **Budgets.** PIPELINE.md § Budgets caps concurrent subagents, total agents, tokens per ticket, and wall-clock. Exceeding one is a blocker: write the ledger and, at the next boundary, `node ROOT/scripts/goal.mjs stop <slug> "budget: <which>"`. Every subagent brief carries "spawn no agents" unless it is the orchestrator, `code-review`, or `research`'s single background agent.
 - **Kill switch.** `runs/<slug>/STOP` in the control plane halts dispatch at the next boundary, and `goal.mjs next` reports `stop`, which ends a loop. Every halt, the user's or the run's own (a failed wiring check, kun unreachable, a budget, a bug that will not reproduce), goes through `node ROOT/scripts/goal.mjs stop <slug> "<reason>"`; the orchestrator checks it before every stage and dispatch, every implementer before every slice.
 - **Redaction.** Every command output written to a ledger, status, bug, or notes file has secrets replaced with `<REDACTED>` first (tokens, keys, passwords, auth headers, connection strings with credentials); loops are built against env vars so the value never appears.
@@ -51,7 +57,7 @@ This skill lives in the matt-automations repo, which vendors Matt Pocock's skill
 - `/to-bug <symptom | failing command | issue>` is this pipeline with the route pinned to `diagnosing-bugs` and the bug fast path armed (PLAN.md § Bug fast path). `/to-new <thing to create>` is this pipeline for a greenfield project, package, service, or skill, with the repo and scaffold created first. Both live in sibling folders and override only what their SKILL.md lists.
 - Under a loop (`/loop /to-goal <objective>`, or any harness's recurring runner), each tick asks `node ROOT/scripts/goal.mjs next <slug>` where to resume and stops on `done` or `stop` (PIPELINE.md § Under a loop).
 - Several objectives at once: one session per objective; worktrees and the per-feature local tracker keep them apart.
-- `/to-goal --stop [slug]` writes `STOP`; `/to-goal --gc` reports candidate abandoned worktrees (and `--gc --delete-clean` removes clean, reachable ones); `/to-goal --dry-run <objective>` runs stages 0–0d and the 6b gates on a fixture without dispatching implementers.
+- `/to-goal --stop [slug]` writes `STOP` (`node ROOT/scripts/goal.mjs stop`); after fixing a stop's cause (a missing skill, kun unreachable, a budget), `node ROOT/scripts/goal.mjs resume <slug>` and invoke again; `/to-goal --gc` reports candidate abandoned worktrees (and `--gc --delete-clean` removes clean, reachable ones); `/to-goal --dry-run <objective>` runs stages 0–0d and the 6b gates on a fixture without dispatching implementers.
 - Factory history: `git log goal/control`; live board: `cat .worktrees/control/runs/<slug>/todo.md`.
 - To overturn a decision: edit it in `log.md`, delete the stage artifacts after it, re-run.
 

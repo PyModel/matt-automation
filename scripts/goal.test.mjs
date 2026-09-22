@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, init, next, stop, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, withLock, commit, controlDir } from './goal.mjs';
+import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, withLock, commit, controlDir } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -289,4 +289,42 @@ test('take on a tracker that fails the claims gate exits 1', () => {
   write(path.join(issues, '01-a.md'), ticket('ready-for-agent', 'None', 'exclusive: src/'));
   write(path.join(issues, '02-b.md'), ticket('ready-for-agent', 'None', 'exclusive: src/b.ts'));
   assert.equal(spawnSync(process.execPath, [GOAL, '--repo', repo, 'take', 'f', '2']).status, 1);
+});
+
+test('a stop before init can be resumed: resume → init → next starts at 00', () => {
+  const { repo, control } = repoWithControl();
+  stop(repo, 'x', 'defensive-design not installed');
+  assert.equal(next(control, 'x').stop, true);
+  resume(repo, 'x');
+  assert.equal(next(control, 'x').stage, '00');
+  init(repo, 'x', 'X');
+  assert.equal(next(control, 'x').stage, '00');
+  assert.equal(git(control, 'status', '--porcelain'), '');
+});
+
+test('resume after init restores the registry status the stop replaced', () => {
+  const { repo, control } = repoWithControl();
+  init(repo, 'x', 'X');
+  setRegistry(repo, 'x', 'building');
+  stop(repo, 'x', 'budget: wall-clock');
+  resume(repo, 'x');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'))[0].status, 'building');
+  assert.throws(() => resume(repo, 'x'), /not stopped/);
+});
+
+test('an unreadable blocker makes the ticket malformed instead of dropping the edge', () => {
+  const { control } = repoWithControl();
+  const issues = path.join(control, 'tracker/f/issues');
+  write(path.join(issues, '01-a.md'), ticket('ready-for-agent', 't03', 'exclusive: a.ts'));
+  const result = frontier(control, 'f');
+  assert.match(result.malformed[0].problems.join(' '), /t03/);
+  assert.deepEqual(result.frontier, []);
+});
+
+test('init records the agent and harness it is given', () => {
+  const { repo, control } = repoWithControl();
+  init(repo, 'x', 'X', { agent: 'session-42', harness: 'codex' });
+  const [entry] = JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'));
+  assert.equal(entry.agent, 'session-42');
+  assert.equal(entry.harness, 'codex');
 });

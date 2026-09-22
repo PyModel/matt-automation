@@ -16,7 +16,7 @@ Done when the control plane exists, the check passed, and ask-matt is read.
 
 ## 0. Register
 
-Check `runs.json` for a running objective that overlaps this one by ≥ 80 % of tokens (refuse and report unless `--force`). Then `node ROOT/scripts/goal.mjs init <slug> "<objective>"` registers the run with the next `run_id` and creates and commits `runs/<slug>/` with `ledger.md`, `todo.md` (every stage line, unticked, in the grammar `goal.mjs next` parses), `log.md`, and `bugs.md`. Write `run_id` and the check's `pin:` into NOW; tick `00` and `0`. Then:
+Check `runs.json` for a running objective that overlaps this one by ≥ 80 % of tokens (refuse and report unless `--force`). Then `node ROOT/scripts/goal.mjs init <slug> "<objective>" --agent <this session's id> --harness <harness name>` registers the run with the next `run_id` and creates and commits `runs/<slug>/` with `ledger.md`, `todo.md` (every stage line, unticked, in the grammar `goal.mjs next` parses), `log.md`, and `bugs.md`. Write `run_id` and the check's `pin:` into NOW; tick `00` and `0`. Then:
 
 1. If the user's checkout has uncommitted changes (`git status --porcelain` non-empty), write `dirty-checkout: yes (N files)` into NOW: the run builds from the base commit and will not see them; the report repeats it.
 2. `--gc` candidate sweep (report-only by default; § Kill switch and GC below).

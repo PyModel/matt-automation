@@ -51,7 +51,7 @@ Rules:
 - `git stash` is shared across worktrees: never stash; commit WIP on the ticket branch instead.
 - Run state and the tracker live in the control plane (CONTROL.md), never in run worktrees, so run branches carry only code.
 - Dependency installs, build caches, and `.env` files are per worktree: the ticket subagent runs the project's install step in its own worktree before the first test.
-- Tracker state is shared through the control plane: it is how concurrent runs see each other's frontier. Read the frontier and flip a ticket under the `frontier-<feature>` lock.
+- Tracker state is shared through the control plane: it is how concurrent runs see each other's frontier. Take tickets only with `goal.mjs take` (CONTROL.md § Locks).
 
 ## Setup defaults (stage 0b)
 
@@ -108,7 +108,7 @@ Point every downstream step at a **full path or full reference** (`.worktrees/co
 - **Spec + reconcile**: every to-spec template section filled; user stories scaled to actual decisions (avoiding manufactured scope); no file paths or code in Implementation Decisions; the reconciliation gate's list is empty.
 - **Tickets + claims**: one file per ticket; each has a demo path, tier, claims, "Blocked by"; acceptance criteria for new behavior confirmed red at base (invariants remain green); no cycles; no two `ready` tickets share a claim; `ready-for-agent` stripped from the parent spec; ticket table in `todo.md`.
 - **Isolate**: run worktree exists on `goal/<slug>`; `.worktrees/` excluded; `ledger.md`, `todo.md`, `log.md` exist and are committed with the base commit recorded.
-- **Every stage**: `bugs.md` has no entry without an action (commit, ticket id, or blocker); NOW rewritten, an event appended, `todo.md` box ticked, all committed on the run branch before the next stage starts.
+- **Every stage**: `bugs.md` has no entry without an action (commit, ticket id, or blocker); NOW rewritten, an event appended, `todo.md` box ticked, all committed to the control plane before the next stage starts.
 - **Build**: every merged ticket recorded as a range on the run branch; per-test comparison against baseline passes; no `TODO`/`FIXME`/`HACK`/skipped test introduced in the diff (`git diff -U0 <review_base>...HEAD | grep '^+' | grep -v '^+++' | grep -nE 'TODO|FIXME|HACK|\.skip\('` is empty); (GitHub only) draft PR open closing spec and tickets only if push is explicitly authorized; every ticket branch merged fast-forward into the run branch and its worktree removed; per ticket a defensive-design evidence state per control; per slice a red test preceded the code (visible `tdd` calls in the subagent trace); every ticket's boxes ticked and the ticket closed; typecheck, lint, full suite output captured per ticket; one commit or more per ticket on the current branch.
 - **Final review**: ran in a fresh review subagent against `review_base`; cited findings fixed by one fix subagent, independently verified against the deliverable snapshot, and committed; suite no worse than baseline; uncited leads listed in the report.
 - **Hand back**: only the user's checkout, the persistent `.worktrees/control`, the run worktree, and active peer run worktrees remain in `git worktree list`; if an authorized PR exists it is marked ready for review.
@@ -126,6 +126,6 @@ One of the ledger files; layout and the rest of the flight records are in LEDGER
 
 Ticket completions log as `- [implement] <ticket path> done @ <commit>`.
 
-## Under /loop
+## Under a loop
 
-`/loop /to-goal <objective>` re-enters this skill each tick. On re-entry, run the LEDGER.md re-entry protocol (NOW → todo → events → verify against git and status files) and resume at the first stage whose completion criterion is unmet. A run whose final report has been written is finished: reply "done" and stop the loop.
+Any recurring runner works: Claude Code's `/loop /to-goal <objective>`, a cron or CI job, or a script that re-invokes the agent. Each tick runs the LEDGER.md re-entry protocol, which starts with `goal.mjs next <slug>`: a deterministic answer from the files, so every tick resumes at the same place whatever model or harness runs it. `done` or `stop` ends the loop.

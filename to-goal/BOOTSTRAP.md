@@ -6,9 +6,9 @@ Read CONTROL.md, then PIPELINE.md § Isolation and § Setup defaults.
 
 00. **Skill wiring.** Run `node ROOT/scripts/matt.mjs check` (SKILL.md § Loading skills). Nonzero exit: report the printed errors and end; nothing has been written yet. Otherwise carry the printed `pin:` into NOW at step 4.
 0. **Repo state classification.** Classify repository state before proceeding: absent (fail or initialize if authorized), unborn (git init with no commits: create an initial empty commit `git commit --allow-empty -m "Initial commit"` before worktree creation), empty-but-committed, or established.
-1. Under the `exclude` lock add `.worktrees/` to `.git/info/exclude` if absent.
-2. Under the `control` lock: if `.worktrees/control/` is missing, create it (CONTROL.md § Rules). If a remote tracks `goal/control`, fast-forward it.
-3. Under the `registry` lock: derive the slug, check `runs.json` for a duplicate or overlapping running objective (refuse and report unless `--force`), append this run with the next `run_id`, `status: bootstrapping`, the harness name and this agent's id or pid; commit.
+1. With `goal.mjs with-lock exclude --` add `.worktrees/` to `.git/info/exclude` if absent.
+2. With `goal.mjs with-lock control --`: if `.worktrees/control/` is missing, create it (CONTROL.md § Rules). If a remote tracks `goal/control`, fast-forward it.
+3. Inside one `goal.mjs with-lock registry --` transaction: derive the slug, check `runs.json` for a duplicate or overlapping running objective (refuse and report unless `--force`), append this run with the next `run_id`, `status: bootstrapping`, the harness name and this agent's id or pid; commit.
 4. Create `runs/<slug>/` with `ledger.md` (NOW: stage 0, run_id), `todo.md` (all stages unchecked), `log.md`, `bugs.md`; commit `[<slug>] start`.
 5. If the user's checkout has uncommitted changes (`git status --porcelain` non-empty), write `dirty-checkout: yes (N files)` into NOW: the run builds from the base commit and will not see them; the report repeats it.
 6. `--gc` candidate sweep (report-only by default; § Kill switch and GC below).
@@ -24,7 +24,7 @@ KUN.md § Cache once, into `kun/<sha>/` in the control plane (shared by all runs
 The engineering skills need `docs/agents/issue-tracker.md`, `docs/agents/domain.md`, `docs/agents/triage-labels.md`, and an `## Agent skills` block in `CLAUDE.md`/`AGENTS.md`.
 
 - Present on the base commit: log "setup present", skip.
-- Otherwise, under the `bootstrap` lock: resolve the current intended source ref (default branch head `main` / remote default head). If `goal/bootstrap` exists, rebase/refresh it onto the current source ref so it does not freeze on an outdated base commit; if not, create it from base in a temporary worktree, load `setup-matt-pocock-skills` by path and run it non-interactively with PIPELINE.md § Setup defaults (local tracker whose files live in the control plane: the tracker doc says so explicitly), commit `Add agent-skills config`, remove the temporary worktree. Release the lock. The report tells the user to fast-forward the default branch to `goal/bootstrap` once.
+- Otherwise, inside one `goal.mjs with-lock bootstrap --` transaction: resolve the current intended source ref (default branch head `main` / remote default head). If `goal/bootstrap` exists, rebase/refresh it onto the current source ref so it does not freeze on an outdated base commit; if not, create it from base in a temporary worktree, load `setup-matt-pocock-skills` by path and run it non-interactively with PIPELINE.md § Setup defaults (local tracker whose files live in the control plane: the tracker doc says so explicitly), commit `Add agent-skills config`, remove the temporary worktree. Release the lock. The report tells the user to fast-forward the default branch to `goal/bootstrap` once.
 
 Done when the three files and the block exist on `goal/bootstrap` (or base).
 

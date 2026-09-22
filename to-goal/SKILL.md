@@ -1,10 +1,10 @@
 ---
 name: to-goal
-description: "Autonomous software-factory pipeline over the mattpocock/skills flow map plus research-stack, defensive-design, and zero-tech-debt: route, on-ramp, conditional research, self-answered grilling, to-spec, to-tickets, implement-spec task-graph build in parallel worktrees, code-review, retro, with no pauses. Use on /to-goal <objective> or $to-goal, when the user wants a feature or skill delivered fully autonomously, or under a loop."
+description: "Autonomous driver for Matt Pocock's skills: routes an objective through ask-matt, then runs on-ramp, conditional research, self-answered grilling, to-spec, to-tickets, an implement-spec task graph in parallel worktrees, code-review, and retro with no pauses, on any harness and model. Use on /to-goal <objective> or $to-goal, when the user wants a feature or skill delivered fully autonomously, or under a loop."
 user-invocable: true
 argument-hint: "<objective> [--force] [budget: …]   |   --gc   |   --stop [slug]   |   --dry-run <objective>"
 metadata:
-  short-description: "route → on-ramp → research (if needed) → grill → to-spec → to-tickets → build → review → retro, autonomously, on any harness."
+  short-description: "ask-matt route → on-ramp → research (if needed) → grill → to-spec → to-tickets → build → review → retro, autonomously."
 ---
 
 # to-goal
@@ -25,7 +25,7 @@ Always-on references, pointed at from the phase files: [CONTROL.md](CONTROL.md) 
 ## Rules that hold in every phase
 
 - **Autonomous.** The user is not in the loop from invocation to final report. Never call an ask-the-user tool, never end a turn with a question, never wait. Every question any sub-skill would put to a human goes to `/kun` per KUN.md. Actions that cannot be undone and were not named in the objective (force-push, deleting data, pushing to a remote, spending money, modifying guarded paths without explicit grant) and hard blockers (missing credentials, a tool failing twice) are recorded as **blockers**, not asked; independent work continues.
-- **Ledger.** All run state lives in the control plane (CONTROL.md), committed after every write. Read `ledger.md` NOW before every stage; write NOW, an event, and `todo.md` after it; log every decision in `log.md`; commit on the run branch. On any entry that is not the first, run the LEDGER.md re-entry protocol and resume at the first unmet criterion in PIPELINE.md.
+- **Ledger.** All run state lives in the control plane (CONTROL.md), committed with `goal.mjs commit` after every write. Read `ledger.md` NOW before every stage; write NOW, an event, and tick the stage's `todo.md` line after it; log every decision in `log.md`. On any entry that is not the first, run the LEDGER.md re-entry protocol: `goal.mjs next <slug>` names the stage to resume.
 - **Budgets.** PIPELINE.md § Budgets caps concurrent subagents, total agents, tokens per ticket, and wall-clock. Exceeding one is a blocker: write the ledger and halt cleanly at the next boundary. Every subagent brief carries "spawn no agents" unless it is the orchestrator, `code-review`, or `research`'s single background agent.
 - **Kill switch.** `runs/<slug>/STOP` in the control plane halts dispatch at the next boundary; the orchestrator checks it before every stage and dispatch, every implementer before every slice.
 - **Redaction.** Every command output written to a ledger, status, bug, or notes file has secrets replaced with `<REDACTED>` first (tokens, keys, passwords, auth headers, connection strings with credentials); loops are built against env vars so the value never appears.
@@ -49,7 +49,7 @@ This skill lives in the matt-automations repo, which vendors Matt Pocock's skill
 
 - `/to-goal <objective>` from the repo root, then walk away. One run = one branch `goal/<slug>` to merge when you are back.
 - `/to-bug <symptom | failing command | issue>` is this pipeline with the route pinned to `diagnosing-bugs` and the bug fast path armed (PLAN.md § Bug fast path). `/to-new <thing to create>` is this pipeline for a greenfield project, package, service, or skill, with the repo and scaffold created first. Both live in sibling folders and override only what their SKILL.md lists.
-- `/loop /to-goal <objective>` re-enters each tick via the re-entry protocol and stops itself when the final report exists.
+- Under a loop (`/loop /to-goal <objective>`, or any harness's recurring runner), each tick asks `node ROOT/scripts/goal.mjs next <slug>` where to resume and stops on `done` or `stop` (PIPELINE.md § Under a loop).
 - Several objectives at once: one session per objective; worktrees and the per-feature local tracker keep them apart.
 - `/to-goal --stop [slug]` writes `STOP`; `/to-goal --gc` reports candidate abandoned worktrees (and `--gc --delete-clean` removes clean, reachable ones); `/to-goal --dry-run <objective>` runs stages 0–0d and the 6b gates on a fixture without dispatching implementers.
 - Factory history: `git log goal/control`; live board: `cat .worktrees/control/runs/<slug>/todo.md`.

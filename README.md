@@ -6,10 +6,11 @@ Autonomous drivers for [Matt Pocock's skills](https://github.com/mattpocock/skil
 |---|---|
 | `to-goal/` | The pipeline: route (ask-matt) → on-ramp → research → grill → spec → tickets → build → review → retro. |
 | `to-bug/`, `to-new/` | `to-goal` with the route pinned to a bug fix or a greenfield target. |
-| `to-orc/` | A separate delegation-only orchestrator that dispatches pi workers. It does not use the Matt skills. |
+| `to-orc/` | A separate delegation-only orchestrator: pi workers on any model the run names. It does not use the Matt skills. |
 | `vendor/mattpocock-skills/` | Upstream Matt skills as a git submodule, pinned to one commit. |
 | `matt/<name>` | Committed symlinks into the submodule: the only place the automations load Matt skills from. |
 | `scripts/matt.mjs` | Resolves skills, regenerates `matt/`, and checks the wiring. |
+| `scripts/goal.mjs` | The mechanical half of a run: where it resumes, the ticket frontier and claims, control-plane locks and commits. |
 
 ## Setup
 
@@ -18,7 +19,7 @@ git clone --recurse-submodules <this repo>   # or: git submodule update --init
 node scripts/matt.mjs check                  # must print "ok"
 ```
 
-Install the automations by symlinking `to-goal`, `to-bug`, and `to-new` into `~/.agents/skills/` (and `~/.claude/skills/`). The Matt skills do not need to be installed for the automations to work: `to-goal` loads them from `matt/` by path.
+Install the automations by symlinking `to-goal`, `to-bug`, `to-new` (and `to-orc`) into each harness's skills directory (for example `~/.agents/skills/` and `~/.claude/skills/`). Nothing is tied to one harness or model. The Matt skills do not need to be installed for the automations to work: `to-goal` loads them from `matt/` by path.
 
 ## Commands
 
@@ -26,7 +27,9 @@ Install the automations by symlinking `to-goal`, `to-bug`, and `to-new` into `~/
 node scripts/matt.mjs resolve ask-matt   # SKILL.md path the automations load
 node scripts/matt.mjs check              # nonzero on any wiring drift; prints pin + installed-copy drift
 node scripts/matt.mjs link               # regenerate matt/ after the pin moves
-node --test scripts/matt.test.mjs
+node scripts/goal.mjs next <slug>        # where a /to-goal run resumes (what every loop tick asks)
+node scripts/goal.mjs frontier <feature> # ticket grammar, frontier, overlapping claims
+npm test                                 # unit tests, to-orc selftest, adversarial audit
 ```
 
 ## Bumping the Matt pin

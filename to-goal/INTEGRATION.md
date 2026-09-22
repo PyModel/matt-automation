@@ -8,7 +8,7 @@ This table is checked: `node ROOT/scripts/matt.mjs check` fails when a vendored 
 
 | Skill | Stage in /to-goal | Touchpoint(s) the skill has | Autonomous substitute |
 |---|---|---|---|
-| ask-matt | 1 | Recommends and stops; user types the next skill | The router. Stage 1 reads it first, takes the route it names for the objective, then applies FLOWS.md § Autonomy overlay. Any load-bearing claim about a skill is checked against that skill's file. |
+| ask-matt | 1 | Recommends and stops; user types the next skill | The router. Stage 1 reads it first, takes the route it names for the objective, then applies FLOWS.md § Routing tree. Any load-bearing claim about a skill is checked against that skill's file. |
 | grill-with-docs | 4 | Delegates to grilling + domain-modeling | Both loaded; `/to-goal` answers the rounds (see grilling). Verify `CONTEXT.md` changed on disk. |
 | to-spec | 5 | "Check with the user that these seams match" | Seams were fixed in stage 4; carried into Testing Decisions; logged `(source: findings)`. Publish to the local tracker, `ready-for-agent`. |
 | to-tickets | 6 | "Quiz the user … iterate until the user approves" | Self-quiz with the three questions (granularity, edges, merge/split) answered by kun or defaults; add a demo-path line; check criteria red at base; publish blockers-first (files numbered in dependency order; `gh --parent --blocked-by` only on GitHub). |
@@ -62,7 +62,7 @@ This table is checked: `node ROOT/scripts/matt.mjs check` fails when a vendored 
 | retro | 10 | "Present these candidates to the user" | Written to `.worktrees/control/runs/<slug>/retro.md`; nothing applied. |
 | pr | 9 (GitHub tracker with push explicitly authorized only) | None; a PR-body template | The draft PR body from implement-spec step 3 and the ready-for-review body in stage 9 follow its template. Never used on the local tracker. |
 | claude-handoff | not used | Hands the conversation to a fresh background agent | The ledger plus the re-entry protocol already make any fresh context resumable; a handoff agent would be a second orchestrator on the same run. |
-| loop-me | not used | Grills the user to specify their own recurring workflows | It designs loops with a human; `/loop /to-goal` is the loop. |
+| loop-me | not used | Grills the user to specify their own recurring workflows | It designs loops with a human; a recurring `/to-goal` driven by `goal.mjs next` is the loop. |
 | setup-ts-deep-modules | not used by default | User-invoked TypeScript setup (dependency-cruiser) | Only when the objective names it; then it is the objective, loaded by path, with its questions answered by kun. |
 | writing-beats | not used | Prose-writing workflow | Not software delivery. |
 | writing-fragments | not used | Prose-writing workflow | Not software delivery. |

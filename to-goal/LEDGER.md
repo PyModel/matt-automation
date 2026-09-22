@@ -56,7 +56,7 @@ Rules:
 - **NOW is rewritten, Events are appended.** NOW is what a fresh context reads first; Events are how it verifies NOW.
 - One event per stage transition, subagent dispatch, subagent return, merge, blocker, bug noticed (`[bug]`), and compaction. Time-stamped, stage-tagged, one line.
 - Never paste artifacts into the ledger: point at files, commits, ticket ids.
-- The ledger is committed on `goal/control` under the `control` lock after every write, so every run's history is one `git log`.
+- The ledger is committed with `goal.mjs commit` after every write, so every run's history is one `git log goal/control`.
 
 ## todo.md format
 
@@ -64,8 +64,25 @@ Rules:
 # to-goal todo: <objective>
 
 ## Stages
-- [x] 0 isolate  - [x] 0b setup  - [x] 1 route (feature)  - [ ] 2 on-ramp (skipped: plain feature)  - [ ] 3 research (skipped: no external unknown)
-- [x] 4 grill  - [x] 5 spec  - [x] 6 tickets  - [ ] 7 build  - [ ] 8 review  - [ ] 9 hand back  - [ ] 10 retro
+- [x] 00 skill wiring
+- [x] 0 control plane
+- [x] 0a cache kun
+- [x] 0b setup
+- [x] 0c isolate
+- [x] 0d environment contract
+- [x] 1 route (feature)
+- [x] 2 on-ramp (skipped: plain feature)
+- [x] 3 research (skipped: no external unknown)
+- [x] 4 grill
+- [x] 4b challenge
+- [x] 5 spec
+- [x] 5b reconcile
+- [x] 6 tickets
+- [x] 6b claims gate
+- [ ] 7 build
+- [ ] 8 review
+- [ ] 9 hand back
+- [ ] 10 retro
 
 ## Tickets (stage 7)
 | NN | title | blocked by | status | worktree | last commit |
@@ -79,14 +96,17 @@ Rules:
 
 Ticket statuses: `blocked` → `ready` → `in-flight` → `returned` → `merged`, or `stuck` (reason: heartbeat / no progress / failing test ×5 / too big / claims breach ×2, named in NOW). Prerequisite stuck marks dependent tickets `blocked: prerequisite <id> stuck`.
 
+One line per stage, every stage present, in this order; a skipped stage is ticked with `(skipped: <reason>)`. `goal.mjs next` parses exactly this grammar and reports a todo.md missing any line as malformed.
+
 ## Re-entry protocol
 
 On every entry into the run that is not the first (a loop tick, a resumed or compacted session, a subagent that must orient):
 
-1. Read `ledger.md` NOW, then `todo.md`, then the last 20 events.
-2. Verify NOW against the world: `git worktree list`, `git log -1` on the run branch, each `tickets/<NN>.status.md` for in-flight tickets, the tracker's ticket statuses. A ticket NOW calls active is **stuck** per BUILD.md § Stuck detection (stale heartbeat with dead agent, frozen slice counter without active command, repeated non-quarantined failing test, slice or time cap, agent gone): confirm process termination/revoke lease and re-dispatch once from its status file; never twice.
-3. Resume at the first stage whose completion criterion (PIPELINE.md) is unmet. Never redo a stage whose artifacts exist and verify; never trust NOW over the artifacts.
-4. Append a `[re-entry]` event saying what was verified and where the run resumed.
+1. Run `node ROOT/scripts/goal.mjs next <slug>`. `stop` → end with the report; `done` → reply "done" and end (under a loop, stop the loop); `malformed` → rewrite `todo.md` from the events, then run it again. Otherwise it names the stage and the one phase file to load. It trusts the files over the checkboxes: a ticked stage whose artifact is missing comes back as the stage to redo.
+2. Read `ledger.md` NOW and the last 20 events.
+3. Verify NOW against the world: `git worktree list`, `git log -1` on the run branch, each `tickets/<NN>.status.md` for in-flight tickets, the tracker's ticket statuses. A ticket NOW calls active is **stuck** per BUILD.md § Stuck detection (stale heartbeat with dead agent, frozen slice counter without active command, repeated non-quarantined failing test, slice or time cap, agent gone): confirm process termination/revoke lease and re-dispatch once from its status file; never twice.
+4. Resume at the stage `next` named, checking its completion criterion (PIPELINE.md). Never redo a stage whose artifacts exist and verify; never trust NOW over the artifacts.
+5. Append a `[re-entry]` event saying what was verified and where the run resumed.
 
 ## Compaction and context pressure
 
@@ -96,4 +116,4 @@ On every entry into the run that is not the first (a loop tick, a resumed or com
 
 ## Subagent contract
 
-Every subagent brief ends with: "Spawn no agents; load only the skills named in your brief, by path (SKILL.md § Loading skills). Before you start, read `ledger.md` NOW and your `tickets/<NN>.status.md` if it exists. After every slice and before you return, update `tickets/<NN>.status.md` (slice, commit, suite, evidence states, blockers). Append decisions you make to `log.md`. Any bug you notice in any file goes into `bugs.md` and is fixed or ticketed now, never deferred (SKILL.md § Bugs found in flight). Return only: commit hash, suite result, cited review findings, blockers."
+Every subagent brief ends with: "Spawn no agents; load only the skills named in your brief, by path (SKILL.md § Loading skills). Before you start, read `ledger.md` NOW and your `tickets/<NN>.status.md` if it exists. After every slice and before you return, update `tickets/<NN>.status.md` (slice, commit, suite, evidence states, blockers). Append decisions you make to `log.md`. Any bug you notice in any file goes into `bugs.md` and is fixed or ticketed now, never deferred (BUILD.md § Bugs found in flight). Return only: commit hash, suite result, cited review findings, blockers."

@@ -15,7 +15,7 @@ Set in NOW at stage 0 and enforced in BUILD.md. Defaults, overridable by the obj
 | re-dispatches per ticket | 1 | ticket `stuck` |
 | bug tickets added to the frontier by this run | 3 | further bugs stay ticketed for the next run |
 
-Every brief except the orchestrator's, `code-review`'s two sub-agents, and `research`'s single agent carries: "Spawn no agents; call only the skill tool for the skills named in your brief."
+Every brief except the orchestrator's, `code-review`'s two sub-agents, and `research`'s single agent carries: "Spawn no agents; load only the skills named in your brief, by path (SKILL.md § Loading skills)."
 
 ## Isolation (stage 0 and stage 7)
 
@@ -99,7 +99,7 @@ Point every downstream step at a **full path or full reference** (`.worktrees/co
 
 - **Cache kun**: `kun/<sha>/` present in the control plane; SHA in NOW.
 - **Setup**: `docs/agents/issue-tracker.md`, `docs/agents/domain.md`, `docs/agents/triage-labels.md` and the `## Agent skills` block exist in the run branch's history via `goal/bootstrap` (or were already on base).
-- **Control plane + registry**: `goal/control` worktree exists; registry entry with `run_id`; no duplicate running objective.
+- **Control plane + registry**: `matt.mjs check` exited 0 and its pin is in NOW; `goal/control` worktree exists; registry entry with `run_id`; no duplicate running objective.
 - **Environment contract**: NOW carries `commands:`, `packages:` (if monorepo), `per-worktree:` (run-scoped), `max_concurrent_tickets`, `baseline:` (per-test set, 3 runs), `quarantine:`, `nested:`, `review_base:`.
 - **Route**: classification logged (`bug | issue | refactor | upkeep | fog | greenfield | feature`); flow named; adopted-patterns list, each line `pattern, from /<skill>`; research need logged (`none | targeted | up-front`); `findings.md` exists with repo facts, requirements R1…, open questions Q1….
 - **On-ramp**: the chosen on-ramp's criteria in FLOWS.md § On-ramp completion criteria, or `skipped: plain feature` logged; for route `bug`, the fast-path decision logged with its reason.

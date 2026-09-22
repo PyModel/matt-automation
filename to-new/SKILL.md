@@ -9,7 +9,7 @@ metadata:
 
 # to-new
 
-`/to-new` is `/to-goal` for a target that does not exist yet. Let `SKILLS` be the directory containing this folder. Read `SKILLS/to-goal/SKILL.md` and follow it verbatim, phase files included, with the overrides below. `/to-goal` itself switches to these overrides when stage 1 classifies an objective `greenfield`.
+`/to-new` is `/to-goal` for a target that does not exist yet. Let `ROOT` be the parent of this folder's real path (`realpath`, as in to-goal SKILL.md § Loading skills). Read `ROOT/to-goal/SKILL.md` and follow it verbatim, phase files included, with the overrides below. `/to-goal` itself switches to these overrides when stage 1 classifies an objective `greenfield`.
 
 ## What counts as greenfield
 

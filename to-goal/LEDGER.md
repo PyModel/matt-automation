@@ -31,7 +31,7 @@ The tracker's ticket files under `.worktrees/control/tracker/<feature-slug>/issu
 - stage: 7 build
 - next: dispatch t04 (unblocked by t02 @ a1b2c3d)
 - base: <base commit>   review_base: <immutable sha>   bootstrap: <sha or none>   run-branch: goal/<slug>
-- kun: <upstream sha> (cached)   run_id: 3   nested: yes   dirty-checkout: no
+- kun: <upstream sha> (cached)   matt-pin: <vendor sha from matt.mjs check>   run_id: 3   nested: yes   dirty-checkout: no
 - quarantine: 2 tests (see quarantine.json)
 - commands: install=`pnpm i` typecheck=`pnpm tsc` lint=`pnpm lint` test1=`pnpm vitest run <file>` suite=`pnpm test`
 - per-worktree: PORT=3000+NN, DATABASE_URL suffix _tNN, copy .env with suffix
@@ -96,4 +96,4 @@ On every entry into the run that is not the first (a loop tick, a resumed or com
 
 ## Subagent contract
 
-Every subagent brief ends with: "Spawn no agents; call only the skill tool for the skills named in your brief. Before you start, read `ledger.md` NOW and your `tickets/<NN>.status.md` if it exists. After every slice and before you return, update `tickets/<NN>.status.md` (slice, commit, suite, evidence states, blockers). Append decisions you make to `log.md`. Any bug you notice in any file goes into `bugs.md` and is fixed or ticketed now, never deferred (SKILL.md § Bugs found in flight). Return only: commit hash, suite result, cited review findings, blockers."
+Every subagent brief ends with: "Spawn no agents; load only the skills named in your brief, by path (SKILL.md § Loading skills). Before you start, read `ledger.md` NOW and your `tickets/<NN>.status.md` if it exists. After every slice and before you return, update `tickets/<NN>.status.md` (slice, commit, suite, evidence states, blockers). Append decisions you make to `log.md`. Any bug you notice in any file goes into `bugs.md` and is fixed or ticketed now, never deferred (SKILL.md § Bugs found in flight). Return only: commit hash, suite result, cited review findings, blockers."

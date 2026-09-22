@@ -9,7 +9,7 @@ metadata:
 
 # to-bug
 
-`/to-bug` is `/to-goal` with one route. Let `SKILLS` be the directory containing this folder. Read `SKILLS/to-goal/SKILL.md` and follow it verbatim, phase files included, with the overrides below. Nothing else changes: control plane, locks, registry, ledger, budgets, kill switch, redaction, no deferred actions, review, retro, final report all apply.
+`/to-bug` is `/to-goal` with one route. Let `ROOT` be the parent of this folder's real path (`realpath`, as in to-goal SKILL.md § Loading skills). Read `ROOT/to-goal/SKILL.md` and follow it verbatim, phase files included, with the overrides below. Nothing else changes: control plane, locks, registry, ledger, budgets, kill switch, redaction, no deferred actions, review, retro, final report all apply.
 
 ## Overrides
 

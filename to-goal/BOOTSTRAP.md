@@ -4,6 +4,7 @@ Read CONTROL.md, then PIPELINE.md § Isolation and § Setup defaults.
 
 ## 0. Control plane and registry
 
+00. **Skill wiring.** Run `node ROOT/scripts/matt.mjs check` (SKILL.md § Loading skills). Nonzero exit: report the printed errors and end; nothing has been written yet. Otherwise carry the printed `pin:` into NOW at step 4.
 0. **Repo state classification.** Classify repository state before proceeding: absent (fail or initialize if authorized), unborn (git init with no commits: create an initial empty commit `git commit --allow-empty -m "Initial commit"` before worktree creation), empty-but-committed, or established.
 1. Under the `exclude` lock add `.worktrees/` to `.git/info/exclude` if absent.
 2. Under the `control` lock: if `.worktrees/control/` is missing, create it (CONTROL.md § Rules). If a remote tracks `goal/control`, fast-forward it.

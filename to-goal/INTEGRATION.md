@@ -1,41 +1,78 @@
-# How each of the 25 skills is integrated into /to-goal
+# How every skill is integrated into /to-goal
 
-One row per skill on aihero.dev/skills, in site order. **Touchpoint** is where the skill expects a human; **Autonomous substitute** is what `/to-goal` does instead. Invocation: *tool* = call the harness skill tool by name; *path* = read `SKILLS/<name>/SKILL.md` and follow it.
+One row per skill, grouped the way `ask-matt` groups them. **Touchpoint** is where the skill expects a human; **Autonomous substitute** is what `/to-goal` does instead. Every skill is loaded the same way: `node ROOT/scripts/matt.mjs resolve <name>`, then read the file (SKILL.md § Loading skills).
 
-| # | Skill | Invocation | Stage in /to-goal | Touchpoint(s) the skill has | Autonomous substitute |
-|---|---|---|---|---|---|
-| 1.1 | setup-matt-pocock-skills | path | 0b | "Present findings and ask" per section; "let them edit before writing" | Answers pre-filled from PIPELINE.md § Setup defaults (local markdown by default); write directly. |
-| 1.2 | ask-matt | path | 1 | Recommends and stops; user types the next skill | `/to-goal` walks FLOWS.md routing tree, logs the route, fires the skills itself. Any load-bearing claim about a skill is checked against that skill's file. |
-| 2.1 | grill-with-docs | path | 4 | Delegates to grilling + domain-modeling | Both fired via tool; `/to-goal` answers the rounds (see 6.3). Verify `CONTEXT.md` changed on disk. |
-| 2.2 | to-spec | path | 5 | "Check with the user that these seams match" | Seams were fixed in stage 4; carried into Testing Decisions; logged `(source: findings)`. Publish to the local tracker, `ready-for-agent`. |
-| 2.3 | to-tickets | path | 6 | "Quiz the user … iterate until the user approves" | Self-quiz with the three questions (granularity, edges, merge/split) answered by kun or defaults; add a demo-path line; check criteria red at base; publish blockers-first (files numbered in dependency order; `gh --parent --blocked-by` only on GitHub). |
-| 2.4 | implement | path (in a ticket subagent) | 7 | None by design; but never closes the ticket | The implementer subagent's brief inside implement-spec. Orchestrator closes the ticket, ticks boxes; a merger subagent merges the ticket branch. |
-| 2.5 | code-review | tool | 7 (per ticket), 8 (final) | "If they didn't specify a fixed point, ask"; "ask the user where the spec is" | Fixed point always passed (previous commit / branch point); spec path always passed. Sub-agent briefs carry "do not invoke code-review or spawn agents". Commit before review. |
-| 3.1 | wayfinder | path | 2 (on-ramp) | HITL ticket types (grilling, prototype, task); "never resolve more than one ticket per session"; "stop and ask the user how they'd like to proceed" when no fog | `/to-goal` overrides HITL: grilling tickets are self-answered (6.3), prototype tickets are re-typed as grilling or research, task tickets that need a human become a `wizard` script and a blocker. Resolves every frontier ticket in the run, one fresh subagent per ticket, research tickets in parallel. Merges at stage 5 via `to-spec #<map>`. |
-| 3.2 | prototype | (not used) | skipped | Produces an artifact for a human to react to; HITL by definition | Skipped in autonomous mode. A question that "needs runnable code" is answered by a red test at the seam (tdd) or a research call; if neither settles it, log the default and continue. |
-| 3.3 | research | tool | 3 (conditional, per open Q); 2 (wayfinder research tickets); 4, 7, 8 on demand | None (AFK) | Fires only when FLOWS.md § Research need says so. Brief adds "you are already the research subagent; spawn nothing"; one narrow question per call; findings file kept in `.worktrees/control/runs/<slug>/`. |
-| 4.1 | improve-codebase-architecture | tool | 2 (on-ramp, upkeep objectives) | Opens an HTML report and asks "Which of these would you like to explore?" | Write the report to the temp dir but do not open it; take the report's **Top recommendation** as the idea; then grilling self-answered. |
-| 4.2 | diagnosing-bugs | tool | 2 (on-ramp, broken objectives; arms PLAN.md § Bug fast path); 7 (a red test that will not go green for a reason the ticket did not predict) | "Show the ranked list to the user before testing. Don't block on it" | Already AFK-safe: proceed with own ranking; HITL bash loop (way 10) becomes a blocker. Regression test at the correct seam; "no correct seam" is logged as a lead for 4.1. |
-| 4.3 | resolving-merge-conflicts | tool | 7 (ticket-branch rebase onto run branch); 0 (checkout already mid-merge) | None | As-is. Never `--abort`. |
-| 4.4 | triage | path | 2 (on-ramp, raw issues) | "Wait for direction" after recommending; "ask the maintainer" on conflicting states | Apply own recommendation; on conflicting state labels pick `needs-triage` and log. Verify the claim (reproduce) before grilling; outcome `ready-for-agent` gets an agent brief; the issue becomes the objective's parent. Only for issues `/to-goal` did not create. |
-| 4.5 | wizard | tool | 7 (human-only step), 2 (wayfinder task ticket) | "Show the user the ordered list of stages and confirm" | Skip confirmation; author from repo evidence only, never invent UI steps; `bash -n` + shellcheck; script path is a named blocker in the report. |
-| 5.1 | grill-me | path | (not used) | Stateless interview | Superseded by grill-with-docs; a run always has a working directory (the run worktree). |
-| 5.2 | handoff | path | phase boundary only | Writes a portable doc | Only when the run must move harness or directory (e.g. a ticket needs a tool this harness lacks). Otherwise subagents carry context pointers. |
-| 5.3 | to-questionnaire | path | 4 (a question only a named person can answer) | Two interview exchanges about the send | Answer the two exchanges from the decision log (recipient = repo owner unless the objective names someone); write `to-questionnaire-<slug>.md` in `.worktrees/control/runs/<slug>/`; continue with the default and list the file as a blocker. |
-| 5.4 | teach | path | (not used) | Multi-session learning workspace | Off every flow. |
-| 5.5 | wait-what | path | (not used) | Re-explains to a human | Nothing to re-explain autonomously. The final report uses `CONTEXT.md` vocabulary instead. |
-| 5.6 | writing-for-agents | tool | 4 and 7 when the deliverable is a skill, `AGENTS.md`/`CLAUDE.md`, or agent-facing doc | None (reference) | Loaded as the standards source for those files; `code-review`'s Standards axis cites it. |
-| 6.1 | codebase-design | tool | 4 (seam placement, new module shape); 7 via tdd | None (reference); `DESIGN-IT-TWICE.md` spawns parallel sub-agents | Fired in stage 4 whenever a new module or seam is proposed; run design-it-twice for any new external seam and pick by depth/locality, logged. |
-| 6.2 | domain-modeling | tool | 4; 2 (triage, wayfinder, improve-codebase-architecture) | "Offer to create an ADR" | Create the ADR when all three gates pass; otherwise skip; both logged. `CONTEXT.md` updated inline. |
-| 6.3 | grilling | tool | 4; 3 | Rounds wait for the user's answers; "do not act until the user confirms" | Rounds run in full; `/to-goal` answers each numbered question, preferring the skill's own recommended answer unless findings or codebase contradict it; frontier recomputed; done when the frontier is empty. Facts are found by sub-agents as the skill says. |
-| 6.4 | tdd | tool | 7 (every slice, in the ticket subagent) | "Confirm seams with the user" | Seams pre-agreed in stage 4 and written in the spec; brief lists them; no test at any other seam. Red first; one slice per cycle; browser tests after behaviour. |
+This table is checked: `node ROOT/scripts/matt.mjs check` fails when a vendored Matt skill has no row here, when a row names a skill that resolves nowhere, or when `ask-matt` routes to a skill that is not linked. Bumping the submodule pin is therefore a forced review of this file.
 
-## Beyond the 25
+## Main flow (ask-matt § The main flow)
 
-| Skill | Invocation | Stage in /to-goal | Touchpoint(s) | Autonomous substitute |
-|---|---|---|---|---|
-| implement-spec (in-progress) | path | 7 | "The goal is a PR"; nothing else human | Run as written; bindings in SKILL.md stage 7 add seams, tiers, tracker closing, and the worktree layout from PIPELINE.md. Draft PR only on a GitHub tracker. |
-| retro (in-progress) | path | 10 | "Present these candidates to the user" | Written to `.worktrees/control/runs/<slug>/retro.md`; nothing applied. |
-| research-stack | tool | 3 (first external need) and inside every subagent that looks outside the repo | None | Loaded on first need, not up front; route table loaded once; bounds and refunds applied per call; one context7 server only. |
-| defensive-design | tool | 4 (Design), 7 (Implement), 8 (Review) | Mode must be stated; "do not edit unless authorized" in Review | Mode passed explicitly per call; Implement authority comes from the ticket; evidence state recorded per control. Tier 3 findings that need authority the run lacks are blockers. |
-| zero-tech-debt | tool | 2 (refactor on-ramp), 6 (prefactoring tickets) | "once a deletion is approved"; "stop and recommend a targeted change" for hotfix shapes | Self-approve after the pre-flight passes, log each deletion; hotfix shapes are re-routed to diagnosing-bugs. `allowed-tools` is Claude-only frontmatter; other harnesses ignore it. |
+| Skill | Stage in /to-goal | Touchpoint(s) the skill has | Autonomous substitute |
+|---|---|---|---|
+| ask-matt | 1 | Recommends and stops; user types the next skill | The router. Stage 1 reads it first, takes the route it names for the objective, then applies FLOWS.md § Autonomy overlay. Any load-bearing claim about a skill is checked against that skill's file. |
+| grill-with-docs | 4 | Delegates to grilling + domain-modeling | Both loaded; `/to-goal` answers the rounds (see grilling). Verify `CONTEXT.md` changed on disk. |
+| to-spec | 5 | "Check with the user that these seams match" | Seams were fixed in stage 4; carried into Testing Decisions; logged `(source: findings)`. Publish to the local tracker, `ready-for-agent`. |
+| to-tickets | 6 | "Quiz the user … iterate until the user approves" | Self-quiz with the three questions (granularity, edges, merge/split) answered by kun or defaults; add a demo-path line; check criteria red at base; publish blockers-first (files numbered in dependency order; `gh --parent --blocked-by` only on GitHub). |
+| implement | 7 | None by design; but never closes the ticket | The implementer subagent's brief inside implement-spec. Orchestrator closes the ticket, ticks boxes; a merger subagent merges the ticket branch. |
+| tdd | 7 (every slice, in the ticket subagent) | "Confirm seams with the user" | Seams pre-agreed in stage 4 and written in the spec; brief lists them; no test at any other seam. Red first; one slice per cycle; browser tests after behaviour. |
+| code-review | 7 (per ticket), 8 (final) | "If they didn't specify a fixed point, ask"; "ask the user where the spec is" | Fixed point always passed (previous commit / branch point); spec path always passed. Sub-agent briefs carry "do not load code-review or spawn agents". Commit before review. Loaded by path, which also sidesteps Claude Code's built-in `/code-review` name clash. |
+| handoff | phase boundary only | Writes a portable doc | Only when the run must move harness or directory (e.g. a ticket needs a tool this harness lacks). Otherwise subagents carry context pointers. |
+| prototype | skipped | Produces an artifact for a human to react to; HITL by definition | A question that "needs runnable code" is answered by a red test at the seam (tdd) or a research call; if neither settles it, log the default and continue. |
+
+## On-ramps (ask-matt § On-ramps)
+
+| Skill | Stage in /to-goal | Touchpoint(s) the skill has | Autonomous substitute |
+|---|---|---|---|
+| triage | 2 (raw issues) | "Wait for direction" after recommending; "ask the maintainer" on conflicting states | Apply own recommendation; on conflicting state labels pick `needs-triage` and log. Verify the claim (reproduce) before grilling; outcome `ready-for-agent` gets an agent brief; the issue becomes the objective's parent. Only for issues `/to-goal` did not create. |
+| diagnosing-bugs | 2 (broken objectives; arms PLAN.md § Bug fast path); 7 (a red test that will not go green for a reason the ticket did not predict) | "Show the ranked list to the user before testing. Don't block on it" | Already AFK-safe: proceed with own ranking; HITL bash loop becomes a blocker. Regression test at the correct seam; "no correct seam" is logged as a lead for improve-codebase-architecture. |
+| wayfinder | 2 (fog) | HITL ticket types (grilling, prototype, task); "never resolve more than one ticket per session"; "stop and ask the user how they'd like to proceed" when no fog | Grilling tickets are self-answered, prototype tickets are re-typed as grilling or research, task tickets that need a human become a `wizard` script and a blocker. Resolves every frontier ticket in the run, one fresh subagent per ticket, research tickets in parallel. Merges at stage 5 via `to-spec #<map>`. |
+
+## Codebase health and vocabulary (ask-matt § Codebase health, § Vocabulary underneath)
+
+| Skill | Stage in /to-goal | Touchpoint(s) the skill has | Autonomous substitute |
+|---|---|---|---|
+| improve-codebase-architecture | 2 (upkeep objectives) | Opens an HTML report and asks "Which of these would you like to explore?" | Write the report to the temp dir but do not open it; take the report's **Top recommendation** as the idea; then grilling self-answered. User-invoked upstream (`disable-model-invocation: true`), so it can only ever be loaded by path. |
+| codebase-design | 4 (seam placement, new module shape); 7 via tdd | None (reference); `DESIGN-IT-TWICE.md` spawns parallel sub-agents | Loaded in stage 4 whenever a new module or seam is proposed; run design-it-twice for any new external seam and pick by depth/locality, logged. |
+| domain-modeling | 4; 2 (triage, wayfinder, improve-codebase-architecture) | "Offer to create an ADR" | Create the ADR when all three gates pass; otherwise skip; both logged. `CONTEXT.md` updated inline. |
+
+## Standalone (ask-matt § Standalone)
+
+| Skill | Stage in /to-goal | Touchpoint(s) the skill has | Autonomous substitute |
+|---|---|---|---|
+| grilling | 4; 3 | Rounds wait for the user's answers; "do not act until the user confirms" | Rounds run in full; answered by KUN.md § Grilling rounds, preferring the skill's own recommended answer unless findings or codebase contradict it; frontier recomputed; done when the frontier is empty. Facts are found by sub-agents as the skill says. |
+| research | 3 (conditional, per open Q); 2 (wayfinder research tickets); 4, 7, 8 on demand | None (AFK) | Fires only when FLOWS.md § Research need says so. Brief adds "you are already the research subagent; spawn nothing"; one narrow question per call; findings file kept in `.worktrees/control/runs/<slug>/`. |
+| resolving-merge-conflicts | 7 (ticket-branch rebase onto run branch); 0 (checkout already mid-merge) | None | As-is. Never `--abort`. |
+| to-questionnaire | 4 (a question only a named person can answer) | Two interview exchanges about the send | Answer the two exchanges from the decision log (recipient = repo owner unless the objective names someone); write `to-questionnaire-<slug>.md` in `.worktrees/control/runs/<slug>/`; continue with the default and list the file as a blocker. |
+| wizard | 7 (human-only step), 2 (wayfinder task ticket) | "Show the user the ordered list of stages and confirm" | Skip confirmation; author from repo evidence only, never invent UI steps; `bash -n` + shellcheck; script path is a named blocker in the report. |
+| writing-for-agents | 4 and 7 when the deliverable is a skill, `AGENTS.md`/`CLAUDE.md`, or agent-facing doc | None (reference) | Loaded as the standards source for those files; `code-review`'s Standards axis cites it. |
+| grill-me | not used | Stateless interview | Superseded by grill-with-docs; a run always has a working directory (the run worktree). |
+| teach | not used | Multi-session learning workspace | Off every flow. |
+| wait-what | not used | Re-explains to a human | Nothing to re-explain autonomously. The final report uses `CONTEXT.md` vocabulary instead. |
+
+## Precondition (ask-matt § Precondition)
+
+| Skill | Stage in /to-goal | Touchpoint(s) the skill has | Autonomous substitute |
+|---|---|---|---|
+| setup-matt-pocock-skills | 0b | "Present findings and ask" per section; "let them edit before writing" | Answers pre-filled from PIPELINE.md § Setup defaults (local markdown by default); write directly. |
+
+## In-progress upstream, not routed by ask-matt
+
+| Skill | Stage in /to-goal | Touchpoint(s) the skill has | Autonomous substitute |
+|---|---|---|---|
+| implement-spec | 7 | "The goal is a PR"; nothing else human | Run as written; bindings in BUILD.md add seams, tiers, tracker closing, and the worktree layout from PIPELINE.md. Draft PR only on a GitHub tracker with push authorized. |
+| retro | 10 | "Present these candidates to the user" | Written to `.worktrees/control/runs/<slug>/retro.md`; nothing applied. |
+| pr | 9 (GitHub tracker with push explicitly authorized only) | None; a PR-body template | The draft PR body from implement-spec step 3 and the ready-for-review body in stage 9 follow its template. Never used on the local tracker. |
+| claude-handoff | not used | Hands the conversation to a fresh background agent | The ledger plus the re-entry protocol already make any fresh context resumable; a handoff agent would be a second orchestrator on the same run. |
+| loop-me | not used | Grills the user to specify their own recurring workflows | It designs loops with a human; `/loop /to-goal` is the loop. |
+| setup-ts-deep-modules | not used by default | User-invoked TypeScript setup (dependency-cruiser) | Only when the objective names it; then it is the objective, loaded by path, with its questions answered by kun. |
+| writing-beats | not used | Prose-writing workflow | Not software delivery. |
+| writing-fragments | not used | Prose-writing workflow | Not software delivery. |
+| writing-shape | not used | Prose-writing workflow | Not software delivery. |
+
+## Outside the Matt set (installed skills)
+
+| Skill | Stage in /to-goal | Touchpoint(s) | Autonomous substitute |
+|---|---|---|---|
+| kun | every question (KUN.md) | It is the user's voice | Cached per KUN.md § Cache once; never asked twice. |
+| research-stack | 3 (first external need) and inside every subagent that looks outside the repo | None | Loaded on first need, not up front; route table loaded once; bounds and refunds applied per call. |
+| defensive-design | 4 (Design), 7 (Implement), 8 (Review) | Mode must be stated; "do not edit unless authorized" in Review | Mode passed explicitly per call; Implement authority comes from the ticket; evidence state recorded per control. Tier 3 findings that need authority the run lacks are blockers. |
+| zero-tech-debt | 2 (refactor on-ramp), 6 (prefactoring tickets) | "once a deletion is approved"; "stop and recommend a targeted change" for hotfix shapes | Self-approve after the pre-flight passes, log each deletion; hotfix shapes are re-routed to diagnosing-bugs. |

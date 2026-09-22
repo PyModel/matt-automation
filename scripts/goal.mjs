@@ -302,7 +302,10 @@ function main(argv) {
   let repo = process.cwd();
   const args = [];
   for (let i = 0; i < argv.length; i += 1) {
-    if (argv[i] === '--repo') repo = argv[++i];
+    if (argv[i] === '--repo') {
+      repo = argv[++i];
+      if (!repo) throw new Error('--repo needs a path');
+    }
     else if (argv[i] === '--') { args.push(...argv.slice(i)); break; }
     else args.push(argv[i]);
   }
@@ -323,6 +326,7 @@ function main(argv) {
     return result.malformed.length || result.conflicts.length ? 1 : 0;
   }
   if (command === 'take' && rest.length === 2) {
+    if (!/^\d+$/.test(rest[1])) throw new Error(`take needs a whole number of free slots, got ${rest[1]}`);
     print(take(repo, rest[0], Number(rest[1])));
     return 0;
   }
@@ -336,13 +340,17 @@ function main(argv) {
     return result.unclaimed.length || result.guarded.length ? 1 : 0;
   }
   if (command === 'with-lock' && rest.length >= 3 && rest[1] === '--') {
-    return withLock(repo, rest[0], () => spawnSync(rest[2], rest.slice(3), { stdio: 'inherit' }).status ?? 1);
+    return withLock(repo, rest[0], () => {
+      const run = spawnSync(rest[2], rest.slice(3), { stdio: 'inherit' });
+      if (run.error) throw run.error;
+      return run.status ?? 1;
+    });
   }
   if (command === 'commit' && rest[0] === '-m' && rest.length >= 3) {
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }
-  console.error('usage: goal.mjs [--repo <path>] init <slug> <objective> | next <slug> | frontier <feature> | take <feature> <max> | status <feature> <id> <status> | claims <ticket.md> <path>... | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
+  console.error('usage: goal.mjs [--repo <path>] init <slug> <objective> | next <slug> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
   return 2;
 }
 

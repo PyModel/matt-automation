@@ -6,6 +6,6 @@
   "engines": { "node": ">=20" },
   "scripts": {
     "check": "node scripts/matt.mjs check",
-    "test": "node --test scripts/*.test.mjs && node to-orc/scripts/selftest.mjs && python3 matt-automation-audit/audit_regressions.py --repo . --output \"${TMPDIR:-/tmp}/matt-audit-results.json\""
+    "test": "node --test scripts/*.test.mjs && node to-orc/scripts/selftest.mjs && python3 tests/audit_regressions.py --repo . --output \"${TMPDIR:-/tmp}/matt-audit-results.json\""
   }
 }

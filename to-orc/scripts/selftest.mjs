@@ -58,6 +58,7 @@ switch (mode) {
   case "ok": write(base); break;
   case "write-new": fs.writeFileSync(path.join(repo, "new.txt"), "x"); write(base); break;
   case "edit-dirty": fs.writeFileSync(path.join(repo, "dirty.txt"), "MUTATED"); write(base); break;
+  case "edit-sub": fs.writeFileSync(path.join(repo, "pkg-dirty.txt"), "MUTATED"); fs.writeFileSync(path.join(repo, "pkg-new.txt"), "x"); write(base); break;
   case "stage": git("add", "-A"); write(base); break;
   case "commit":
     fs.writeFileSync(path.join(repo, "c.txt"), "c"); git("add", "-A");
@@ -204,6 +205,18 @@ check("a no-write phase on an unborn repository has its new files removed", () =
   eq(r.exit, 72, "exit"); eq(r.status.changeSet.restore?.verified, true, `restore.verified (${r.status.changeSet.restore?.error})`);
   eq(fs.existsSync(path.join(repo, "new.txt")), false, "new.txt removed");
   eq(fs.readFileSync(path.join(repo, "mine.txt"), "utf8"), "user file\n", "user file kept");
+});
+
+check("a restore is correct when --repo is a subdirectory of the repository", () => {
+  const repo = newRepo("r5e"); const sub = path.join(repo, "pkg"); fs.mkdirSync(sub);
+  fs.writeFileSync(path.join(sub, "pkg-dirty.txt"), "base\n");
+  spawnSync("git", ["-C", repo, "add", "-A"]); spawnSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "pkg"]);
+  fs.writeFileSync(path.join(sub, "pkg-dirty.txt"), "already dirty\n");
+  const { runDir, brief } = newRun("run5e");
+  const r = dispatch({ mode: "edit-sub", phase: "scout", task: "P1", runDir, brief, repo: sub });
+  eq(r.exit, 72, "exit"); eq(r.status.changeSet.restore?.verified, true, `restore.verified (${r.status.changeSet.restore?.error})`);
+  eq(fs.readFileSync(path.join(sub, "pkg-dirty.txt"), "utf8"), "already dirty\n", "user's dirty edit kept");
+  eq(fs.existsSync(path.join(sub, "pkg-new.txt")), false, "worker's new file removed");
 });
 
 check("a compliant no-write phase leaves no snapshot ref behind", () => {

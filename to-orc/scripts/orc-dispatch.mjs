@@ -430,22 +430,23 @@ function pinWorkspace(repo, refBase, out) {
 function restoreWorkspace(repo, pin, before) {
   const out = { before: `${pin.refBase}/before`, after: `${pin.refBase}/after`, verified: false, error: null };
   try {
-    const after = snapshotTree(repo, out.after);
+    // Paths below are toplevel-relative, so every command runs at the toplevel, whatever --repo is.
     const root = gitRun(repo, ["rev-parse", "--show-toplevel"]);
+    const after = snapshotTree(root, out.after);
     // HEAD first: the branch the worker committed to (or switched to) goes back where it was.
     if (pin.head.symbolic) {
-      gitRun(repo, ["symbolic-ref", "HEAD", pin.head.symbolic]);
-      if (pin.head.sha) gitRun(repo, ["update-ref", pin.head.symbolic, pin.head.sha]);
-      else gitRun(repo, ["update-ref", "-d", pin.head.symbolic]);
+      gitRun(root, ["symbolic-ref", "HEAD", pin.head.symbolic]);
+      if (pin.head.sha) gitRun(root, ["update-ref", pin.head.symbolic, pin.head.sha]);
+      else gitRun(root, ["update-ref", "-d", pin.head.symbolic]);
     } else if (pin.head.sha) {
-      gitRun(repo, ["update-ref", "--no-deref", "HEAD", pin.head.sha]);
+      gitRun(root, ["update-ref", "--no-deref", "HEAD", pin.head.sha]);
     }
-    const changed = gitRun(repo, ["diff", "--name-only", "--no-renames", "-z", pin.tree, after]).split("\0").filter(Boolean);
+    const changed = gitRun(root, ["diff", "--name-only", "--no-renames", "-z", pin.tree, after]).split("\0").filter(Boolean);
     const inBefore = new Set(changed.length
-      ? gitRun(repo, ["ls-tree", "-r", "-z", "--name-only", pin.tree, "--", ...changed]).split("\0").filter(Boolean)
+      ? gitRun(root, ["ls-tree", "-r", "-z", "--name-only", pin.tree, "--", ...changed]).split("\0").filter(Boolean)
       : []);
     const back = changed.filter((p) => inBefore.has(p));
-    if (back.length) gitRun(repo, ["restore", `--source=${pin.tree}`, "--worktree", "--pathspec-from-file=-", "--pathspec-file-nul", "--"], { input: `${back.join("\0")}\0` });
+    if (back.length) gitRun(root, ["restore", `--source=${pin.tree}`, "--worktree", "--pathspec-from-file=-", "--pathspec-file-nul", "--"], { input: `${back.join("\0")}\0` });
     for (const p of changed.filter((p) => !inBefore.has(p))) {
       fs.rmSync(path.join(root, p), { force: true });
       for (let dir = path.dirname(path.join(root, p)); dir.startsWith(`${root}${path.sep}`); dir = path.dirname(dir)) {
@@ -455,7 +456,7 @@ function restoreWorkspace(repo, pin, before) {
     // The index last, byte for byte, so staged state and flags come back exactly.
     if (pin.indexCopy) fs.copyFileSync(pin.indexCopy, pin.indexFile);
     else fs.rmSync(pin.indexFile, { force: true });
-    spawnSync("git", ["-C", repo, "update-index", "-q", "--refresh"], { stdio: "ignore" });
+    spawnSync("git", ["-C", root, "update-index", "-q", "--refresh"], { stdio: "ignore" });
     const now = fingerprint(repo);
     out.verified = Boolean(now && now.snapshotId === before.snapshotId);
     if (!out.verified) out.error = "the restored workspace does not match the pre-dispatch fingerprint";

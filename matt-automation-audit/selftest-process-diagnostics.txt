@@ -1,5 +1,0 @@
-run30: {'schema': 'to-orc.status.v1', 'orcStatus': 'RUNNING', 'reason': 'dispatch in flight', 'phase': 'scout', 'task': 'P1', 'dispatchedAt': '2026-09-08T23:21:59.969Z', 'finishedAt': '2026-09-08T23:21:59.972Z', 'config': {'runtime': 'pi', 'provider': 'zai', 'model': 'zai/glm-5.3-flash:max', 'thinking': 'max'}, 'relayPath': '/tmp/to-orc-selftest-1NNJtF/stub.mjs', 'workspace': '/tmp/to-orc-selftest-1NNJtF/repos/r30', 'pid': 1542, 'warnings': []}
-pid=1542: process no longer exists
-run33: {'schema': 'to-orc.status.v1', 'orcStatus': 'RUNNING', 'reason': 'dispatch in flight', 'phase': 'scout', 'task': 'P1', 'dispatchedAt': '2026-09-08T23:22:00.074Z', 'finishedAt': '2026-09-08T23:22:00.090Z', 'config': {'runtime': 'pi', 'provider': 'zai', 'model': 'zai/glm-5.3-flash:max', 'thinking': 'max'}, 'relayPath': '/tmp/to-orc-selftest-1NNJtF/stub.mjs', 'workspace': '/tmp/to-orc-selftest-1NNJtF/repos/r33', 'pid': 1594, 'warnings': [], 'relayPid': 1618}
-pid=1594: process no longer exists
-relayPid=1618: process no longer exists

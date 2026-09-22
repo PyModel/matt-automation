@@ -24,7 +24,9 @@ The run directory must sit **outside** the workspace — the dispatcher refuses 
 node <skill-dir>/scripts/orc-dispatch.mjs \
   --phase <scout|research|implement|verify|repair> \
   --task <id> --brief <run-dir>/briefs/<id>.txt \
-  --run-dir <run-dir> --repo <path> [--background] [--session <id>] [--max-cost <usd>]
+  --run-dir <run-dir> --repo <path> \
+  [--model <provider/id[:thinking]>] [--provider <name>] \
+  [--background] [--session <id>] [--max-cost <usd>]
 ```
 
 `--phase` is the only policy input. It sets the write rule, the timeout, the session rule, the ordering precondition and the cycle accounting, so there is no flag combination to get wrong:
@@ -37,11 +39,11 @@ node <skill-dir>/scripts/orc-dispatch.mjs \
 | `verify` | none | `accepted/implement.md` exists | 1h | fresh |
 | `repair` | allowed | `accepted/verify.md` exists | 2h | `--session` required |
 
-The dispatcher pins runtime `pi`, provider `zai`, model `zai/glm-5.3-flash:max` (pi's own `--model` syntax for `--thinking max`) and refuses to report success unless the run proves that configuration. Do not invent other invocations, do not call `pi` or `relay.mjs` yourself, do not probe the environment. `--dry-run` validates a dispatch without spending anything; `-h` prints the full contract.
+`--model` is required on the run's first dispatch and fixed in `run.json` from then on (SKILL.md § Worker configuration). The dispatcher refuses success unless the relay proves pi ran that model. Use this one invocation; `pi` and `relay.mjs` are reached only through it. `--dry-run` validates without spending; `-h` prints the full contract. `verify` is refused unless the workspace is still the exact snapshot the last compliant `implement`/`repair` produced.
 
 ## Long phases must be backgrounded
 
-`implement` and `repair` default to a 2h watchdog. Most harnesses kill a foreground command long before that — Claude Code's shell tool caps at 10 minutes — and a killed dispatch leaves a half-modified tree with no evidence.
+`implement` and `repair` default to a 2h watchdog. Most harness shells kill a foreground command within minutes, and a killed dispatch leaves a half-modified tree with no evidence.
 
 So: pass `--background` for anything over a few minutes. The dispatcher detaches and returns immediately, having already written `orc-status.json` with `orcStatus: "RUNNING"` — the evidence file exists from the first moment, so there is never a window where polling finds nothing.
 
@@ -59,12 +61,12 @@ Every dispatch writes `<run-dir>/<task>/orc-status.json`. **Read that file, not 
 
 | `orcStatus` | Means | Do |
 |---|---|---|
-| `COMPLIANT` | Ran on the mandated configuration; gates passed | Judge the report against the phase's exit gate |
+| `COMPLIANT` | Ran on the requested configuration; gates passed | Judge the report against the phase's exit gate |
 | `WORKER_FAILED` | Config proven, worker did not succeed | Read `artifacts.stderr` and `final.txt`; re-brief once, or record a blocker |
 | `TIMEOUT` | Watchdog fired — **the change set is partial** | Never verify it as final; re-run `implement` fresh with a longer `--timeout` |
 | `ABORTED` | Relay was killed — **change set partial** | Same as `TIMEOUT` |
 | `NO_WRITES_VIOLATED` | A no-write phase changed the workspace | A deviation: record it with the listed paths, decide whether the phase must be re-run |
-| `CONFIG_NON_COMPLIANT` | Runtime/provider/model not as mandated | Report `FAIL` — never fall back |
+| `CONFIG_NON_COMPLIANT` | Runtime/provider/model not as requested | Report `FAIL` — never silent fallback |
 | `RUNTIME_UNAVAILABLE` | `pi` or the relay is missing/unrunnable | Report `FAIL` |
 | `SCHEMA_DRIFT` | The relay's result schema changed | Report `FAIL`; this is a to-orc maintenance problem, say so — do not blame the worker |
 | `EVIDENCE_UNREADABLE` | `result.json` is corrupt | No usable evidence; re-dispatch once, then report `FAIL` |

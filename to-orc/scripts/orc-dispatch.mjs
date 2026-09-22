@@ -21,11 +21,43 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const SCHEMA = "delegate-relay.result.v1";
-const PROVIDER = "zai";
-const MODEL = "zai/glm-5.3-flash:max"; // pi's --model syntax for --thinking max
-const ACTUAL_MODEL = "glm-5.3-flash";
-const KNOWN_PI = ["0.85."];
+const KNOWN_PI = ["0.85."]; // prefix match; only versions whose thinking suffixes were re-probed (SKILL.md § Maintaining)
+// pi --help: "Set thinking level: off, minimal, low, medium, high, xhigh, max"
+const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const STATUS_SCHEMA = "to-orc.status.v1";
+
+/** Split a pi model pattern `provider/id:thinking` into proven pieces. */
+function parseWorkerSpec(providerFlag, modelFlag) {
+  const model = String(modelFlag || "").trim();
+  if (!model) usageError("--model is required on a run's first dispatch (a pi model pattern: <provider>/<model id>[:<thinking>]); later dispatches inherit it from run.json");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:\/-]*$/.test(model)) {
+    usageError("--model may only contain letters, digits, and . _ : / -");
+  }
+  // Only a known thinking level is a suffix; any other tag (ollama/qwen3:32b) is part of the model id.
+  const colon = model.lastIndexOf(":");
+  const suffix = colon > 0 ? model.slice(colon + 1) : "";
+  const thinking = THINKING_LEVELS.has(suffix) ? suffix : null;
+  const bare = thinking ? model.slice(0, colon) : model;
+  const slash = bare.indexOf("/");
+  const fromModelProvider = slash === -1 ? null : bare.slice(0, slash);
+  const requestedModelId = slash === -1 ? bare : bare.slice(slash + 1);
+  if (!requestedModelId) usageError("--model must include a model id");
+  if (providerFlag && fromModelProvider && providerFlag !== fromModelProvider) {
+    usageError(`--provider ${providerFlag} contradicts the --model prefix ${fromModelProvider}/; pass one provider`);
+  }
+  const provider = String(providerFlag || fromModelProvider || "").trim();
+  if (!provider) usageError("--model has no <provider>/ prefix; add one or pass --provider");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(provider)) {
+    usageError("--provider may only contain letters, digits, and . _ -");
+  }
+  return {
+    runtime: "pi",
+    provider,
+    model,
+    requestedModelId,
+    thinking: thinking || "default",
+  };
+}
 
 /** orcStatus → exit code. 70+ so it can never collide with pi's or the relay's own codes. */
 const EXIT = {
@@ -70,9 +102,16 @@ Required:
 
 Options:
   --repo <path>      worker workspace (default: current directory)
+  --model <pattern>  pi model pattern <provider>/<model id>[:<thinking>]
+                     (off|minimal|low|medium|high|xhigh|max; any other tag
+                     stays in the model id). Required on the run's first
+                     dispatch, which fixes it in run.json; later dispatches
+                     may omit it and must not change it.
+  --provider <name>  only when --model has no <provider>/ prefix
   --session <id>     pi session to resume; required by repair, rejected elsewhere
-  --timeout <dur>    watchdog override, e.g. 90m / 2h / 45s (default: per phase)
-  --cycles <n>       total implement→verify cycles allowed (default 2)
+  --timeout <dur>    watchdog override, e.g. 90m / 2h / 1h30m (default: per phase)
+  --cycles <n>       compliant implement→verify cycles allowed (default 2;
+                     fixed for the run, like --max-cost and --model)
   --max-cost <usd>   refuse to start when the run has already spent this much
   --background       detach and return immediately; poll orc-status.json
   --poll             report on an existing dispatch: needs only --task and
@@ -109,6 +148,7 @@ Env: TO_ORC_RELAY overrides the pi-delegate relay path (used by the selftest).`;
 function parseArgs(argv) {
   const o = {
     phase: "", task: "", brief: "", runDir: "", repo: process.cwd(),
+    provider: "", model: "",
     session: "", timeout: "", cycles: 2, maxCost: null,
     background: false, force: false, dryRun: false, poll: false, childOfBackground: false,
   };
@@ -125,6 +165,8 @@ function parseArgs(argv) {
       case "--brief":      o.brief = need(i, a); i += 1; break;
       case "--run-dir":    o.runDir = need(i, a); i += 1; break;
       case "--repo":       o.repo = need(i, a); i += 1; break;
+      case "--provider":   o.provider = need(i, a); i += 1; break;
+      case "--model":      o.model = need(i, a); i += 1; break;
       case "--session":    o.session = need(i, a); i += 1; break;
       case "--timeout":    o.timeout = need(i, a); i += 1; break;
       case "--cycles":     o.cycles = Number(need(i, a)); i += 1; break;
@@ -154,6 +196,7 @@ const warn = (m) => process.stderr.write(`orc-dispatch: WARNING — ${m}\n`);
 // ------------------------------------------------------------------- status
 
 function buildStatus(ctx, orcStatus, reason, extra) {
+  const w = ctx.worker || {};
   return {
     schema: STATUS_SCHEMA,
     orcStatus,
@@ -162,7 +205,13 @@ function buildStatus(ctx, orcStatus, reason, extra) {
     task: ctx.task || null,
     dispatchedAt: ctx.startedAt || null,
     finishedAt: new Date().toISOString(),
-    config: { runtime: "pi", provider: PROVIDER, model: MODEL, thinking: "max" },
+    config: {
+      runtime: w.runtime || "pi",
+      provider: w.provider || null,
+      model: w.model || null,
+      requestedModelId: w.requestedModelId || null,
+      thinking: w.thinking || null,
+    },
     relayPath: ctx.relay || null,
     workspace: ctx.repo || null,
     pid: process.pid,
@@ -248,7 +297,6 @@ function fingerprint(repo) {
   if (porcelain === null) return null;
 
   const entries = {};
-  const truncated = [];
   // -z records are NUL-separated; a rename record is followed by its origin path.
   const records = porcelain.toString("utf8").split("\0").filter(Boolean);
   for (let i = 0; i < records.length; i += 1) {
@@ -291,7 +339,6 @@ function fingerprint(repo) {
     worktreeDiffSha,
     rawWorktreeDiffSha: wt ? sha(wt) : null,
     entries,
-    truncated,
     pathCount: Object.keys(entries).length,
   };
 }
@@ -364,12 +411,14 @@ function spentSoFar(runDir) {
   }
 }
 
-/** Every completed dispatch's status file in this run, newest last. */
-function priorDispatches(runDir) {
+/** Every other dispatch's status file in this run, newest last. `ownTask` is excluded: a
+ *  background child would otherwise count its own provisional RUNNING status. */
+function priorDispatches(runDir, ownTask) {
   const out = [];
   let dirs = [];
   try { dirs = fs.readdirSync(runDir, { withFileTypes: true }).filter((d) => d.isDirectory()); } catch { return out; }
   for (const d of dirs) {
+    if (d.name === ownTask) continue;
     const f = path.join(runDir, d.name, "orc-status.json");
     try {
       if (fs.existsSync(f)) out.push(JSON.parse(fs.readFileSync(f, "utf8")));
@@ -391,8 +440,8 @@ function resolveRelay(selfDir) {
   return null;
 }
 
-/** Config facts the run must prove. Order matters: schema first, then runtime, then model. */
-function classifyResult(result, relayExit) {
+/** Config facts the run must prove against the *requested* worker, not a hardcoded pin. */
+function classifyResult(result, relayExit, worker) {
   if (result.schema !== SCHEMA) {
     return ["SCHEMA_DRIFT", `relay result schema is ${result.schema || "absent"}, this skill reads ${SCHEMA} — update to-orc, do not blame the worker`];
   }
@@ -402,10 +451,14 @@ function classifyResult(result, relayExit) {
 
   const bad = [];
   if (result.tool !== "pi") bad.push(`tool=${result.tool}`);
-  if (result.provider !== PROVIDER || result.actualProvider !== PROVIDER) bad.push(`provider=${result.provider}/${result.actualProvider}`);
-  if (result.model !== MODEL) bad.push(`requested model=${result.model}`);
-  if (result.actualModel !== ACTUAL_MODEL) bad.push(`actual model=${result.actualModel}`);
-  if (bad.length) return ["CONFIG_NON_COMPLIANT", `mandatory worker configuration not proven: ${bad.join(", ")}`];
+  if (result.provider !== worker.provider || result.actualProvider !== worker.provider) {
+    bad.push(`provider=${result.provider}/${result.actualProvider} (wanted ${worker.provider})`);
+  }
+  if (result.model !== worker.model) bad.push(`requested model=${result.model} (wanted ${worker.model})`);
+  if (result.actualModel !== worker.requestedModelId) {
+    bad.push(`actual model=${result.actualModel} (wanted ${worker.requestedModelId})`);
+  }
+  if (bad.length) return ["CONFIG_NON_COMPLIANT", `requested worker configuration not proven: ${bad.join(", ")}`];
 
   if (result.status !== "completed" || relayExit !== 0 || (typeof result.exitCode === "number" && result.exitCode !== 0) || result.stopReason === "error") {
     return ["WORKER_FAILED", `worker did not succeed (status=${result.status}, exit=${result.exitCode ?? relayExit}, relayExit=${relayExit}, stopReason=${result.stopReason ?? "n/a"})`];
@@ -497,12 +550,25 @@ if (!Number.isInteger(opts.cycles) || opts.cycles < 1) usageError("--cycles must
 if (opts.maxCost !== null && !(opts.maxCost > 0)) usageError("--max-cost must be a positive number");
 
 const timeout = opts.timeout || policy.timeout;
-if (!/^\d+(\.\d+)?[hms]$/.test(timeout)) usageError(`--timeout must look like 45m, 2h or 90s (got ${timeout})`);
+// The relay's grammar (pi-delegate relay.mjs parseDuration): integer h/m/s parts, in that order.
+if (!/^(?=\d)(\d+h)?(\d+m)?(\d+s)?$/.test(timeout)) usageError(`--timeout must look like 45m, 2h, 90s or 1h30m (got ${timeout})`);
 
 ctx.phase = opts.phase;
 ctx.task = opts.task;
 const repo = path.resolve(opts.repo);
 const runDir = path.resolve(opts.runDir);
+const runLockFile = path.join(runDir, "run.json");
+let locked = null;
+if (fs.existsSync(runLockFile)) {
+  try { locked = JSON.parse(fs.readFileSync(runLockFile, "utf8")); } catch {
+    finish({ ...ctx, out: null }, "EVIDENCE_UNREADABLE", `${runLockFile} is corrupt — the run's settings cannot be proven`);
+  }
+}
+// No default worker: the first dispatch names the model; run.json carries it to every later one.
+const worker = opts.model || opts.provider
+  ? parseWorkerSpec(opts.provider || undefined, opts.model)
+  : locked ? parseWorkerSpec(locked.worker?.provider, locked.worker?.model) : parseWorkerSpec(undefined, "");
+ctx.worker = worker;
 const briefPath = path.resolve(opts.brief);
 ctx.repo = repo;
 ctx.out = path.join(runDir, opts.task);
@@ -538,9 +604,10 @@ if (policy.after) {
   }
 }
 
-const prior = priorDispatches(runDir);
+const prior = priorDispatches(runDir, opts.task);
 const priorExecuted = prior.filter((p) => p.orcStatus !== "PRECONDITION_FAILED");
-const implementations = priorExecuted.filter((p) => p.phase === "implement").length;
+// A timed-out or failed implement is re-run fresh (DELEGATION.md), so only a compliant one spends a cycle.
+const implementations = priorExecuted.filter((p) => p.phase === "implement" && p.orcStatus === "COMPLIANT").length;
 const repairs = priorExecuted.filter((p) => p.phase === "repair").length;
 const totalCycles = implementations + repairs;
 
@@ -561,6 +628,20 @@ if (opts.phase === "repair") {
   }
   if (!source || !["implement", "repair"].includes(source.phase) || source.orcStatus !== "COMPLIANT") {
     finish(ctx, "PRECONDITION_FAILED", `session ${opts.session} is not a known successful implement/repair session in this run`);
+  }
+}
+
+// --- verify targets the exact change set the last implement/repair produced
+if (opts.phase === "verify") {
+  const built = priorExecuted.filter((p) => ["implement", "repair"].includes(p.phase) && p.orcStatus === "COMPLIANT").pop();
+  const expected = built?.changeSet?.snapshotIdAfter;
+  const now = fingerprint(repo);
+  if (!built) {
+    finish(ctx, "PRECONDITION_FAILED", "no compliant implement or repair in this run — nothing to verify");
+  } else if (expected && now && now.snapshotId !== expected) {
+    finish(ctx, "PRECONDITION_FAILED", `the workspace changed after ${built.task} (snapshot ${now.snapshotId.slice(0, 12)} ≠ ${expected.slice(0, 12)}); re-establish the change set, then verify`);
+  } else if (!expected || !now) {
+    ctx.warnings.push("workspace is not a git repository — verify cannot prove it targets the implemented change set");
   }
 }
 
@@ -587,8 +668,30 @@ if (fs.existsSync(statusFile) && !opts.force && !opts.childOfBackground) {
   finish({ ...ctx, out: null }, "PRECONDITION_FAILED", `${statusFile} already exists — pick a new --task or pass --force to overwrite the evidence`);
 }
 
+// --- run lock: worker, cycles and budget are fixed by the run's first dispatch
+const runLock = {
+  schema: "to-orc.run.v1",
+  worker: { runtime: worker.runtime, provider: worker.provider, model: worker.model, requestedModelId: worker.requestedModelId },
+  cycles: opts.cycles,
+  maxCost: opts.maxCost,
+};
+if (locked) {
+  const drift = [];
+  if (locked.worker?.provider !== runLock.worker.provider || locked.worker?.model !== runLock.worker.model) {
+    drift.push(`worker ${locked.worker?.provider}/${locked.worker?.model} → ${runLock.worker.provider}/${runLock.worker.model}`);
+  }
+  if (locked.cycles !== runLock.cycles) drift.push(`--cycles ${locked.cycles} → ${runLock.cycles}`);
+  if (locked.maxCost !== runLock.maxCost) drift.push(`--max-cost ${locked.maxCost} → ${runLock.maxCost}`);
+  if (drift.length) {
+    finish(ctx, "PRECONDITION_FAILED", `this dispatch changes settings fixed in ${runLockFile}: ${drift.join("; ")} — pass the run's settings, or start a new run directory`);
+  }
+} else if (!opts.dryRun) {
+  fs.writeFileSync(runLockFile, `${JSON.stringify(runLock, null, 2)}\n`);
+}
+
 if (opts.dryRun) {
   say(`dry run · phase=${opts.phase} task=${opts.task} writes=${policy.writes} timeout=${timeout} session=${policy.session}`);
+  say(`dry run · worker=pi · ${worker.provider}/${worker.requestedModelId} · thinking=${worker.thinking} · model=${worker.model}`);
   say(`dry run · relay=${relay} repo=${repo} out=${ctx.out}`);
   say(`dry run · spent=$${alreadySpent.toFixed(4)}${opts.maxCost !== null ? ` of $${opts.maxCost.toFixed(2)}` : ""}`);
   say("dry run · all preconditions satisfied; nothing dispatched");
@@ -649,18 +752,19 @@ writeStatus(ctx.out, buildStatus(ctx, "RUNNING", "dispatch in flight", {}));
 
 const before = fingerprint(repo);
 if (!before) ctx.warnings.push("workspace is not a git repository — writes cannot be verified and no diff identifier exists");
-else if (before.truncated.length) ctx.warnings.push(`${before.truncated.length} large file(s) fingerprinted by size, not content`);
 
 const relayArgs = [
   relay, "--brief", briefPath, "--cd", repo,
-  "--provider", PROVIDER, "--model", MODEL,
+  "--provider", worker.provider, "--model", worker.model,
   "--out-dir", ctx.out, "--timeout", timeout,
 ];
 if (opts.session) relayArgs.push("--session", opts.session);
 
 say(`dispatch · phase=${opts.phase} task=${opts.task} writes=${policy.writes} timeout=${timeout}`);
+say(`worker · pi · ${worker.provider}/${worker.requestedModelId} · thinking=${worker.thinking}`);
 say(`relay · ${relay}`);
-const child = spawn(process.execPath, relayArgs, { stdio: "inherit" });
+// detached: the relay leads its own process group, so the group kills below also reach pi.
+const child = spawn(process.execPath, relayArgs, { stdio: "inherit", detached: true });
 relayChild = child;
 // Publish the worker's pid while it runs: if this supervisor is killed, --poll
 // must be able to tell that the worker itself is still editing the workspace.
@@ -714,7 +818,7 @@ const runTotalUsd = recordSpend(runDir, {
 const costOut = { dispatchUsd: cost, runTotalUsd };
 
 if (result.piVersion && !KNOWN_PI.some((p) => String(result.piVersion).startsWith(p))) {
-  ctx.warnings.push(`pi ${result.piVersion} is outside the verified range (${KNOWN_PI.join(", ")}x) — re-verify that --model "${MODEL}" still means thinking=max`);
+  ctx.warnings.push(`pi ${result.piVersion} is outside the known range (${KNOWN_PI.join(", ")}*) — re-verify that --model "${worker.model}" still means thinking=${worker.thinking}`);
 }
 
 const relayOut = {
@@ -738,7 +842,7 @@ const relayOut = {
 };
 const extra = { relay: relayOut, changeSet: changeSetOut, cost: costOut };
 
-const [failStatus, failReason] = classifyResult(result, relayExit);
+const [failStatus, failReason] = classifyResult(result, relayExit, worker);
 if (failStatus) finish(ctx, failStatus, failReason, extra);
 
 if (policy.writes === "none") {
@@ -751,5 +855,5 @@ if (policy.writes === "none") {
 
 for (const w of ctx.warnings) warn(w);
 finish(ctx, "COMPLIANT", policy.writes === "none"
-  ? (changeSet.verified ? "worker completed on the mandated configuration; workspace unchanged" : "worker completed on the mandated configuration; writes unverifiable")
-  : `worker completed on the mandated configuration; ${changeSetOut.pathsChanged.length} path(s) changed`, extra);
+  ? (changeSet.verified ? `worker completed on requested config (${worker.provider}/${worker.requestedModelId}); workspace unchanged` : `worker completed on requested config (${worker.provider}/${worker.requestedModelId}); writes unverifiable`)
+  : `worker completed on requested config (${worker.provider}/${worker.requestedModelId}); ${changeSetOut.pathsChanged.length} path(s) changed`, extra);

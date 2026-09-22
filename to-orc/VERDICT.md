@@ -37,18 +37,18 @@ Each `issues_detected` entry: `id` (string), `severity` (`CRITICAL` | `HIGH` | `
 Write the draft to a file and run it through the contract checker until it passes:
 
 ```bash
-node <skill-dir>/scripts/validate-verdict.mjs <run-dir>/verdict.json
+node <skill-dir>/scripts/validate-verdict.mjs <run-dir>/verdict.json --run-dir <run-dir>
 ```
 
-It rejects fences, wrapping prose, stringified booleans, malformed issues, `APPROVE` without `PASS`, `PASS` carrying an OPEN issue, and an all-false phase audit that is not `FAIL`. Send the validated file's contents verbatim.
+It rejects a `dispatched_to` that differs from the worker in `run.json`, unfilled `<placeholders>`, fences, wrapping prose, stringified booleans, malformed issues, `APPROVE` without `PASS`, `PASS` carrying an OPEN issue, and an all-false phase audit that is not `FAIL`. Send the validated file's contents verbatim.
 
 ## Template
 
 {
   "orchestration_summary": {
     "task_id": "<actual-task-id>",
-    "dispatched_to": "pi / zai:glm-5.3-flash",
-    "flags": "--thinking max",
+    "dispatched_to": "pi / <run.json worker.provider>/<run.json worker.requestedModelId>",
+    "flags": "--model <run.json worker.model>",
     "status": "FAIL"
   },
   "phase_audit": {
@@ -69,4 +69,4 @@ It rejects fences, wrapping prose, stringified booleans, malformed issues, `APPR
   "next_action": "REQUEST_CHANGES"
 }
 
-The routing fields identify the mandated configuration; they are not proof that execution occurred.
+The routing fields identify the worker `run.json` fixed for this run; they are not proof that execution occurred.

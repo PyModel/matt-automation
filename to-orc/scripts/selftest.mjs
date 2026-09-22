@@ -38,9 +38,15 @@ const out = arg("--out-dir");
 const repo = arg("--cd");
 const mode = process.env.STUB_MODE || "ok";
 fs.mkdirSync(out, { recursive: true });
+const reqProvider = arg("--provider");
+const reqModel = arg("--model");
+const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const tag = reqModel.slice(reqModel.lastIndexOf(":") + 1);
+const bare = reqModel.includes(":") && levels.includes(tag) ? reqModel.slice(0, reqModel.lastIndexOf(":")) : reqModel;
+const actualModel = bare.includes("/") ? bare.slice(bare.indexOf("/") + 1) : bare;
 const base = {
-  schema: "delegate-relay.result.v1", tool: "pi", provider: "zai",
-  model: "zai/glm-5.3-flash:max", actualProvider: "zai", actualModel: "glm-5.3-flash",
+  schema: "delegate-relay.result.v1", tool: "pi", provider: reqProvider,
+  model: reqModel, actualProvider: reqProvider, actualModel,
   status: "completed", exitCode: 0, piVersion: "0.85.1", sessionId: "sess-" + mode,
   usage: { reasoning: 12, cost: { total: 0.01 } }, touchedFiles: [], stopReason: "stop",
   finalMessage: "stub report",
@@ -61,7 +67,7 @@ switch (mode) {
   case "pi-unavailable": write({ ...base, status: "pi_unavailable", exitCode: 127 }); process.exit(127);
   case "timeout": write({ ...base, status: "timeout", exitCode: 1 }); process.exit(1);
   case "aborted": write({ ...base, status: "aborted", exitCode: 1 }); process.exit(1);
-  case "wrong-model": write({ ...base, actualModel: "glm-5.3" }); break;
+  case "wrong-model": write({ ...base, actualModel: "model-x" }); break;
   case "worker-failed": write({ ...base, status: "failed", exitCode: 5 }); process.exit(5);
   case "no-result": process.stderr.write("relay: bad flag\\n"); process.exit(2);
   case "old-pi": write({ ...base, piVersion: "0.99.0" }); break;
@@ -96,10 +102,14 @@ function newRun(name, { accept = [] } = {}) {
   return { runDir, brief };
 }
 
+const DEFAULT_TEST_MODEL = "prov-a/model-a:max";
+
 function dispatch({ mode = "ok", phase, task, runDir, brief, repo, extra = [] }) {
   const r = spawnSync(process.execPath, [
     DISPATCH, "--phase", phase, "--task", task, "--brief", brief,
-    "--run-dir", runDir, "--repo", repo, ...extra,
+    "--run-dir", runDir, "--repo", repo,
+    ...(extra.includes("--model") || fs.existsSync(path.join(runDir, "run.json")) ? [] : ["--model", DEFAULT_TEST_MODEL]),
+    ...extra,
   ], {
     encoding: "utf8",
     env: { ...process.env, TO_ORC_RELAY: STUB, STUB_MODE: mode },
@@ -128,10 +138,6 @@ const eq = (actual, expected, what) => {
 // --- cases ------------------------------------------------------------------
 process.stdout.write("to-orc selftest\n");
 
-if (spawnSync("pi", ["--version"], { stdio: "ignore" }).status !== 0) {
-  process.stdout.write("  SKIP — the pi CLI is not installed; the dispatcher refuses to run without it\n");
-  process.exit(0);
-}
 
 check("scout on a clean-enough tree is COMPLIANT", () => {
   const repo = newRepo("r1"); const { runDir, brief } = newRun("run1");
@@ -210,6 +216,36 @@ check("a substituted model is CONFIG_NON_COMPLIANT", () => {
   eq(r.exit, 70, "exit"); eq(r.status.orcStatus, "CONFIG_NON_COMPLIANT", "orcStatus");
 });
 
+check("a requested custom model is COMPLIANT when the relay proves it", () => {
+  const repo = newRepo("custom-model");
+  const { runDir, brief } = newRun("custom-model");
+  const r = dispatch({
+    mode: "ok", phase: "scout", task: "s", runDir, brief, repo,
+    extra: ["--model", "prov-b/model-b:max"],
+  });
+  eq(r.exit, 0, "exit");
+  eq(r.status?.orcStatus, "COMPLIANT", "status");
+  eq(r.status?.config?.provider, "prov-b", "provider");
+  eq(r.status?.config?.requestedModelId, "model-b", "requestedModelId");
+  eq(r.status?.config?.thinking, "max", "thinking");
+  // proves the dispatcher forwarded --model rather than its default
+  eq(r.status?.relay?.requestedModel, "prov-b/model-b:max", "model the relay was asked for");
+  eq(r.status?.relay?.model, "model-b", "model the relay reports ran");
+});
+
+check("a custom model not proven by the relay is CONFIG_NON_COMPLIANT", () => {
+  const repo = newRepo("custom-model-mismatch");
+  const { runDir, brief } = newRun("custom-model-mismatch");
+  // stub always echoes argv --model; force a wrong actualModel via wrong-model mode
+  // while requesting a custom pattern — proves requested-vs-actual still gates.
+  const r = dispatch({
+    mode: "wrong-model", phase: "scout", task: "s", runDir, brief, repo,
+    extra: ["--model", "prov-b/model-b:max"],
+  });
+  eq(r.exit, 70, "exit");
+  eq(r.status?.orcStatus, "CONFIG_NON_COMPLIANT", "status");
+});
+
 check("a worker exiting 5 is WORKER_FAILED — no collision with the no-writes verdict", () => {
   const repo = newRepo("r13"); const { runDir, brief } = newRun("run13");
   const r = dispatch({ mode: "worker-failed", phase: "scout", task: "P1", runDir, brief, repo });
@@ -226,7 +262,7 @@ check("an unverified pi version warns but still completes", () => {
   const repo = newRepo("r15"); const { runDir, brief } = newRun("run15");
   const r = dispatch({ mode: "old-pi", phase: "scout", task: "P1", runDir, brief, repo });
   eq(r.exit, 0, "exit");
-  if (!r.status.warnings.some((w) => /outside the verified range/.test(w))) throw new Error("no version warning recorded");
+  if (!r.status.warnings.some((w) => /outside the (verified|known) range/.test(w))) throw new Error("no version warning recorded");
 });
 
 check("a non-git workspace completes with writes UNVERIFIED", () => {
@@ -379,6 +415,109 @@ check("--poll on an unknown task is refused", () => {
   eq(spawnSync(process.execPath, [DISPATCH, "--poll", "--task", "nope", "--run-dir", runDir]).status, 77, "exit");
 });
 
+
+function waitForTerminal(runDir, task) {
+  const f = path.join(runDir, task, "orc-status.json");
+  for (let i = 0; i < 400; i += 1) {
+    try {
+      const st = JSON.parse(fs.readFileSync(f, "utf8"));
+      if (st.orcStatus !== "RUNNING") return st;
+    } catch { /* not written yet */ }
+    spawnSync(process.execPath, ["-e", "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)"]);
+  }
+  throw new Error(`${task} never reached a terminal status`);
+}
+
+check("a backgrounded repair does not count its own RUNNING status against the cycle cap", () => {
+  const repo = newRepo("bg-repair");
+  const { runDir, brief } = newRun("bg-repair", { accept: ["scout", "research", "implement", "verify"] });
+  eq(dispatch({ phase: "implement", task: "P3", runDir, brief, repo }).exit, 0, "implement exit");
+  eq(dispatch({ phase: "repair", task: "R1", runDir, brief, repo, extra: ["--session", "sess-ok", "--background"] }).exit, 0, "background exit");
+  eq(waitForTerminal(runDir, "R1").orcStatus, "COMPLIANT", "background repair");
+});
+
+check("a backgrounded implement runs under --cycles 1", () => {
+  const repo = newRepo("bg-impl");
+  const { runDir, brief } = newRun("bg-impl", { accept: ["scout", "research"] });
+  eq(dispatch({ phase: "implement", task: "P3", runDir, brief, repo, extra: ["--cycles", "1", "--background"] }).exit, 0, "background exit");
+  eq(waitForTerminal(runDir, "P3").orcStatus, "COMPLIANT", "background implement");
+});
+
+check("a timed-out implement does not use up the repair budget", () => {
+  const repo = newRepo("timeout-budget");
+  const { runDir, brief } = newRun("timeout-budget", { accept: ["scout", "research", "implement", "verify"] });
+  dispatch({ mode: "timeout", phase: "implement", task: "P3", runDir, brief, repo });
+  eq(dispatch({ phase: "implement", task: "P3b", runDir, brief, repo }).exit, 0, "fresh implement after timeout");
+  eq(dispatch({ phase: "repair", task: "R1", runDir, brief, repo, extra: ["--session", "sess-ok"] }).exit, 0, "repair still allowed");
+});
+
+check("the worker model is locked for the run once dispatched", () => {
+  const repo = newRepo("lock-model"); const { runDir, brief } = newRun("lock-model", { accept: ["scout"] });
+  eq(dispatch({ phase: "scout", task: "P1", runDir, brief, repo }).exit, 0, "first exit");
+  const r = dispatch({ phase: "research", task: "P2", runDir, brief, repo, extra: ["--model", "prov-b/model-b:off"] });
+  eq(r.exit, 77, "mismatched model exit");
+  if (!/run\.json/.test(r.status.reason)) throw new Error("reason does not name the run lock");
+});
+
+check("--cycles and --max-cost are locked for the run once dispatched", () => {
+  const repo = newRepo("lock-cycles"); const { runDir, brief } = newRun("lock-cycles", { accept: ["scout"] });
+  eq(dispatch({ phase: "scout", task: "P1", runDir, brief, repo, extra: ["--cycles", "1"] }).exit, 0, "first exit");
+  eq(dispatch({ phase: "research", task: "P2", runDir, brief, repo, extra: ["--cycles", "9"] }).exit, 77, "cycles changed");
+  eq(dispatch({ phase: "research", task: "P3", runDir, brief, repo, extra: ["--cycles", "1", "--max-cost", "5"] }).exit, 77, "max-cost changed");
+  eq(dispatch({ phase: "research", task: "P4", runDir, brief, repo, extra: ["--cycles", "1"] }).exit, 0, "same settings");
+});
+
+check("a --provider that contradicts the model prefix is refused before any spend", () => {
+  const repo = newRepo("provider-conflict"); const { runDir, brief } = newRun("provider-conflict");
+  const r = dispatch({ phase: "scout", task: "P1", runDir, brief, repo, extra: ["--provider", "prov-b", "--model", "prov-a/model-a:max", "--dry-run"] });
+  eq(r.exit, 77, "exit");
+  if (!/contradicts/.test(r.stderr)) throw new Error("stderr does not name the contradiction");
+});
+
+check("a model tag that is not a thinking level stays part of the model id", () => {
+  const repo = newRepo("model-tag"); const { runDir, brief } = newRun("model-tag");
+  const r = dispatch({ phase: "scout", task: "P1", runDir, brief, repo, extra: ["--model", "ollama/qwen3:32b"] });
+  eq(r.exit, 0, "exit");
+  eq(r.status.config.requestedModelId, "qwen3:32b", "requested model id");
+  eq(r.status.config.thinking, "default", "thinking");
+  eq(r.status.relay.requestedModel, "ollama/qwen3:32b", "model the relay was asked for");
+});
+
+check("a malformed or relay-incompatible --timeout is refused", () => {
+  const repo = newRepo("timeout-grammar"); const { runDir, brief } = newRun("timeout-grammar");
+  eq(dispatch({ phase: "scout", task: "P1", runDir, brief, repo, extra: ["--timeout", "1.5h", "--dry-run"] }).exit, 77, "1.5h");
+  eq(dispatch({ phase: "scout", task: "P1", runDir, brief, repo, extra: ["--timeout", "1h30m", "--dry-run"] }).exit, 0, "1h30m");
+});
+
+
+check("the first dispatch of a run must name a model", () => {
+  const repo = newRepo("no-model"); const { runDir, brief } = newRun("no-model");
+  const r = spawnSync(process.execPath, [DISPATCH, "--phase", "scout", "--task", "P1", "--brief", brief, "--run-dir", runDir, "--repo", repo, "--dry-run"],
+    { encoding: "utf8", env: { ...process.env, TO_ORC_RELAY: STUB } });
+  eq(r.status, 77, "exit");
+  if (!/--model is required/.test(r.stderr)) throw new Error("stderr does not ask for --model");
+});
+
+check("later dispatches inherit the run's model from run.json", () => {
+  const repo = newRepo("inherit-model"); const { runDir, brief } = newRun("inherit-model", { accept: ["scout"] });
+  eq(dispatch({ phase: "scout", task: "P1", runDir, brief, repo, extra: ["--model", "prov-b/model-b:low"] }).exit, 0, "first exit");
+  const r = dispatch({ phase: "research", task: "P2", runDir, brief, repo });
+  eq(r.exit, 0, "inherited exit");
+  eq(r.status.config.model, "prov-b/model-b:low", "inherited model");
+});
+
+
+check("verify is refused when the workspace moved after implement", () => {
+  const repo = newRepo("verify-drift");
+  const { runDir, brief } = newRun("verify-drift", { accept: ["scout", "research", "implement"] });
+  eq(dispatch({ mode: "write-new", phase: "implement", task: "P3", runDir, brief, repo }).exit, 0, "implement exit");
+  eq(dispatch({ phase: "verify", task: "P4", runDir, brief, repo }).exit, 0, "verify on the implemented tree");
+  fs.writeFileSync(path.join(repo, "later.txt"), "changed after implement");
+  const r = dispatch({ phase: "verify", task: "P4b", runDir, brief, repo });
+  eq(r.exit, 77, "verify on a moved tree");
+  if (!/changed after P3/.test(r.status.reason)) throw new Error("reason does not name the moved change set");
+});
+
 // --- verdict validator ------------------------------------------------------
 const VALIDATOR = path.join(here, "validate-verdict.mjs");
 const verdict = (o) => {
@@ -387,7 +526,7 @@ const verdict = (o) => {
   return spawnSync(process.execPath, [VALIDATOR, f], { encoding: "utf8" });
 };
 const validRevise = {
-  orchestration_summary: { task_id: "t", dispatched_to: "pi / zai:glm-5.3-flash", flags: "--thinking max", status: "REVISE" },
+  orchestration_summary: { task_id: "t", dispatched_to: "pi / prov-a/model-a", flags: "--model prov-a/model-a:max", status: "REVISE" },
   phase_audit: { scouting_completed: true, researching_completed: true, implementing_completed: true, verification_completed: true },
   plan_compliance: { all_steps_completed: false, deviations: ["one"] },
   implementation_review: { correctness_score: 6, issues_detected: [], findings: "why" },
@@ -416,6 +555,28 @@ check("validator rejects an all-false phase audit that is not FAIL", () => {
   const v = structuredClone(validRevise);
   v.phase_audit = { scouting_completed: false, researching_completed: false, implementing_completed: false, verification_completed: false };
   eq(verdict(v).status, 1, "exit");
+});
+
+check("validator rejects the template's own placeholders", () => {
+  const v = structuredClone(validRevise); v.orchestration_summary.dispatched_to = "pi / <provider>/<actualModel>";
+  eq(verdict(v).status, 1, "exit");
+});
+check("validator rejects dispatched_to without a provider/model pair", () => {
+  const v = structuredClone(validRevise); v.orchestration_summary.dispatched_to = "somewhere";
+  eq(verdict(v).status, 1, "exit");
+});
+check("validator --run-dir rejects a dispatched_to the run never used", () => {
+  const repo = newRepo("verdict-run"); const { runDir, brief } = newRun("verdict-run");
+  dispatch({ phase: "scout", task: "P1", runDir, brief, repo });
+  const f = path.join(root, "verdict-run.json");
+  const v = structuredClone(validRevise); v.orchestration_summary.dispatched_to = "pi / prov-b/model-b";
+  fs.writeFileSync(f, JSON.stringify(v));
+  eq(spawnSync(process.execPath, [VALIDATOR, f, "--run-dir", runDir]).status, 1, "mismatch exit");
+  fs.writeFileSync(f, JSON.stringify(validRevise));
+  eq(spawnSync(process.execPath, [VALIDATOR, f, "--run-dir", runDir]).status, 0, "match exit");
+});
+check("validator --help prints usage instead of reading a file", () => {
+  eq(spawnSync(process.execPath, [VALIDATOR, "--help"]).status, 0, "exit");
 });
 
 // --- report -----------------------------------------------------------------

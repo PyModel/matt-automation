@@ -10,7 +10,7 @@ Create `<run-dir>/ledger.md` before the first dispatch and update it after every
 # to-orc ledger — <task-id>
 task: <one-line objective>
 repo: <path>   baseline: <sha from the scout dispatch>
-config: pi · zai/glm-5.3-flash:max · thinking max
+config: pi · <worker.model from run.json>
 budget: <--max-cost, or "none"> · spent: see spend.json
 
 | phase | flag | task id | orcStatus | session | accepted |
@@ -85,7 +85,7 @@ Give the verifier the task requirements and the accepted plan. Give the implemen
 
 Require the verifier to independently inspect the final diff and run the relevant tests, lint, type checks, builds, and regression checks; and where applicable to examine security, dependency, migration, compatibility, and rollback implications.
 
-Verification must target the exact final change set: compare the `verify` dispatch's `changeSet.headBefore` + its worktree diff digest against the diff identifier recorded from `implement`. If they differ, something changed in between — repeat `verify` with a fresh worker after re-establishing the change set.
+Verification targets the exact final change set: the dispatcher refuses `verify` unless the workspace snapshot equals the one the last compliant `implement` or `repair` produced. On that refusal, something changed in between: re-establish the change set with a fresh `implement`, then verify.
 
 The verifier must classify every result as: passing · failing and attributable to the change · demonstrably pre-existing · skipped/blocked/unavailable · untested behavior and residual risk.
 

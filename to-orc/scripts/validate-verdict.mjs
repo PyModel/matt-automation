@@ -4,13 +4,16 @@
  * is sent. The commonest real failure of this skill is a fenced or prose-wrapped
  * JSON object; this catches that and every structural slip with it.
  *
- *   node validate-verdict.mjs <file>       # file holding the exact final message
- *   ... | node validate-verdict.mjs        # or on stdin
+ *   node validate-verdict.mjs <file> [--run-dir <dir>]   # file holding the exact final message
+ *   ... | node validate-verdict.mjs [--run-dir <dir>]    # or on stdin
+ *
+ * --run-dir cross-checks dispatched_to against the worker fixed in <dir>/run.json.
  *
  * Exit 0 = the text is a valid final message. Exit 1 = it is not; every problem
  * is printed, one per line. Nothing is rewritten — fixing it is the author's job.
  */
 import fs from "node:fs";
+import path from "node:path";
 
 const STATUSES = ["PASS", "REVISE", "FAIL"];
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
@@ -21,9 +24,19 @@ const problems = [];
 const bad = (m) => problems.push(m);
 const isStr = (v) => typeof v === "string" && v.trim() !== "";
 
-const raw = process.argv[2]
-  ? fs.readFileSync(process.argv[2], "utf8")
-  : fs.readFileSync(0, "utf8");
+const USAGE = "usage: validate-verdict.mjs [<file>] [--run-dir <dir>]   (reads stdin when no file is given)";
+let file = null;
+let runDir = null;
+for (let i = 2; i < process.argv.length; i += 1) {
+  const a = process.argv[i];
+  if (a === "-h" || a === "--help") { process.stdout.write(`${USAGE}\n`); process.exit(0); }
+  else if (a === "--run-dir") { runDir = process.argv[i + 1]; i += 1; }
+  else if (!a.startsWith("-") && file === null) file = a;
+  else { process.stderr.write(`unknown argument ${a}\n${USAGE}\n`); process.exit(2); }
+}
+if (runDir === undefined) { process.stderr.write(`--run-dir needs a directory\n${USAGE}\n`); process.exit(2); }
+
+const raw = file ? fs.readFileSync(file, "utf8") : fs.readFileSync(0, "utf8");
 
 const trimmed = raw.trim();
 if (trimmed.startsWith("```") || trimmed.endsWith("```")) bad("contains a Markdown fence — the final message must be raw JSON with no fences");
@@ -45,8 +58,14 @@ const os = v.orchestration_summary;
 if (!os || typeof os !== "object") bad("orchestration_summary missing");
 else {
   if (!isStr(os.task_id)) bad("orchestration_summary.task_id must be a non-empty string");
-  if (os.dispatched_to !== "pi / zai:glm-5.3-flash") bad(`orchestration_summary.dispatched_to must be "pi / zai:glm-5.3-flash"`);
-  if (os.flags !== "--thinking max") bad(`orchestration_summary.flags must be "--thinking max"`);
+  // pi names a worker provider/model; a leftover <placeholder> means the template was never filled.
+  if (!isStr(os.dispatched_to) || !/^pi \/ [A-Za-z0-9._-]+\/[A-Za-z0-9._:\/-]+$/.test(os.dispatched_to)) {
+    bad("orchestration_summary.dispatched_to must read \"pi / <provider>/<model id>\" with real values (e.g. \"pi / my-provider/my-model\")");
+  } else if (runDir) {
+    const expected = lockedWorker(runDir);
+    if (expected && os.dispatched_to !== expected) bad(`orchestration_summary.dispatched_to is "${os.dispatched_to}" but ${path.join(runDir, "run.json")} fixed the worker as "${expected}"`);
+  }
+  if (!isStr(os.flags) || /[<>]/.test(os.flags)) bad("orchestration_summary.flags must record the real worker flags (e.g. \"--model my-provider/my-model:high\"), not a template placeholder");
   if (!STATUSES.includes(os.status)) bad(`orchestration_summary.status must be one of ${STATUSES.join(", ")}`);
 }
 
@@ -103,6 +122,17 @@ if (pa && PHASE_FLAGS.every((f) => pa[f] === false)) {
 }
 
 report();
+
+function lockedWorker(dir) {
+  const f = path.join(dir, "run.json");
+  try {
+    const w = JSON.parse(fs.readFileSync(f, "utf8")).worker;
+    return `pi / ${w.provider}/${w.requestedModelId}`;
+  } catch {
+    bad(`--run-dir given but ${f} is missing or unreadable`);
+    return null;
+  }
+}
 
 function report() {
   if (problems.length === 0) {

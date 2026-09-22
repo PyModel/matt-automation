@@ -1,0 +1,3 @@
+interface:
+  display_name: "To Orc"
+  short_description: "Delegate scout, research, implement, and verify to pi workers on any model, with an evidence-backed JSON verdict"

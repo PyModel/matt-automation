@@ -85,9 +85,12 @@ def fixture(name: str) -> tuple[pathlib.Path,pathlib.Path,pathlib.Path]:
     brief=d/'brief.txt'; brief.write_text('Local audit fixture. No network.\n')
     return repo,rd,brief
 
+# The worker the mock relay reports; to-orc has no default model, so every dispatch names it.
+MODEL = ['--model', 'zai/glm-5.3-flash:max']
+
 def dispatch(repo: pathlib.Path, rd: pathlib.Path, brief: pathlib.Path, *, task='P1',phase='scout',mode='ok',extra: list[str]|None=None, **env: str) -> dict[str,Any]:
     r=run(['node',str(DISPATCH),'--phase',phase,'--task',task,'--brief',str(brief),
-           '--run-dir',str(rd),'--repo',str(repo),*(extra or [])],env={**ENV,'AUDIT_MODE':mode,**env})
+           '--run-dir',str(rd),'--repo',str(repo),*MODEL,*(extra or [])],env={**ENV,'AUDIT_MODE':mode,**env})
     sf=rd/task/'orc-status.json'; st=None
     if sf.is_file():
         try: st=json.loads(sf.read_text())
@@ -146,9 +149,10 @@ for staged in (False,True):
     target.write_text('different implementation B\n')
     if staged: git(repo,'add','new.txt')
     verify=dispatch(repo,rd,b,phase='verify',task='V')
-    identity=lambda x:(x['status']['changeSet']['headAfter'],x['status']['changeSet']['worktreeDiffSha'])
-    expect(('Staged' if staged else 'Untracked')+' changes cannot collide in the documented implementation/verification identity',identity(impl)!=identity(verify),
-           'Any change to the deliverable changes the recorded identity',{'identical_identity':identity(impl)==identity(verify),'implement_status':impl['status']['orcStatus'],'verify_status':verify['status']['orcStatus']})
+    # The dispatcher now refuses verify on a tree that moved after implement; that refusal is the safe outcome.
+    refused=verify['exit']==77 and 'changed after' in verify['status']['reason']
+    expect(('Staged' if staged else 'Untracked')+' changes cannot collide in the documented implementation/verification identity',refused,
+           'Verify is refused when the deliverable changed after implement',{'verify_exit':verify['exit'],'implement_status':impl['status']['orcStatus'],'verify_status':verify['status']['orcStatus'],'reason':verify['status']['reason']})
 
 # Path containment (dry-run avoids deliberately polluting a workspace).
 repo,rd,b=fixture('dotdot-directory'); rd=repo/'..artifacts'
@@ -223,7 +227,7 @@ for mode in ('nonzero-worker','error-stop'):
 
 # Verdict cross-field rules.
 valid={
- 'orchestration_summary':{'task_id':'audit','dispatched_to':'pi / zai:glm-5.3-flash','flags':'--thinking max','status':'PASS'},
+ 'orchestration_summary':{'task_id':'audit','dispatched_to':'pi / zai/glm-5.3-flash','flags':'--model zai/glm-5.3-flash:max','status':'PASS'},
  'phase_audit':{'scouting_completed':True,'researching_completed':True,'implementing_completed':True,'verification_completed':True},
  'plan_compliance':{'all_steps_completed':True,'deviations':[]},
  'implementation_review':{'correctness_score':9,'findings':'Checks completed.','issues_detected':[]},
@@ -303,7 +307,7 @@ expect('Hand-back criterion permits the mandatory persistent control worktree',c
 
 # A deliberately slow-terminating test relay proves terminal status does not fence writes.
 repo,rd,b=fixture('abort-writer'); target=repo/'after-abort.txt'
-proc=subprocess.Popen(['node',str(DISPATCH),'--phase','scout','--task','P1','--brief',str(b),'--run-dir',str(rd),'--repo',str(repo)],
+proc=subprocess.Popen(['node',str(DISPATCH),'--phase','scout','--task','P1','--brief',str(b),'--run-dir',str(rd),'--repo',str(repo),*MODEL],
     env={**ENV,'AUDIT_MODE':'linger-on-term','AUDIT_TARGET':str(target)},stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
 try:
     deadline=time.monotonic()+5

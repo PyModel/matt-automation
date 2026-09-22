@@ -65,7 +65,7 @@ Every dispatch writes `<run-dir>/<task>/orc-status.json`. **Read that file, not 
 | `WORKER_FAILED` | Config proven, worker did not succeed | Read `artifacts.stderr` and `final.txt`; re-brief once, or record a blocker |
 | `TIMEOUT` | Watchdog fired — **the change set is partial** | Never verify it as final; re-run `implement` fresh with a longer `--timeout` |
 | `ABORTED` | Relay was killed — **change set partial** | Same as `TIMEOUT` |
-| `NO_WRITES_VIOLATED` | A no-write phase changed the workspace | A deviation: record it with the listed paths, decide whether the phase must be re-run |
+| `NO_WRITES_VIOLATED` | A no-write phase changed the workspace; the dispatcher restored it | A deviation: record it with the listed paths and `changeSet.restore`; a restore that is not `verified` is a blocker; decide whether the phase must be re-run |
 | `CONFIG_NON_COMPLIANT` | Runtime/provider/model not as requested | Report `FAIL` — never silent fallback |
 | `RUNTIME_UNAVAILABLE` | `pi` or the relay is missing/unrunnable | Report `FAIL` |
 | `SCHEMA_DRIFT` | The relay's result schema changed | Report `FAIL`; this is a to-orc maintenance problem, say so — do not blame the worker |

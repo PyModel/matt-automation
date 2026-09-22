@@ -26,6 +26,18 @@ Context pointers only: ticket path, spec path, `CONTEXT.md`, notes dir, worktree
 8. Heartbeat: update `tickets/<NN>.status.md` before and after every slice and before any command expected to run longer than a minute (install, suite) with `heartbeat: <time>`, `agent: <id or pid>`, `active_cmd: <name if active>`, `slice: n/m`, last commit, suite result; commit the status file with `goal.mjs commit`. Redact secrets first. Spawn no agents; load only `tdd`, `defensive-design`, `diagnosing-bugs`, `code-review`, `wizard`, by path (SKILL.md § Loading skills).
 9. Return only: commit hash, suite result, cited review findings fixed, leads, blockers, or `stuck` / `claims breach` with the reason.
 
+## Implementer backend
+
+NOW's `worker:` picks who runs the implementer brief. Default `subagent`: the harness's own subagent, as above. `pi[/<provider>/<model>]` (named in the objective or answered by `/kun`): each ticket's brief goes to a pi worker through to-orc's dispatcher, which proves the model that ran and bounds the ticket by its cycle and cost caps:
+
+```
+d=$(git rev-parse --path-format=absolute --git-common-dir)/to-orc/<slug>/t<NN>   # outside every worktree
+node ROOT/to-orc/scripts/orc-dispatch.mjs --phase implement --task impl --background \
+  --brief <brief file> --run-dir "$d" --repo .worktrees/goal-<slug>-t<NN> [--model <provider>/<model>]
+```
+
+Before the first dispatch write `$d/accepted/scout.md` and `$d/accepted/research.md` citing `findings.md`, `spec.md` and the notes dir: stages 1–5 did that work. Poll with `--poll --task impl --run-dir "$d"`. `COMPLIANT` hands the ticket branch to the merger as usual; any other `orcStatus` is a stuck signal for § Stuck detection, with the status file's `reason` appended to the re-dispatch brief. One run directory per ticket, so the worker, cycles and budget are per ticket.
+
 ## Stuck detection
 
 Separate heartbeat liveness, active command execution, and completed-slice progress. A dispatched ticket is **stuck** when any of: its `heartbeat` is older than 30 minutes and its `agent` is not alive; its `slice` counter is unchanged across 3 heartbeats while NO command is actively running; its status file reports the same non-quarantined test failing 5 times; slice 12 or 90 minutes reached; or the harness reports the agent gone. Before any re-dispatch: explicitly revoke the old lease, send cancellation (SIGTERM, then SIGKILL if needed), and wait for confirmed process termination so two writers never share a worktree. Stuck once → record, re-dispatch from the status file with the failure appended to the brief. Stuck twice → mark `stuck` in `todo.md` with the reason, do not re-dispatch; mark dependent tickets `blocked: prerequisite <id> stuck`; continue the rest of the graph; it is a blocker in the report. Never a third dispatch.

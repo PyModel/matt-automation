@@ -73,6 +73,14 @@ switch (mode) {
   case "no-result": process.stderr.write("relay: bad flag\\n"); process.exit(2);
   case "old-pi": write({ ...base, piVersion: "0.99.0" }); break;
   case "error-stop": write({ ...base, stopReason: "error", exitCode: 0 }); process.exit(1);
+  case "vandal":
+    // every kind of write at once: an edited dirty file staged, a new nested file, a commit
+    fs.writeFileSync(path.join(repo, "README.md"), "vandalised\\n"); git("add", "README.md");
+    git("-c", "user.email=s@s", "-c", "user.name=s", "commit", "-qm", "worker commit");
+    fs.writeFileSync(path.join(repo, "dirty.txt"), "MUTATED"); git("add", "dirty.txt");
+    fs.mkdirSync(path.join(repo, "deep/er"), { recursive: true }); fs.writeFileSync(path.join(repo, "deep/er/new.txt"), "x");
+    fs.rmSync(path.join(repo, "staged.txt"));
+    write(base); break;
   case "slow": spawnSync(process.execPath, ["-e", "setTimeout(()=>{},60000)"]); write(base); break;
   default: throw new Error("unknown STUB_MODE " + mode);
 }
@@ -170,6 +178,44 @@ check("a worker commit is caught (HEAD moved)", () => {
   const r = dispatch({ mode: "commit", phase: "scout", task: "P1", runDir, brief, repo });
   eq(r.exit, 72, "exit"); eq(r.status.orcStatus, "NO_WRITES_VIOLATED", "orcStatus");
   eq(r.status.changeSet.headChanged, true, "headChanged");
+});
+
+check("a no-write phase's writes are undone, verified, and kept under a ref", () => {
+  const repo = newRepo("r5b"); const { runDir, brief } = newRun("run5b");
+  const g = (...a) => spawnSync("git", ["-C", repo, ...a], { encoding: "utf8" }).stdout.trim();
+  fs.writeFileSync(path.join(repo, "staged.txt"), "staged\n"); g("add", "staged.txt");
+  const state = () => [g("rev-parse", "HEAD"), g("symbolic-ref", "HEAD"), g("status", "--porcelain=v1", "--untracked-files=all"), g("diff", "--cached"), g("diff"),
+    fs.readFileSync(path.join(repo, "dirty.txt"), "utf8"), fs.existsSync(path.join(repo, "deep"))].join("|");
+  const before = state();
+  const r = dispatch({ mode: "vandal", phase: "scout", task: "P1", runDir, brief, repo });
+  eq(r.exit, 72, "exit"); eq(r.status.orcStatus, "NO_WRITES_VIOLATED", "orcStatus");
+  eq(r.status.changeSet.restore?.verified, true, `restore.verified (${r.status.changeSet.restore?.error})`);
+  eq(state(), before, "workspace state after restore");
+  eq(g("show", `${r.status.changeSet.restore.after}:dirty.txt`), "MUTATED", "writes kept under the after ref");
+  eq(g("show-ref", r.status.changeSet.restore.before), "", "before ref deleted after a verified restore");
+});
+
+check("a no-write phase on an unborn repository has its new files removed", () => {
+  const repo = path.join(root, "repos", "unborn"); fs.mkdirSync(repo, { recursive: true });
+  spawnSync("git", ["-C", repo, "init", "-q"]);
+  fs.writeFileSync(path.join(repo, "mine.txt"), "user file\n");
+  const { runDir, brief } = newRun("run-unborn");
+  const r = dispatch({ mode: "write-new", phase: "scout", task: "P1", runDir, brief, repo });
+  eq(r.exit, 72, "exit"); eq(r.status.changeSet.restore?.verified, true, `restore.verified (${r.status.changeSet.restore?.error})`);
+  eq(fs.existsSync(path.join(repo, "new.txt")), false, "new.txt removed");
+  eq(fs.readFileSync(path.join(repo, "mine.txt"), "utf8"), "user file\n", "user file kept");
+});
+
+check("a compliant no-write phase leaves no snapshot ref behind", () => {
+  const repo = newRepo("r5c"); const { runDir, brief } = newRun("run5c");
+  eq(dispatch({ phase: "scout", task: "P1", runDir, brief, repo }).exit, 0, "exit");
+  eq(spawnSync("git", ["-C", repo, "for-each-ref", "refs/to-orc"], { encoding: "utf8" }).stdout.trim(), "", "refs/to-orc");
+});
+
+check("a first dispatch creates a --run-dir that does not exist yet", () => {
+  const repo = newRepo("r5d"); const { brief } = newRun("run5d");
+  const r = dispatch({ phase: "scout", task: "P1", runDir: path.join(root, "runs", "fresh-dir"), brief, repo });
+  eq(r.exit, 0, "exit");
 });
 
 check("implement records the change set and its diff identifier", () => {

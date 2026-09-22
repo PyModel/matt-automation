@@ -89,7 +89,7 @@ Verification targets the exact final change set: the dispatcher refuses `verify`
 
 The verifier must classify every result as: passing · failing and attributable to the change · demonstrably pre-existing · skipped/blocked/unavailable · untested behavior and residual risk.
 
-**Exit gate:** an evidence-backed verification report mapping results to the acceptance criteria. A `NO_WRITES_VIOLATED` status here means the verifier touched the implementation — that is a deviation, and the change set must be re-verified by another fresh worker.
+**Exit gate:** an evidence-backed verification report mapping results to the acceptance criteria. A `NO_WRITES_VIOLATED` status here means the verifier touched the implementation — that is a deviation; once `changeSet.restore.verified` confirms the change set is back, it must be re-verified by another fresh worker.
 
 ## Repair and termination
 

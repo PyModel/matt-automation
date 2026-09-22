@@ -100,7 +100,7 @@ Point every downstream step at a **full path or full reference** (`.worktrees/co
 - **Cache kun**: `kun/<sha>/` present in the control plane; SHA in NOW.
 - **Setup**: `docs/agents/issue-tracker.md`, `docs/agents/domain.md`, `docs/agents/triage-labels.md` and the `## Agent skills` block exist in the run branch's history via `goal/bootstrap` (or were already on base).
 - **Control plane + registry**: `matt.mjs check` exited 0 and its pin is in NOW; `goal/control` worktree exists; registry entry with `run_id`; no duplicate running objective.
-- **Environment contract**: NOW carries `commands:`, `packages:` (if monorepo), `per-worktree:` (run-scoped), `max_concurrent_tickets`, `baseline:` (per-test set, 3 runs), `quarantine:`, `nested:`, `review_base:`.
+- **Environment contract**: NOW carries `commands:`, `packages:` (if monorepo), `per-worktree:` (run-scoped), `max_concurrent_tickets`, `baseline:` (per-test set, 3 runs), `quarantine:`, `nested:`, `worker:` (`subagent`, or `pi[/<provider>/<model>]`, BUILD.md § Implementer backend), `review_base:`.
 - **Route**: classification logged (`bug | issue | refactor | upkeep | fog | greenfield | feature`); flow named; adopted-patterns list, each line `pattern, from /<skill>`; research need logged (`none | targeted | up-front`); `findings.md` exists with repo facts, requirements R1…, open questions Q1….
 - **On-ramp**: the chosen on-ramp's criteria in FLOWS.md § On-ramp completion criteria, or `skipped: plain feature` logged; for route `bug`, the fast-path decision logged with its reason.
 - **Research**: every Q in `findings.md` closed with a sourced fact or logged `research: skipped (no external unknown)`; no "TBD".

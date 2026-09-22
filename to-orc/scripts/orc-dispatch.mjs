@@ -13,6 +13,10 @@
  * (HEAD + per-path content digests + index/worktree diff digests), so content
  * edits to already-dirty files, staging, renames and worker commits are all
  * caught, and the change set carries a dispatcher-produced diff identifier.
+ *
+ * A no-write phase runs against a pinned snapshot of the workspace. If it writes
+ * anyway, its writes are pinned too and the workspace is put back, verified by
+ * the fingerprint, so a read-only phase never leaves the user's tree changed.
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -372,6 +376,95 @@ function diffFingerprints(before, after) {
   };
 }
 
+// ----------------------------------------------------------------- restore
+
+const SNAPSHOT_ENV = {
+  GIT_AUTHOR_NAME: "to-orc", GIT_AUTHOR_EMAIL: "to-orc@localhost",
+  GIT_COMMITTER_NAME: "to-orc", GIT_COMMITTER_EMAIL: "to-orc@localhost",
+  GIT_LITERAL_PATHSPECS: "1",
+};
+
+function gitRun(repo, args, { env = {}, input } = {}) {
+  const r = spawnSync("git", ["-C", repo, ...args], {
+    encoding: "utf8", input, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, ...SNAPSHOT_ENV, ...env },
+  });
+  if (r.error || r.status !== 0) throw new Error(`git ${args[0]} failed: ${(r.stderr || r.error?.message || "").trim()}`);
+  return r.stdout.trim();
+}
+
+/** A commit of every non-ignored file as it is on disk right now, pinned under `ref`. */
+function snapshotTree(repo, ref) {
+  const tmpIndex = path.join(os.tmpdir(), `to-orc-index-${process.pid}-${crypto.randomUUID()}`);
+  try {
+    const env = { GIT_INDEX_FILE: tmpIndex };
+    const head = headState(repo).sha;
+    gitRun(repo, head ? ["read-tree", head] : ["read-tree", "--empty"], { env });
+    gitRun(repo, ["add", "-A"], { env });
+    const tree = gitRun(repo, ["write-tree"], { env });
+    const commit = gitRun(repo, ["commit-tree", tree, ...(head ? ["-p", head] : []), "-m", `to-orc snapshot ${ref}`]);
+    gitRun(repo, ["update-ref", ref, commit]);
+    return commit;
+  } finally {
+    fs.rmSync(tmpIndex, { force: true });
+  }
+}
+
+function headState(repo) {
+  const r = spawnSync("git", ["-C", repo, "symbolic-ref", "-q", "HEAD"], { encoding: "utf8" });
+  const symbolic = r.status === 0 ? r.stdout.trim() : null;
+  const s = spawnSync("git", ["-C", repo, "rev-parse", "-q", "--verify", "HEAD^{commit}"], { encoding: "utf8" });
+  return { symbolic, sha: s.status === 0 ? s.stdout.trim() : null };
+}
+
+/** Everything needed to put a workspace back: the file tree, the index file, and HEAD. */
+function pinWorkspace(repo, refBase, out) {
+  const indexFile = gitRun(repo, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
+  const indexCopy = path.join(out, "index.before");
+  fs.mkdirSync(out, { recursive: true });
+  const hadIndex = fs.existsSync(indexFile);
+  if (hadIndex) fs.copyFileSync(indexFile, indexCopy);
+  return { refBase, head: headState(repo), indexFile, indexCopy: hadIndex ? indexCopy : null, tree: snapshotTree(repo, `${refBase}/before`) };
+}
+
+/** Pins the worker's writes under <refBase>/after, then puts HEAD, the tree and the index back. */
+function restoreWorkspace(repo, pin, before) {
+  const out = { before: `${pin.refBase}/before`, after: `${pin.refBase}/after`, verified: false, error: null };
+  try {
+    const after = snapshotTree(repo, out.after);
+    const root = gitRun(repo, ["rev-parse", "--show-toplevel"]);
+    // HEAD first: the branch the worker committed to (or switched to) goes back where it was.
+    if (pin.head.symbolic) {
+      gitRun(repo, ["symbolic-ref", "HEAD", pin.head.symbolic]);
+      if (pin.head.sha) gitRun(repo, ["update-ref", pin.head.symbolic, pin.head.sha]);
+      else gitRun(repo, ["update-ref", "-d", pin.head.symbolic]);
+    } else if (pin.head.sha) {
+      gitRun(repo, ["update-ref", "--no-deref", "HEAD", pin.head.sha]);
+    }
+    const changed = gitRun(repo, ["diff", "--name-only", "--no-renames", "-z", pin.tree, after]).split("\0").filter(Boolean);
+    const inBefore = new Set(changed.length
+      ? gitRun(repo, ["ls-tree", "-r", "-z", "--name-only", pin.tree, "--", ...changed]).split("\0").filter(Boolean)
+      : []);
+    const back = changed.filter((p) => inBefore.has(p));
+    if (back.length) gitRun(repo, ["restore", `--source=${pin.tree}`, "--worktree", "--pathspec-from-file=-", "--pathspec-file-nul", "--"], { input: `${back.join("\0")}\0` });
+    for (const p of changed.filter((p) => !inBefore.has(p))) {
+      fs.rmSync(path.join(root, p), { force: true });
+      for (let dir = path.dirname(path.join(root, p)); dir.startsWith(`${root}${path.sep}`); dir = path.dirname(dir)) {
+        try { fs.rmdirSync(dir); } catch { break; }
+      }
+    }
+    // The index last, byte for byte, so staged state and flags come back exactly.
+    if (pin.indexCopy) fs.copyFileSync(pin.indexCopy, pin.indexFile);
+    else fs.rmSync(pin.indexFile, { force: true });
+    spawnSync("git", ["-C", repo, "update-index", "-q", "--refresh"], { stdio: "ignore" });
+    const now = fingerprint(repo);
+    out.verified = Boolean(now && now.snapshotId === before.snapshotId);
+    if (!out.verified) out.error = "the restored workspace does not match the pre-dispatch fingerprint";
+  } catch (e) {
+    out.error = e.message;
+  }
+  return out;
+}
+
 // ------------------------------------------------------------------ spend
 
 function recordSpend(runDir, entry) {
@@ -704,6 +797,7 @@ if (locked) {
     finish(ctx, "PRECONDITION_FAILED", `this dispatch changes settings fixed in ${runLockFile}: ${drift.join("; ")} — pass the run's settings, or start a new run directory`);
   }
 } else if (!opts.dryRun) {
+  fs.mkdirSync(runDir, { recursive: true });
   fs.writeFileSync(runLockFile, `${JSON.stringify(runLock, null, 2)}\n`);
 }
 
@@ -741,6 +835,10 @@ if (opts.background) {
   process.exit(0);
 }
 
+// The pre-dispatch fingerprint and, for a no-write phase, the pinned workspace (§ restore).
+let before = null;
+let pin = null;
+
 // A terminal status must exist however this process ends.
 for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
   process.on(sig, () => {
@@ -762,14 +860,38 @@ for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
         spawnSync(process.execPath, ["-e", "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)"]);
       }
     }
-    if (!finalWritten) finish(ctx, "ABORTED", `the dispatch received ${sig} — any change set is PARTIAL and must not be verified as final`);
+    if (finalWritten) process.exit(EXIT.ABORTED);
+    const partial = diffFingerprints(before, fingerprint(repo));
+    const changeSetOut = { verified: partial.verified, pathsChanged: partial.pathsChanged, detail: partial.detail };
+    undoWrites(changeSetOut);
+    finish(ctx, "ABORTED", `the dispatch received ${sig} — any change set is PARTIAL and must not be verified as final`, { changeSet: changeSetOut });
     process.exit(EXIT.ABORTED);
   });
 }
 writeStatus(ctx.out, buildStatus(ctx, "RUNNING", "dispatch in flight", {}));
 
-const before = fingerprint(repo);
+before = fingerprint(repo);
 if (!before) ctx.warnings.push("workspace is not a git repository — writes cannot be verified and no diff identifier exists");
+// A no-write phase gets its workspace pinned first, so any write can be undone (§ restore).
+if (policy.writes === "none" && before) {
+  try {
+    pin = pinWorkspace(repo, `refs/to-orc/${sha(Buffer.from(`${canonRunDir}\0${opts.task}`)).slice(0, 16)}`, ctx.out);
+  } catch (e) {
+    ctx.warnings.push(`could not pin the workspace (${e.message}) — a write by this phase would not be undone`);
+  }
+}
+/** Undo a no-write phase's writes; the restore record joins the change set. */
+function undoWrites(changeSetOut) {
+  if (!pin) return;
+  if (changeSetOut.detail.length) {
+    changeSetOut.restore = restoreWorkspace(repo, pin, before);
+    if (changeSetOut.restore.verified) spawnSync("git", ["-C", repo, "update-ref", "-d", changeSetOut.restore.before], { stdio: "ignore" });
+  } else {
+    spawnSync("git", ["-C", repo, "update-ref", "-d", `${pin.refBase}/before`], { stdio: "ignore" });
+  }
+  try { fs.rmSync(pin.indexCopy ?? "", { force: true }); } catch {}
+  pin = null;
+}
 
 const relayArgs = [relay, "--brief", briefPath, "--cd", repo, "--out-dir", ctx.out, "--timeout", timeout];
 if (!worker.piDefault) relayArgs.push("--provider", worker.provider, "--model", worker.model);
@@ -804,6 +926,7 @@ const changeSetOut = {
   pathsChanged: changeSet.pathsChanged,
   detail: changeSet.detail,
 };
+undoWrites(changeSetOut);
 
 // The relay writes result.json on every outcome once the brief validates. Its
 // absence means the relay rejected our invocation or never started.
@@ -879,7 +1002,11 @@ if (policy.writes === "none") {
   if (!changeSet.verified) {
     ctx.warnings.push("no-write compliance is UNVERIFIED — record it as an unknown, never as a clean tree");
   } else if (changeSet.detail.length) {
-    finish(ctx, "NO_WRITES_VIOLATED", `phase ${opts.phase} must not modify the workspace but ${changeSet.detail.length} change(s) were fingerprinted: ${changeSet.detail.slice(0, 10).join("; ")}`, extra);
+    const r = changeSetOut.restore;
+    const undone = !r ? "the workspace could not be pinned, so the writes remain"
+      : r.verified ? `the workspace was restored and verified; the writes are kept at ${r.after}`
+      : `RESTORE FAILED (${r.error}); the pre-dispatch state is at ${r.before}, the writes at ${r.after}`;
+    finish(ctx, "NO_WRITES_VIOLATED", `phase ${opts.phase} must not modify the workspace but ${changeSet.detail.length} change(s) were fingerprinted: ${changeSet.detail.slice(0, 10).join("; ")} — ${undone}`, extra);
   }
 }
 

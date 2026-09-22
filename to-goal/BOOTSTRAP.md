@@ -1,23 +1,31 @@
-# Bootstrap: stages 0 to 0d
+# Bootstrap: stages 00 to 0d
 
 Read CONTROL.md, then PIPELINE.md § Isolation and § Setup defaults.
 
-## 0. Control plane and registry
+## 00. Repo, control plane, wiring, map
 
-00. **Skill wiring.** Run `node ROOT/scripts/matt.mjs check` (SKILL.md § Loading skills). Nonzero exit: report the printed errors and end; nothing has been written yet. Otherwise carry the printed `pin:` into NOW at step 4.
-0. **Repo state classification.** Classify repository state before proceeding: absent (fail or initialize if authorized), unborn (git init with no commits: create an initial empty commit `git commit --allow-empty -m "Initial commit"` before worktree creation), empty-but-committed, or established.
-1. With `goal.mjs with-lock exclude --` add `.worktrees/` to `.git/info/exclude` if absent.
-2. With `goal.mjs with-lock control --`: if `.worktrees/control/` is missing, create it (CONTROL.md § Rules). If a remote tracks `goal/control`, fast-forward it.
-3. Inside one `goal.mjs with-lock registry --` transaction: derive the slug, check `runs.json` for a duplicate or overlapping running objective (refuse and report unless `--force`), append this run with the next `run_id`, `status: bootstrapping`, the harness name and this agent's id or pid; commit.
-4. `node ROOT/scripts/goal.mjs init <slug> "<objective>"` creates and commits `runs/<slug>/` with `ledger.md`, `todo.md` (every stage line, unticked, in the grammar `goal.mjs next` parses), `log.md`, and `bugs.md`. Then write `run_id` into NOW and tick `00`.
-5. If the user's checkout has uncommitted changes (`git status --porcelain` non-empty), write `dirty-checkout: yes (N files)` into NOW: the run builds from the base commit and will not see them; the report repeats it.
-6. `--gc` candidate sweep (report-only by default; § Kill switch and GC below).
+In order:
+
+1. Classify the repository: absent (fail, or initialize if authorized), unborn (a git repo with no commits: `git commit --allow-empty -m "Initial commit"`), empty-but-committed, or established.
+2. `node ROOT/scripts/goal.mjs control` creates the control plane if missing (orphan `goal/control` worktree, `.worktrees/` excluded); idempotent. If a remote tracks `goal/control`, fast-forward it.
+3. `node ROOT/scripts/goal.mjs slug "<objective>"` names the run (`--new` only on an explicit `--force` re-run of a finished objective). A loop tick for the same objective gets the same slug, so it resumes that run, or ends it if it is done.
+4. `node ROOT/scripts/matt.mjs check` (SKILL.md § Loading skills). Nonzero exit: `node ROOT/scripts/goal.mjs stop <slug> "<the printed errors>"` and end.
+5. Read ask-matt (`node ROOT/scripts/matt.mjs resolve ask-matt`): it is the map every later stage follows, and stage 1 routes by it.
+
+Done when the control plane exists, the check passed, and ask-matt is read.
+
+## 0. Register
+
+Check `runs.json` for a running objective that overlaps this one by ≥ 80 % of tokens (refuse and report unless `--force`). Then `node ROOT/scripts/goal.mjs init <slug> "<objective>"` registers the run with the next `run_id` and creates and commits `runs/<slug>/` with `ledger.md`, `todo.md` (every stage line, unticked, in the grammar `goal.mjs next` parses), `log.md`, and `bugs.md`. Write `run_id` and the check's `pin:` into NOW; tick `00` and `0`. Then:
+
+1. If the user's checkout has uncommitted changes (`git status --porcelain` non-empty), write `dirty-checkout: yes (N files)` into NOW: the run builds from the base commit and will not see them; the report repeats it.
+2. `--gc` candidate sweep (report-only by default; § Kill switch and GC below).
 
 Done when the registry entry exists and `runs/<slug>/` is committed on `goal/control`.
 
 ## 0a. Cache kun
 
-KUN.md § Cache once, into `kun/<sha>/` in the control plane (shared by all runs; reuse an existing `<sha>` dir when the upstream SHA is unchanged). Fetch failure with no cached SHA at all: set the registry entry to `aborted: kun unreachable`, commit, and end before any other mutation. Fetch failure with a cached SHA: use the newest cache and log `kun: cached <sha>, upstream unreachable`.
+KUN.md § Cache once, into `kun/<sha>/` in the control plane (shared by all runs; reuse an existing `<sha>` dir when the upstream SHA is unchanged). Fetch failure with no cached SHA at all: `node ROOT/scripts/goal.mjs stop <slug> "kun unreachable"` and end before any other mutation. Fetch failure with a cached SHA: use the newest cache and log `kun: cached <sha>, upstream unreachable`.
 
 ## 0b. Setup on the bootstrap branch
 
@@ -31,10 +39,10 @@ Done when the three files and the block exist on `goal/bootstrap` (or base).
 ## 0c. Isolate
 
 1. Resolve current default branch head (`main` or remote default branch). If `goal/bootstrap` exists, verify it incorporates the current default branch (rebase if stale) and use it as `<base>`; otherwise `<base>` = default branch head (`origin/HEAD` if a remote exists, else local default branch).
-2. `git worktree add -b goal/<slug> .worktrees/goal-<slug> <base>` (slug from the registry; `-2` suffix only for a finished prior run of the same slug).
+2. `git worktree add -b goal/<slug> .worktrees/goal-<slug> <base>` (the slug from stage 00).
 3. Record immutable `review_base = $(git rev-parse HEAD)` in NOW immediately upon worktree creation: all subsequent diagnosis, planning, scaffold, and ticket diffs will be reviewed against this immutable base.
 4. Every later action happens inside the run worktree or the control worktree. Never `cd` back into the user's checkout.
-5. Registry `status: planning`; NOW records `base`, `review_base`, `run_branch`.
+5. `node ROOT/scripts/goal.mjs registry <slug> planning`; NOW records `base`, `review_base`, `run_branch`.
 
 Done when `git worktree list` shows the run worktree on its own branch and `review_base` is recorded.
 
@@ -43,8 +51,8 @@ Done when `git worktree list` shows the run worktree on its own branch and `revi
 1. **Commands.** Detect install, typecheck, lint, single-test, full-suite, and (if any) regenerate commands for shared files (lockfile, codegen, snapshots) from the environment. Monorepo signals (`pnpm-workspace.yaml`, `workspaces`, `packages/*` with own `src/`) → detect per package and record a `packages:` map; claims and baselines are then per package.
 2. **Per-worktree recipe, run-scoped.** Ports = `3000 + 100 * run_id + NN`; database/schema suffix `_<slug>_t<NN>`; compose project name `<slug>-t<NN>`; temp dirs under the worktree; `.env` copied with the substitutions applied. Any resource with no override → `max_concurrent_tickets: 1`, logged why.
 3. **Baseline, three runs.** Install, then run the full suite 3× at base in the run worktree; record the per-test result set. Tests failing all 3× are pre-existing bugs (BUILD.md § Bugs found in flight); tests failing 1–2× are **flaky** and go into `quarantine.json` with an explicit owner, reason, and expiry, keyed by base commit. Quarantined tests continue to be executed and reported; an intermittent failure turning into a persistent failure blocks approval. Baseline = the per-test set, not a count.
-4. **Capability probe.** Preflight runtime tools, Node/Git versions, and subagent spawn capability. Determine whether a subagent on this harness can spawn subagents (dispatch a trivial subagent that tries to spawn one and reports). `nested: yes` → implementers run `code-review` themselves. `nested: no` → **flat mode**: implementers do a single-agent review inline (both axes, in one pass) and the orchestrator runs `code-review` per ticket after merge; log `degraded: flat spawn`. Record `nested:` in NOW.
-5. Registry `status: planning`; NOW carries `commands:`, `packages:`, `per-worktree:`, `max_concurrent_tickets`, `baseline:`, `quarantine:`, `nested:`, `review_base:`.
+4. **Capability probe.** Preflight runtime tools, Node/Git versions, and subagent spawn capability. Determine whether a subagent on this harness can spawn subagents (dispatch a trivial subagent that tries to spawn one and reports). `nested: yes` → implementers run `code-review` themselves. `nested: no` → **flat mode**: implementers do a single-agent review inline (both axes, in one pass) and the orchestrator runs `code-review` per ticket after merge; log `degraded: flat spawn`. No subagents at all on this harness → `nested: none`: every subagent role (answerer, challenger, reconciler, implementer, merger, reviewer, fixer) runs inline, one at a time, started from its brief and the ledger alone; the orchestrator rewrites NOW and compacts or clears context between roles where the harness allows; `max_concurrent_tickets: 1`; log `degraded: no subagents`. Record `nested:` in NOW.
+5. NOW carries `commands:`, `packages:`, `per-worktree:`, `max_concurrent_tickets`, `baseline:`, `quarantine:`, `nested:`, `review_base:`.
 
 Done when NOW carries all of those and the control plane is committed.
 

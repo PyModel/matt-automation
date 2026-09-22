@@ -20,14 +20,14 @@ Locks are the one thing not committed: `mkdir` directories under `$(git rev-pars
 
 - `goal.mjs commit -m "[<slug>] <what>" <file>...` stages exactly those control-plane files and commits them under the `control` lock. This is the only way to commit to the control plane.
 - `goal.mjs take <feature> <n>` flips up to `n` frontier tickets to `in-flight` under `frontier-<feature>` and commits them; `goal.mjs status <feature> <id> <status>` sets one ticket's status and commits it.
-- `goal.mjs with-lock <name> -- <cmd...>` runs one command under any other lock (`integration`, `bootstrap`, `exclude`, `registry`).
+- `goal.mjs with-lock <name> -- <cmd...>` runs one command under any lock (`integration`, `bootstrap`, `registry`, or `frontier-<feature>` on a GitHub tracker). Locks are re-entrant for that command, so it may call `goal.mjs commit` itself.
+- File arguments are paths inside the control worktree (`runs/<slug>/ledger.md`); a path from the current directory that lands inside it (`.worktrees/control/runs/…`) works too.
 
 | Lock | Guards |
 |---|---|
-| `control` | creating `goal/control` and its worktree; every commit to it (`goal.mjs commit` stages only the named files, so concurrent agents' half-written files stay out). |
+| `control` | creating `goal/control`, its worktree, and the `.worktrees/` exclude (`goal.mjs control`); every commit to it (`goal.mjs commit` stages only the named files, so concurrent agents' half-written files stay out). |
 | `integration` | merging ticket branches into run branch head (rebasing, fast-forwarding, removing ticket worktrees) |
 | `bootstrap` | creating `goal/bootstrap` |
-| `exclude` | editing `.git/info/exclude` |
 | `frontier-<feature>` | reading the frontier and flipping a ticket to `in-flight` |
 | `registry` | reading and editing `runs.json` |
 
@@ -35,7 +35,7 @@ Locks are the one thing not committed: `mkdir` directories under `$(git rev-pars
 
 
 - Create the control plane once (stage 0, under the `control` lock): `git worktree add --orphan -b goal/control .worktrees/control` (git ≥ 2.42), first commit `Init to-goal control plane`. If it exists, `git -C .worktrees/control pull --ff-only` when a remote tracks it, else nothing.
-- Every control-plane write is committed with `goal.mjs commit`, subject `[<slug>] <what>`; the user reads the whole factory's history with `git log goal/control`. A file only one agent writes (its own `runs/<slug>/` files, its ticket status file) needs no lock for the write itself; a file several agents write (`runs.json`, tracker tickets) is written inside `goal.mjs with-lock`, `take`, or `status`.
+- Every control-plane write is committed with `goal.mjs commit`, subject `[<slug>] <what>`; the user reads the whole factory's history with `git log goal/control`. A file only one agent writes (its own `runs/<slug>/` files, its ticket status file) needs no lock for the write itself; a file several agents write is written only by the command that owns it: `runs.json` by `init`, `registry`, and `stop`; tracker tickets by `take` and `status`, which read, write, and commit under the ticket lock.
 - The control worktree is shared by every run and every subagent; it is the only path that crosses run boundaries.
 - `.worktrees/` stays in `.git/info/exclude`; `goal/control` is a normal branch and may be pushed if the user wants the factory history on the remote (report says how; never pushed by a run).
 
@@ -45,7 +45,7 @@ Locks are the one thing not committed: `mkdir` directories under `$(git rev-pars
 [{"slug":"add-login","objective":"…","run_id":3,"started":"2026-09-07T13:40Z","status":"building","harness":"claude-code","agent":"<id or pid>","base":"9f8e7d6","review_base":"9f8e7d6","run_branch":"goal/add-login"}]
 ```
 
-`run_id` is the next unused integer; it scopes ports and database names (BOOTSTRAP.md § 0c). Slug derivation: lower-case, non-alphanumerics to `-`, collapse, trim to 40 chars; if a **running** entry has the same slug or an objective with ≥ 80 % token overlap, the new run refuses to start and reports the existing slug (duplicate objective) unless the objective says `--force`. A finished entry with the same slug gets `-2`. `--stop` without a slug stops the single running entry, or reports the list when there are several.
+`run_id` is the next unused integer; it scopes ports and database names (BOOTSTRAP.md § 0c). `goal.mjs` owns the file: `slug` derives the slug (lower-case, non-alphanumerics to `-`, collapsed, at most 40 chars; `--new` picks the next free `-2`, `-3` for a deliberate re-run), `init` appends the entry, `registry <slug> <status>` moves it (`bootstrapping` → `planning` → `specced` → `ticketed` → `building` → `reviewing` → `done`, or `stopped`), and `stop` writes `STOP` and sets `stopped`. The ≥ 80 % token-overlap duplicate check is the agent's judgement, before `init`. `--stop` without a slug stops the single running entry, or reports the list when there are several.
 
 ## Tracker grammar (local tracker)
 

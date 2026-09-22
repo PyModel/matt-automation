@@ -2,8 +2,12 @@
 // The mechanical half of a /to-goal run: everything that is a rule over files, so
 // no agent re-derives it from prose.
 //
-//   node scripts/goal.mjs init <slug> <objective>         create runs/<slug>/ with a todo.md that next can parse, and commit it
+//   node scripts/goal.mjs control                         create the control plane (orphan goal/control worktree) if missing
+//   node scripts/goal.mjs slug <objective> [--new]        the run slug; --new picks a free -2, -3 … for a deliberate re-run
+//   node scripts/goal.mjs init <slug> <objective>         register the run and create runs/<slug>/ that next can parse; commit
 //   node scripts/goal.mjs next <slug>                     where the run resumes (JSON)
+//   node scripts/goal.mjs stop <slug> <reason>            halt the run: write runs/<slug>/STOP and set the registry status
+//   node scripts/goal.mjs registry <slug> <status>        set the run's status in runs.json and commit
 //   node scripts/goal.mjs frontier <feature>              ticket grammar, frontier, claim overlaps (JSON)
 //   node scripts/goal.mjs take <feature> <n>              atomically flip up to <n> frontier tickets (n = free slots) to in-flight (JSON ids)
 //   node scripts/goal.mjs status <feature> <id> <status>  set one ticket's **Status:** and commit
@@ -12,7 +16,7 @@
 //   node scripts/goal.mjs commit -m <msg> <file>...       stage exactly <file>s in the control plane and commit, under the control lock
 //
 // Every command takes --repo <path> (default: cwd); any worktree of the repo works.
-// Exit 0 = ok, 1 = the answer is "no" (claims breach, malformed tickets, stopped), 2 = usage.
+// Exit 0 = ok, 1 = the answer is "no" (claims breach, malformed tickets, a refused take, stopped), 2 = usage, 3 = runtime error.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,8 +26,8 @@ import { fileURLToPath } from 'node:url';
 // Stage order is the pipeline. `artifact` is a file in runs/<slug>/ that must exist
 // for a ticked stage to count as done: the files outrank the checkbox.
 export const STAGES = [
-  { id: '00', name: 'skill wiring', phase: 'BOOTSTRAP.md' },
-  { id: '0', name: 'control plane', phase: 'BOOTSTRAP.md', artifact: 'ledger.md' },
+  { id: '00', name: 'wiring and ask-matt', phase: 'BOOTSTRAP.md' },
+  { id: '0', name: 'register', phase: 'BOOTSTRAP.md', artifact: 'ledger.md' },
   { id: '0a', name: 'cache kun', phase: 'BOOTSTRAP.md' },
   { id: '0b', name: 'setup', phase: 'BOOTSTRAP.md' },
   { id: '0c', name: 'isolate', phase: 'BOOTSTRAP.md' },
@@ -44,34 +48,144 @@ export const STAGES = [
 ];
 
 const STATUSES = new Set(['ready-for-agent', 'in-flight', 'done', 'stuck', 'blocked', 'needs-human']);
+const STATUS_LINE = /^\*\*Status:\*\* ([a-z-]+)(?::[^\n]*)?[ \t]*$/m;
+
+/** Ticket numbers compare by value: `1`, `01`, and `001` are one ticket. */
+function ticketId(raw) {
+  return /^\d+$/.test(raw) ? String(Number(raw)).padStart(2, '0') : null;
+}
+
+function ticketFiles(issues) {
+  const files = new Map();
+  const duplicates = [];
+  for (const file of fs.readdirSync(issues).filter((f) => f.endsWith('.md')).sort()) {
+    const id = ticketId(file.match(/^(\d+)/)?.[1] ?? '');
+    if (!id) continue;
+    if (files.has(id)) duplicates.push({ id, file: path.join(issues, file), problems: [`ticket number ${id} is also used by ${path.basename(files.get(id))}`] });
+    else files.set(id, path.join(issues, file));
+  }
+  return { files, duplicates };
+}
 const STALE_LOCK_MS = 10 * 60 * 1000;
 const LOCK_WAIT_MS = 120 * 1000;
+
+const CONTROL_BRANCH = 'goal/control';
+
+class UsageError extends Error {}
+/** The answer is "no" (a gate refused): exit 1, like a claims breach. */
+class Refusal extends Error {}
 
 export function controlDir(repo) {
   const common = git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
   return path.join(path.dirname(common), '.worktrees', 'control');
 }
 
+/** The control worktree, proven to be on goal/control, so a write can never land on a user branch. */
+function requireControl(repo) {
+  const control = controlDir(repo);
+  let top = null;
+  let branch = null;
+  try {
+    top = fs.realpathSync(git(control, ['rev-parse', '--show-toplevel']));
+    branch = git(control, ['symbolic-ref', '--short', 'HEAD']);
+  } catch { /* not a worktree */ }
+  if (top !== (fs.existsSync(control) ? fs.realpathSync(control) : null) || branch !== CONTROL_BRANCH) {
+    throw new Error(`no control plane at ${control} on ${CONTROL_BRANCH}; run \`goal.mjs control\` first`);
+  }
+  return control;
+}
+
+export function ensureControl(repo) {
+  const control = controlDir(repo);
+  return withLock(repo, 'control', () => {
+    if (fs.existsSync(control)) return requireControl(repo);
+    const root = path.dirname(path.dirname(control));
+    const exclude = path.join(git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']), 'info', 'exclude');
+    fs.mkdirSync(path.dirname(exclude), { recursive: true });
+    const excluded = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : '';
+    if (!excluded.split('\n').includes('.worktrees/')) fs.appendFileSync(exclude, `${excluded && !excluded.endsWith('\n') ? '\n' : ''}.worktrees/\n`);
+    const exists = spawnSync('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `refs/heads/${CONTROL_BRANCH}`]).status === 0;
+    if (exists) git(root, ['worktree', 'add', '-q', control, CONTROL_BRANCH]);
+    else {
+      git(root, ['worktree', 'add', '-q', '--orphan', '-b', CONTROL_BRANCH, control]);
+      git(control, ['commit', '-q', '--allow-empty', '-m', 'Init to-goal control plane']);
+    }
+    return control;
+  });
+}
+
+/** Lower-case, non-alphanumerics to `-`, collapsed, at most 40 chars. `fresh` skips slugs already used. */
+export function slugFor(repo, objective, { fresh = false } = {}) {
+  const base = objective.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/, '');
+  if (!base) throw new Error('objective has no letters or digits to make a slug from');
+  if (!fresh) return base;
+  const used = new Set(readRegistry(controlDir(repo)).map((r) => r.slug));
+  if (!used.has(base)) return base;
+  for (let n = 2; ; n += 1) if (!used.has(`${base.slice(0, 37)}-${n}`)) return `${base.slice(0, 37)}-${n}`;
+}
+
+function readRegistry(control) {
+  const file = path.join(control, 'runs.json');
+  if (!fs.existsSync(file)) return [];
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    throw new Error(`${file} is not valid JSON; repair it from \`git log -p goal/control -- runs.json\``);
+  }
+}
+
+export function setRegistry(repo, slug, status) {
+  const control = requireControl(repo);
+  return withLock(repo, 'registry', () => {
+    const runs = readRegistry(control);
+    const entry = runs.find((r) => r.slug === slug);
+    if (!entry) throw new Error(`no run ${slug} in runs.json`);
+    entry.status = status;
+    fs.writeFileSync(path.join(control, 'runs.json'), `${JSON.stringify(runs, null, 2)}\n`);
+    return commit(repo, `[${slug}] status ${status}`, ['runs.json']);
+  });
+}
+
+export function stop(repo, slug, reason) {
+  const control = requireControl(repo);
+  const file = path.join(control, 'runs', slug, 'STOP');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${reason}\n`);
+  commit(repo, `[${slug}] stop: ${reason}`, [path.relative(control, file)]);
+  if (readRegistry(control).some((r) => r.slug === slug)) setRegistry(repo, slug, 'stopped');
+  return `stopped ${slug}`;
+}
+
 // ---------------------------------------------------------------- next
 
-/** The todo.md stage lines: `- [x] 0b setup` or `- [ ] 7 build`, one per line. */
+/** The todo.md stage lines: `- [x] 0b setup` or `- [ ] 7 build`, one per line. Maps stage id → ticked. */
 export function parseTodo(text) {
-  const ticked = new Map();
+  const tickedById = new Map();
   for (const line of text.split('\n')) {
     const m = line.match(/^- \[( |x)\] (\S+)\b/);
-    if (m && STAGES.some((s) => s.id === m[2])) ticked.set(m[2], m[1] === 'x');
+    if (m && STAGES.some((s) => s.id === m[2])) tickedById.set(m[2], m[1] === 'x');
   }
-  return ticked;
+  return tickedById;
 }
+
+const resumeAt = (slug, stage, reason) => ({ slug, stage: stage.id, name: stage.name, phase: stage.phase, reason });
 
 export function init(repo, slug, objective) {
   if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(slug)) throw new Error(`bad slug: ${slug} (kebab-case, at most 40 chars)`);
-  const control = controlDir(repo);
+  const control = requireControl(repo);
   const runDir = path.join(control, 'runs', slug);
   if (fs.existsSync(runDir)) throw new Error(`runs/${slug}/ already exists; resume it with \`goal.mjs next ${slug}\``);
+  withLock(repo, 'registry', () => {
+    const runs = readRegistry(control);
+    if (runs.some((r) => r.slug === slug)) throw new Error(`${slug} is already registered in runs.json`);
+    const runId = runs.reduce((max, r) => Math.max(max, r.run_id ?? 0), 0) + 1;
+    runs.push({ slug, objective, run_id: runId, started: new Date().toISOString(), status: 'bootstrapping', agent: process.ppid });
+    fs.writeFileSync(path.join(control, 'runs.json'), `${JSON.stringify(runs, null, 2)}\n`);
+    commit(repo, `[${slug}] register run ${runId}`, ['runs.json']);
+  });
   const files = {
     'todo.md': `# to-goal todo: ${objective}\n\n## Stages\n${STAGES.map((s) => `- [ ] ${s.id} ${s.name}`).join('\n')}\n\n## Tickets (stage 7)\n`,
-    'ledger.md': `# to-goal: ${objective}\n\n## NOW\n- stage: 0 control plane\n- next: finish BOOTSTRAP.md stage 0\n\n## Events\n`,
+    'ledger.md': `# to-goal: ${objective}\n\n## NOW\n- stage: 0 register\n- next: finish BOOTSTRAP.md stage 0\n\n## Events\n`,
     'log.md': `# Decisions: ${objective}\n\n`,
     'bugs.md': `# Bugs noticed in flight: ${objective}\n\n`,
   };
@@ -82,19 +196,18 @@ export function init(repo, slug, objective) {
 
 export function next(control, slug) {
   const runDir = path.join(control, 'runs', slug);
-  const first = STAGES[0];
-  if (!fs.existsSync(runDir)) return { slug, stage: first.id, name: first.name, phase: first.phase, reason: 'no run directory yet' };
-  if (fs.existsSync(path.join(runDir, 'STOP'))) return { slug, stop: true, reason: `runs/${slug}/STOP is present` };
+  if (fs.existsSync(path.join(runDir, 'STOP'))) {
+    return { slug, stop: true, reason: `runs/${slug}/STOP: ${fs.readFileSync(path.join(runDir, 'STOP'), 'utf8').trim() || 'no reason given'}` };
+  }
+  if (!fs.existsSync(runDir)) return resumeAt(slug, STAGES[0], 'no run directory yet');
   const todoFile = path.join(runDir, 'todo.md');
-  if (!fs.existsSync(todoFile)) return { slug, stage: '0', name: 'control plane', phase: 'BOOTSTRAP.md', reason: 'todo.md missing' };
-  const ticked = parseTodo(fs.readFileSync(todoFile, 'utf8'));
-  const missingLines = STAGES.filter((s) => !ticked.has(s.id)).map((s) => s.id);
-  if (missingLines.length) return { slug, malformed: true, reason: `todo.md has no line for stage(s) ${missingLines.join(', ')}; rewrite it per LEDGER.md § todo.md format` };
+  if (!fs.existsSync(todoFile)) return resumeAt(slug, STAGES[1], 'todo.md missing');
+  const tickedById = parseTodo(fs.readFileSync(todoFile, 'utf8'));
+  const missingLines = STAGES.filter((s) => !tickedById.has(s.id)).map((s) => s.id);
+  if (missingLines.length) return { slug, malformed: true, reason: `todo.md has no line for stage(s) ${missingLines.join(', ')}; restore the lines \`goal.mjs init\` writes` };
   for (const s of STAGES) {
-    if (!ticked.get(s.id)) return { slug, stage: s.id, name: s.name, phase: s.phase, reason: 'first unticked stage' };
-    if (s.artifact && !fs.existsSync(path.join(runDir, s.artifact))) {
-      return { slug, stage: s.id, name: s.name, phase: s.phase, reason: `ticked, but runs/${slug}/${s.artifact} is missing` };
-    }
+    if (!tickedById.get(s.id)) return resumeAt(slug, s, 'first unticked stage');
+    if (s.artifact && !fs.existsSync(path.join(runDir, s.artifact))) return resumeAt(slug, s, `ticked, but runs/${slug}/${s.artifact} is missing`);
   }
   return { slug, done: true, reason: 'every stage ticked and every stage artifact present' };
 }
@@ -103,7 +216,8 @@ export function next(control, slug) {
 
 /** A local-tracker ticket: the three lines CONTROL.md § Tracker grammar requires. */
 export function parseTicket(text) {
-  const status = text.match(/^\*\*Status:\*\* (\S+)\s*$/m)?.[1];
+  // `**Status:** <status>` or `**Status:** <status>: <reason>` (e.g. `blocked: prerequisite 03 stuck`).
+  const status = text.match(STATUS_LINE)?.[1];
   const blocked = text.match(/^\*\*Blocked by:\*\* (.+)$/m)?.[1]?.trim();
   const claims = text.match(/^\*\*Claims:\*\* (.+)$/m)?.[1];
   const problems = [];
@@ -111,7 +225,7 @@ export function parseTicket(text) {
   else if (!STATUSES.has(status)) problems.push(`unknown status ${status}`);
   if (!blocked) problems.push('no **Blocked by:** line');
   if (!claims) problems.push('no **Claims:** line');
-  const blockers = !blocked || blocked === 'None' ? [] : blocked.split(',').map((b) => b.trim()).filter(Boolean);
+  const blockers = !blocked || blocked === 'None' ? [] : blocked.split(',').map((b) => ticketId(b.trim())).filter(Boolean);
   const parsed = { exclusive: [], 'shared-regenerate': [], guarded: [] };
   for (const part of (claims ?? '').split(';')) {
     const m = part.trim().match(/^(exclusive|shared-regenerate|guarded):\s*(.*)$/);
@@ -126,13 +240,9 @@ export function parseTicket(text) {
 
 export function frontier(control, feature) {
   const issues = path.join(control, 'tracker', feature, 'issues');
-  const tickets = new Map();
-  for (const file of fs.readdirSync(issues).filter((f) => f.endsWith('.md')).sort()) {
-    const id = file.match(/^(\d+)/)?.[1];
-    if (!id) continue;
-    tickets.set(id, { file: path.join(issues, file), ...parseTicket(fs.readFileSync(path.join(issues, file), 'utf8')) });
-  }
-  const malformed = [];
+  const { files, duplicates } = ticketFiles(issues);
+  const tickets = new Map([...files].map(([id, file]) => [id, { file, ...parseTicket(fs.readFileSync(file, 'utf8')) }]));
+  const malformed = [...duplicates];
   for (const [id, t] of tickets) {
     for (const b of t.blockers) if (!tickets.has(b)) t.problems.push(`blocked by unknown ticket ${b}`);
     if (t.problems.length) malformed.push({ id, file: t.file, problems: t.problems });
@@ -155,10 +265,10 @@ export function frontier(control, feature) {
 
 /** Under the frontier lock, so two orchestrators never take the same ticket. */
 export function take(repo, feature, max) {
-  const control = controlDir(repo);
+  const control = requireControl(repo);
   return withLock(repo, `frontier-${feature}`, () => {
     const { frontier: ready, malformed, conflicts } = frontier(control, feature);
-    if (malformed.length || conflicts.length) throw new Error(`tracker ${feature} fails the claims gate; run \`goal.mjs frontier ${feature}\``);
+    if (malformed.length || conflicts.length) throw new Refusal(`tracker ${feature} fails the claims gate; run \`goal.mjs frontier ${feature}\``);
     const taken = ready.slice(0, Math.max(0, max));
     for (const id of taken) setStatus(repo, feature, id, 'in-flight');
     return taken;
@@ -167,15 +277,20 @@ export function take(repo, feature, max) {
 
 export function setStatus(repo, feature, id, status) {
   if (!STATUSES.has(status)) throw new Error(`unknown status ${status}`);
-  const control = controlDir(repo);
+  const control = requireControl(repo);
   const issues = path.join(control, 'tracker', feature, 'issues');
-  const file = fs.readdirSync(issues).find((f) => f.startsWith(`${id}-`) || f === `${id}.md`);
-  if (!file) throw new Error(`no ticket ${id} in tracker/${feature}/issues`);
-  const full = path.join(issues, file);
-  const text = fs.readFileSync(full, 'utf8');
-  if (!/^\*\*Status:\*\* \S+\s*$/m.test(text)) throw new Error(`${file} has no **Status:** line`);
-  fs.writeFileSync(full, text.replace(/^\*\*Status:\*\* \S+\s*$/m, `**Status:** ${status}`));
-  return commit(repo, `[${feature}] ticket ${id} → ${status}`, [path.relative(control, full)]);
+  const want = ticketId(String(id));
+  // Read-modify-write under the same lock take uses, so no status flip is lost.
+  return withLock(repo, `frontier-${feature}`, () => {
+    const { files, duplicates } = ticketFiles(issues);
+    if (duplicates.some((d) => d.id === want)) throw new Error(`ticket number ${want} is used by more than one file in tracker/${feature}/issues`);
+    const full = files.get(want);
+    if (!full) throw new Error(`no ticket ${id} in tracker/${feature}/issues`);
+    const text = fs.readFileSync(full, 'utf8');
+    if (!STATUS_LINE.test(text)) throw new Error(`${path.basename(full)} has no **Status:** line`);
+    fs.writeFileSync(full, text.replace(STATUS_LINE, `**Status:** ${status}`));
+    return commit(repo, `[${feature}] ticket ${want} → ${status}`, [path.relative(control, full)]);
+  });
 }
 
 function dependsOn(tickets, from, to, seen = new Set()) {
@@ -186,13 +301,15 @@ function dependsOn(tickets, from, to, seen = new Set()) {
 
 /** A claim is a file path, a directory ending in `/`, or a directory ending in `/**`. */
 export function claimCovers(claim, file) {
-  const dir = claim.endsWith('/**') ? claim.slice(0, -2) : claim.endsWith('/') ? claim : null;
+  const root = claimRoot(claim);
+  const dir = root.endsWith('/') ? root : null;
   return dir ? file.startsWith(dir) : file === claim;
 }
 
+const claimRoot = (claim) => (claim.endsWith('/**') ? claim.slice(0, -2) : claim);
+
 function claimsOverlap(a, b) {
-  const root = (c) => (c.endsWith('/**') ? c.slice(0, -2) : c);
-  return claimCovers(a, root(b)) || claimCovers(b, root(a));
+  return claimCovers(a, claimRoot(b)) || claimCovers(b, claimRoot(a));
 }
 
 export function claimsBreach(ticketText, touched) {
@@ -206,8 +323,13 @@ export function claimsBreach(ticketText, touched) {
 
 // --------------------------------------------------------------- locks
 
+// Locks this process (or the with-lock that spawned it) already holds; taking one again is a
+// no-op, so `with-lock control -- goal.mjs commit …` cannot deadlock on itself.
+const held = new Set((process.env.GOAL_LOCKS_HELD ?? '').split(',').filter(Boolean));
+
 export function withLock(repo, name, fn) {
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(name)) throw new Error(`bad lock name: ${name}`);
+  if (held.has(name)) return fn();
   const locks = path.join(git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']), 'goal-locks');
   fs.mkdirSync(locks, { recursive: true });
   const lock = path.join(locks, name);
@@ -228,9 +350,11 @@ export function withLock(repo, name, fn) {
       sleep(100);
     }
   }
+  held.add(name);
   try {
     return fn();
   } finally {
+    held.delete(name);
     fs.rmSync(lock, { recursive: true, force: true });
   }
 }
@@ -278,7 +402,12 @@ function breakStale(lock, stalePid) {
 
 export function commit(repo, message, files) {
   if (!files.length) throw new Error('commit needs at least one file');
-  const control = controlDir(repo);
+  const control = requireControl(repo);
+  // Paths are relative to the control worktree; a path that resolves inside it from cwd also works.
+  files = files.map((f) => {
+    const fromCwd = path.relative(control, path.resolve(f));
+    return fromCwd && !fromCwd.startsWith('..') && !path.isAbsolute(fromCwd) ? fromCwd : f;
+  });
   return withLock(repo, 'control', () => {
     git(control, ['add', '--', ...files]);
     const staged = git(control, ['diff', '--cached', '--name-only', '--', ...files]);
@@ -304,13 +433,29 @@ function main(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--repo') {
       repo = argv[++i];
-      if (!repo) throw new Error('--repo needs a path');
+      if (!repo) throw new UsageError('--repo needs a path');
     }
     else if (argv[i] === '--') { args.push(...argv.slice(i)); break; }
     else args.push(argv[i]);
   }
   const [command, ...rest] = args;
   const print = (value) => console.log(JSON.stringify(value, null, 2));
+  if (command === 'control' && rest.length === 0) {
+    console.log(ensureControl(repo));
+    return 0;
+  }
+  if (command === 'slug' && (rest.length === 1 || (rest.length === 2 && rest[1] === '--new'))) {
+    console.log(slugFor(repo, rest[0], { fresh: rest[1] === '--new' }));
+    return 0;
+  }
+  if (command === 'stop' && rest.length === 2) {
+    console.log(stop(repo, rest[0], rest[1]));
+    return 0;
+  }
+  if (command === 'registry' && rest.length === 2) {
+    console.log(setRegistry(repo, rest[0], rest[1]));
+    return 0;
+  }
   if (command === 'init' && rest.length === 2) {
     console.log(init(repo, rest[0], rest[1]));
     return 0;
@@ -326,7 +471,7 @@ function main(argv) {
     return result.malformed.length || result.conflicts.length ? 1 : 0;
   }
   if (command === 'take' && rest.length === 2) {
-    if (!/^\d+$/.test(rest[1])) throw new Error(`take needs a whole number of free slots, got ${rest[1]}`);
+    if (!/^\d+$/.test(rest[1])) throw new UsageError(`take needs a whole number of free slots, got ${rest[1]}`);
     print(take(repo, rest[0], Number(rest[1])));
     return 0;
   }
@@ -341,7 +486,8 @@ function main(argv) {
   }
   if (command === 'with-lock' && rest.length >= 3 && rest[1] === '--') {
     return withLock(repo, rest[0], () => {
-      const run = spawnSync(rest[2], rest.slice(3), { stdio: 'inherit' });
+      const env = { ...process.env, GOAL_LOCKS_HELD: [...held].join(',') };
+      const run = spawnSync(rest[2], rest.slice(3), { stdio: 'inherit', env });
       if (run.error) throw run.error;
       return run.status ?? 1;
     });
@@ -350,7 +496,7 @@ function main(argv) {
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }
-  console.error('usage: goal.mjs [--repo <path>] init <slug> <objective> | next <slug> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
+  console.error('usage: goal.mjs [--repo <path>] control | slug <objective> [--new] | init <slug> <objective> | next <slug> | stop <slug> <reason> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
   return 2;
 }
 
@@ -359,6 +505,6 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
     process.exit(main(process.argv.slice(2)));
   } catch (error) {
     console.error(`error: ${error.message}`);
-    process.exit(2);
+    process.exit(error instanceof UsageError ? 2 : error instanceof Refusal ? 1 : 3);
   }
 }

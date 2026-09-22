@@ -115,3 +115,11 @@ test('this repo: matt/ is in sync with the pin and every vendored skill is integ
   const { errors } = check(REPO, { homes: [] });
   assert.deepEqual(errors, []);
 });
+
+test('check and link ignore dotfiles such as .DS_Store in matt/', () => {
+  const { root, homes } = fixture();
+  link(root);
+  fs.writeFileSync(path.join(root, 'matt/.DS_Store'), '');
+  assert.deepEqual(check(root, { homes }).errors, []);
+  assert.deepEqual(link(root).removed, []);
+});

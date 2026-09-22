@@ -19,7 +19,7 @@ git clone --recurse-submodules <this repo>   # or: git submodule update --init
 node scripts/matt.mjs check                  # must print "ok"
 ```
 
-Besides the vendored Matt skills, a run needs four installed skills: `kun`, `research-stack`, `defensive-design`, and `zero-tech-debt`. `resolve` and `check` look for them in `$MATT_SKILL_HOMES` (path-separated) when set, else in `~/.claude/skills` and `~/.agents/skills`. `check` names any that are missing; `check --vendored` checks only this repo's own wiring (what CI runs).
+Besides the vendored Matt skills, a run needs four installed skills: `kun`, `research-stack`, `defensive-design`, and `zero-tech-debt`. `resolve` and `check` look for them in `$AGENT_SKILL_HOMES` (path-separated) when set, else in `~/.claude/skills` and `~/.agents/skills`. `check` names any that are missing; `check --vendored` checks only this repo's own wiring (what CI runs).
 
 Install the automations by symlinking `to-goal`, `to-bug`, `to-new` (and `to-orc`) into each harness's skills directory (for example `~/.agents/skills/` and `~/.claude/skills/`). Nothing is tied to one harness or model. The Matt skills do not need to be installed for the automations to work: `to-goal` loads them from `matt/` by path.
 

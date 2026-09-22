@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, init, next, frontier, take, setStatus, claimsBreach, withLock, commit, controlDir } from './goal.mjs';
+import { STAGES, init, next, stop, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, withLock, commit, controlDir } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -16,14 +16,18 @@ function write(file, text) {
 }
 
 // A repo with the control plane as a linked orphan worktree, as BOOTSTRAP.md creates it.
-function repoWithControl() {
+function bareRepo() {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-test-'));
   git(repo, 'init', '-q', '-b', 'main');
-  git(repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init');
-  git(repo, 'worktree', 'add', '-q', '--orphan', '-b', 'goal/control', '.worktrees/control');
-  git(path.join(repo, '.worktrees/control'), 'config', 'user.email', 't@t');
-  git(path.join(repo, '.worktrees/control'), 'config', 'user.name', 't');
-  return { repo, control: path.join(repo, '.worktrees/control') };
+  git(repo, 'config', 'user.email', 't@t');
+  git(repo, 'config', 'user.name', 't');
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'init');
+  return repo;
+}
+
+function repoWithControl() {
+  const repo = bareRepo();
+  return { repo, control: ensureControl(repo) };
 }
 
 function todo(ticked) {
@@ -73,7 +77,7 @@ test('next reports done only when every stage and artifact is present', () => {
 
 test('next honours STOP and rejects a todo.md missing stage lines', () => {
   const { control } = repoWithControl();
-  write(path.join(control, 'runs/x/todo.md'), '- [x] 00 skill wiring - [x] 0 control plane');
+  write(path.join(control, 'runs/x/todo.md'), '- [x] 00 wiring and ask-matt - [x] 0 register');
   assert.equal(next(control, 'x').malformed, true);
   write(path.join(control, 'runs/x/STOP'), '');
   assert.equal(next(control, 'x').stop, true);
@@ -195,4 +199,94 @@ test('commit ignores files another agent staged', () => {
   commit(repo, 'mine', ['mine.md']);
   assert.equal(git(control, 'show', '--name-only', '--format=', 'HEAD'), 'mine.md');
   assert.equal(commit(repo, 'nothing new', ['mine.md']), 'nothing to commit');
+});
+
+test('ensureControl creates the orphan control worktree once and excludes .worktrees/', () => {
+  const repo = bareRepo();
+  const control = ensureControl(repo);
+  assert.equal(git(control, 'symbolic-ref', '--short', 'HEAD'), 'goal/control');
+  assert.equal(ensureControl(repo), control);
+  assert.match(fs.readFileSync(path.join(repo, '.git/info/exclude'), 'utf8'), /^\.worktrees\/$/m);
+  assert.equal(git(repo, 'status', '--porcelain'), '');
+});
+
+test('control-plane writes refuse to run without the control worktree', () => {
+  const repo = bareRepo();
+  const head = git(repo, 'rev-parse', 'HEAD');
+  assert.throws(() => init(repo, 'x', 'X'), /no control plane/);
+  assert.equal(git(repo, 'rev-parse', 'HEAD'), head);
+  assert.equal(git(repo, 'status', '--porcelain'), '');
+});
+
+test('init registers the run with the next run_id; slug is stable and --new skips used slugs', () => {
+  const { repo, control } = repoWithControl();
+  assert.equal(slugFor(repo, 'Add login!  Now'), 'add-login-now');
+  init(repo, 'add-login', 'Add login');
+  init(repo, 'other', 'Other');
+  const runs = JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'));
+  assert.deepEqual(runs.map((r) => [r.slug, r.run_id, r.status]), [['add-login', 1, 'bootstrapping'], ['other', 2, 'bootstrapping']]);
+  assert.equal(slugFor(repo, 'Add login'), 'add-login');
+  assert.equal(slugFor(repo, 'Add login', { fresh: true }), 'add-login-2');
+  setRegistry(repo, 'add-login', 'done');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'))[0].status, 'done');
+});
+
+test('stop halts the loop and records why', () => {
+  const { repo, control } = repoWithControl();
+  init(repo, 'x', 'X');
+  stop(repo, 'x', 'kun unreachable');
+  assert.equal(next(control, 'x').stop, true);
+  assert.match(fs.readFileSync(path.join(control, 'runs/x/STOP'), 'utf8'), /kun unreachable/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'))[0].status, 'stopped');
+  assert.equal(git(control, 'status', '--porcelain'), '');
+});
+
+test('CLI exit codes: 2 for usage, 3 for runtime errors', () => {
+  const { repo } = repoWithControl();
+  assert.equal(spawnSync(process.execPath, [GOAL, '--repo', repo, 'take', 'f', 'x']).status, 2);
+  assert.equal(spawnSync(process.execPath, [GOAL, '--repo', repo, 'nonsense']).status, 2);
+  assert.equal(spawnSync(process.execPath, [GOAL, '--repo', repo, 'frontier', 'no-such-feature']).status, 3);
+});
+
+test('duplicate ticket numbers are malformed and status refuses to guess', () => {
+  const { repo, control } = repoWithControl();
+  const issues = path.join(control, 'tracker/f/issues');
+  write(path.join(issues, '01-a.md'), ticket('ready-for-agent', 'None', 'exclusive: a.ts'));
+  write(path.join(issues, '1-b.md'), ticket('ready-for-agent', 'None', 'exclusive: b.ts'));
+  const result = frontier(control, 'f');
+  assert.equal(result.malformed[0].id, '01');
+  assert.deepEqual(result.frontier, []);
+  assert.throws(() => setStatus(repo, 'f', '1', 'done'), /more than one file/);
+});
+
+test('a status line may carry a reason, and blockers match by number', () => {
+  const { control } = repoWithControl();
+  const issues = path.join(control, 'tracker/f/issues');
+  write(path.join(issues, '03-a.md'), ticket('stuck', 'None', 'exclusive: a.ts'));
+  write(path.join(issues, '04-b.md'), ticket('blocked: prerequisite 03 stuck', '3', 'exclusive: b.ts'));
+  assert.deepEqual(frontier(control, 'f').malformed, []);
+});
+
+test('with-lock children can take the same lock without deadlocking', () => {
+  const { repo, control } = repoWithControl();
+  write(path.join(control, 'k.md'), 'k');
+  const r = spawnSync(process.execPath, [GOAL, '--repo', repo, 'with-lock', 'control', '--', process.execPath, GOAL, '--repo', repo, 'commit', '-m', 'k', 'k.md'], { encoding: 'utf8', timeout: 20000 });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(git(control, 'log', '-1', '--format=%s'), 'k');
+});
+
+test('commit accepts a path relative to cwd that lands in the control worktree', () => {
+  const { repo, control } = repoWithControl();
+  write(path.join(control, 'from-cwd.md'), 'x');
+  const r = spawnSync(process.execPath, [GOAL, 'commit', '-m', 'cwd path', '.worktrees/control/from-cwd.md'], { cwd: repo, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(git(control, 'show', '--name-only', '--format=', 'HEAD'), 'from-cwd.md');
+});
+
+test('take on a tracker that fails the claims gate exits 1', () => {
+  const { repo, control } = repoWithControl();
+  const issues = path.join(control, 'tracker/f/issues');
+  write(path.join(issues, '01-a.md'), ticket('ready-for-agent', 'None', 'exclusive: src/'));
+  write(path.join(issues, '02-b.md'), ticket('ready-for-agent', 'None', 'exclusive: src/b.ts'));
+  assert.equal(spawnSync(process.execPath, [GOAL, '--repo', repo, 'take', 'f', '2']).status, 1);
 });

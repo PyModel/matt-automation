@@ -38,15 +38,16 @@ const out = arg("--out-dir");
 const repo = arg("--cd");
 const mode = process.env.STUB_MODE || "ok";
 fs.mkdirSync(out, { recursive: true });
+// No --model means pi's configured default, which the stub reports as prov-d/model-d.
 const reqProvider = arg("--provider");
-const reqModel = arg("--model");
+const reqModel = arg("--model") || "prov-d/model-d";
 const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const tag = reqModel.slice(reqModel.lastIndexOf(":") + 1);
 const bare = reqModel.includes(":") && levels.includes(tag) ? reqModel.slice(0, reqModel.lastIndexOf(":")) : reqModel;
 const actualModel = bare.includes("/") ? bare.slice(bare.indexOf("/") + 1) : bare;
 const base = {
   schema: "delegate-relay.result.v1", tool: "pi", provider: reqProvider,
-  model: reqModel, actualProvider: reqProvider, actualModel,
+  model: arg("--model"), actualProvider: reqProvider || "prov-d", actualModel,
   status: "completed", exitCode: 0, piVersion: "0.85.1", sessionId: "sess-" + mode,
   usage: { reasoning: 12, cost: { total: 0.01 } }, touchedFiles: [], stopReason: "stop",
   finalMessage: "stub report",
@@ -451,6 +452,19 @@ check("a timed-out implement does not use up the repair budget", () => {
   eq(dispatch({ phase: "repair", task: "R1", runDir, brief, repo, extra: ["--session", "sess-ok"] }).exit, 0, "repair still allowed");
 });
 
+check("--cycles and --max-cost left unset inherit the run's settings", () => {
+  const repo = newRepo("inherit-settings"); const { runDir, brief } = newRun("inherit-settings", { accept: ["scout"] });
+  eq(dispatch({ phase: "scout", task: "P1", runDir, brief, repo, extra: ["--cycles", "1", "--max-cost", "5"] }).exit, 0, "first exit");
+  eq(dispatch({ phase: "research", task: "P2", runDir, brief, repo }).exit, 0, "inheriting exit");
+});
+
+check("a worker-failed implement spends a cycle", () => {
+  const repo = newRepo("failed-cycle");
+  const { runDir, brief } = newRun("failed-cycle", { accept: ["scout", "research"] });
+  dispatch({ mode: "worker-failed", phase: "implement", task: "P3", runDir, brief, repo, extra: ["--cycles", "1"] });
+  eq(dispatch({ phase: "implement", task: "P3b", runDir, brief, repo }).exit, 77, "second implement under --cycles 1");
+});
+
 check("the worker model is locked for the run once dispatched", () => {
   const repo = newRepo("lock-model"); const { runDir, brief } = newRun("lock-model", { accept: ["scout"] });
   eq(dispatch({ phase: "scout", task: "P1", runDir, brief, repo }).exit, 0, "first exit");
@@ -490,12 +504,16 @@ check("a malformed or relay-incompatible --timeout is refused", () => {
 });
 
 
-check("the first dispatch of a run must name a model", () => {
-  const repo = newRepo("no-model"); const { runDir, brief } = newRun("no-model");
-  const r = spawnSync(process.execPath, [DISPATCH, "--phase", "scout", "--task", "P1", "--brief", brief, "--run-dir", runDir, "--repo", repo, "--dry-run"],
-    { encoding: "utf8", env: { ...process.env, TO_ORC_RELAY: STUB } });
-  eq(r.status, 77, "exit");
-  if (!/--model is required/.test(r.stderr)) throw new Error("stderr does not ask for --model");
+check("a first dispatch without --model runs on pi's default and fixes it in run.json", () => {
+  const repo = newRepo("pi-default"); const { runDir, brief } = newRun("pi-default", { accept: ["scout"] });
+  const r = spawnSync(process.execPath, [DISPATCH, "--phase", "scout", "--task", "P1", "--brief", brief, "--run-dir", runDir, "--repo", repo],
+    { encoding: "utf8", env: { ...process.env, TO_ORC_RELAY: STUB, STUB_MODE: "ok" } });
+  eq(r.status, 0, "exit");
+  const lock = JSON.parse(fs.readFileSync(path.join(runDir, "run.json"), "utf8"));
+  eq(lock.worker.model, "prov-d/model-d", "locked model");
+  const second = dispatch({ phase: "research", task: "P2", runDir, brief, repo });
+  eq(second.exit, 0, "second exit");
+  eq(second.status.relay.requestedModel, "prov-d/model-d", "second dispatch asks for the locked model");
 });
 
 check("later dispatches inherit the run's model from run.json", () => {
@@ -574,6 +592,14 @@ check("validator --run-dir rejects a dispatched_to the run never used", () => {
   eq(spawnSync(process.execPath, [VALIDATOR, f, "--run-dir", runDir]).status, 1, "mismatch exit");
   fs.writeFileSync(f, JSON.stringify(validRevise));
   eq(spawnSync(process.execPath, [VALIDATOR, f, "--run-dir", runDir]).status, 0, "match exit");
+});
+check("validator --run-dir rejects flags that omit the run's model", () => {
+  const repo = newRepo("verdict-flags"); const { runDir, brief } = newRun("verdict-flags");
+  dispatch({ phase: "scout", task: "P1", runDir, brief, repo });
+  const f = path.join(root, "verdict-flags.json");
+  const v = structuredClone(validRevise); v.orchestration_summary.flags = "--thinking max";
+  fs.writeFileSync(f, JSON.stringify(v));
+  eq(spawnSync(process.execPath, [VALIDATOR, f, "--run-dir", runDir]).status, 1, "exit");
 });
 check("validator --help prints usage instead of reading a file", () => {
   eq(spawnSync(process.execPath, [VALIDATOR, "--help"]).status, 0, "exit");

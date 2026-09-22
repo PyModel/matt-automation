@@ -8,7 +8,7 @@
 //
 // Matt skills come from vendor/mattpocock-skills (a pinned git submodule) through
 // the committed symlinks in matt/. Skills outside the set (research-stack,
-// defensive-design, kun, ...) come from the installed-skill directories: MATT_SKILL_HOMES
+// defensive-design, kun, ...) come from the installed-skill directories: AGENT_SKILL_HOMES
 // (path-delimited) when set, else ~/.claude/skills and ~/.agents/skills.
 
 import fs from 'node:fs';
@@ -24,8 +24,8 @@ const EXCLUDED_BUCKETS = new Set(['deprecated', 'misc']);
 // Harness commands ask-matt names that are not skills.
 const HARNESS_COMMANDS = new Set(['clear', 'compact']);
 const INTEGRATION = 'to-goal/INTEGRATION.md';
-const DEFAULT_HOMES = process.env.MATT_SKILL_HOMES
-  ? process.env.MATT_SKILL_HOMES.split(path.delimiter).filter(Boolean)
+const DEFAULT_HOMES = process.env.AGENT_SKILL_HOMES
+  ? process.env.AGENT_SKILL_HOMES.split(path.delimiter).filter(Boolean)
   : [path.join(os.homedir(), '.claude/skills'), path.join(os.homedir(), '.agents/skills')];
 
 export function scanVendor(root) {
@@ -43,12 +43,15 @@ export function scanVendor(root) {
   return found;
 }
 
+// Finder and editor droppings (.DS_Store) are not skills; only non-dot entries of matt/ count.
+const linkNames = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir).filter((name) => !name.startsWith('.')) : []);
+
 export function link(root) {
   const linksDir = path.join(root, LINKS);
   fs.mkdirSync(linksDir, { recursive: true });
   const vendored = scanVendor(root);
   const removed = [];
-  for (const name of fs.readdirSync(linksDir)) {
+  for (const name of linkNames(linksDir)) {
     const entry = path.join(linksDir, name);
     if (!fs.lstatSync(entry).isSymbolicLink()) throw new Error(`${LINKS}/${name} is not a symlink; refusing to touch it`);
     if (!vendored.has(name)) {
@@ -84,7 +87,7 @@ export function check(root, { homes = DEFAULT_HOMES } = {}) {
   const info = [];
   const vendored = scanVendor(root);
   const linksDir = path.join(root, LINKS);
-  const linked = new Set(fs.existsSync(linksDir) ? fs.readdirSync(linksDir) : []);
+  const linked = new Set(linkNames(linksDir));
 
   for (const name of linked) {
     if (!vendored.has(name)) errors.push(`${LINKS}/${name}: stale or dangling link (not in the pinned submodule); run \`node scripts/matt.mjs link\``);
@@ -186,7 +189,12 @@ function pinnedSha(root) {
 function main([command, ...args]) {
   const root = path.resolve(path.dirname(fs.realpathSync(fileURLToPath(import.meta.url))), '..');
   if (command === 'resolve' && args.length === 1) {
-    console.log(resolve(root, args[0]));
+    try {
+      console.log(resolve(root, args[0]));
+    } catch (error) {
+      console.error(`error: ${error.message}`);
+      process.exit(1);
+    }
   } else if (command === 'link' && args.length === 0) {
     const { linked, removed } = link(root);
     console.log(`linked ${linked.length} skills into ${LINKS}/${removed.length ? `; removed ${removed.join(', ')}` : ''}`);
@@ -202,6 +210,7 @@ function main([command, ...args]) {
     console.error('usage: matt.mjs resolve <name> | link | check [--vendored]');
     process.exit(2);
   }
+  // Exit 0 = ok, 1 = check found problems or a skill does not resolve, 2 = usage, 3 = runtime error.
 }
 
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -209,6 +218,6 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
     main(process.argv.slice(2));
   } catch (error) {
     console.error(`error: ${error.message}`);
-    process.exit(1);
+    process.exit(3);
   }
 }

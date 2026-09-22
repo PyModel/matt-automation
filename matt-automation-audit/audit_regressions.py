@@ -151,8 +151,15 @@ for staged in (False,True):
     verify=dispatch(repo,rd,b,phase='verify',task='V')
     # The dispatcher now refuses verify on a tree that moved after implement; that refusal is the safe outcome.
     refused=verify['exit']==77 and 'changed after' in verify['status']['reason']
-    expect(('Staged' if staged else 'Untracked')+' changes cannot collide in the documented implementation/verification identity',refused,
+    expect(('Staged' if staged else 'Untracked')+' changes after implement make verify refuse the moved change set',refused,
            'Verify is refused when the deliverable changed after implement',{'verify_exit':verify['exit'],'implement_status':impl['status']['orcStatus'],'verify_status':verify['status']['orcStatus'],'reason':verify['status']['reason']})
+    # The identity itself: the same tree state under a fresh implement must get a different snapshot than content A did.
+    rd2=rd.parent/(rd.name+'-b'); (rd2/'accepted').mkdir(parents=True)
+    for ph in ('scout','research'): (rd2/'accepted'/f'{ph}.md').write_text('accepted\n')
+    impl_b=dispatch(repo,rd2,b,phase='implement',task='I')
+    ident=lambda x:(x['status']['changeSet']['headAfter'],x['status']['changeSet']['worktreeDiffSha'])
+    expect(('Staged' if staged else 'Untracked')+' changes cannot collide in the implementation identity',ident(impl)!=ident(impl_b),
+           'Any change to the deliverable changes the recorded identity',{'identical_identity':ident(impl)==ident(impl_b)})
 
 # Path containment (dry-run avoids deliberately polluting a workspace).
 repo,rd,b=fixture('dotdot-directory'); rd=repo/'..artifacts'

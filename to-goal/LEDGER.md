@@ -47,7 +47,7 @@ The tracker's ticket files under `.worktrees/control/tracker/<feature-slug>/issu
 - 13:55 [1] findings.md written, R1–R7, 11 sources
 - …
 - 14:20 [7] t03 dispatched → worktree …, brief: ticket 03, spec.md, CONTEXT.md, tier 2
-- 14:47 [7] t03 returned: suite green, review 0 cited / 1 lead, commit c0ffee1
+- 14:47 [7] t03 back from its implementer: suite green, review 0 cited / 1 lead, commit c0ffee1
 - 14:48 [7] t03 merged ff into goal/<slug>; worktree removed; ticket closed
 ```
 
@@ -64,39 +64,27 @@ Rules:
 # to-goal todo: <objective>
 
 ## Stages
-- [x] 00 skill wiring
-- [x] 0 control plane
-- [x] 0a cache kun
-- [x] 0b setup
-- [x] 0c isolate
-- [x] 0d environment contract
-- [x] 1 route (feature)
+- [x] 00 wiring and ask-matt
+- [x] 0 register
+…
 - [x] 2 on-ramp (skipped: plain feature)
-- [x] 3 research (skipped: no external unknown)
-- [x] 4 grill
-- [x] 4b challenge
-- [x] 5 spec
-- [x] 5b reconcile
-- [x] 6 tickets
-- [x] 6b claims gate
+…
 - [ ] 7 build
-- [ ] 8 review
-- [ ] 9 hand back
-- [ ] 10 retro
+…
 
 ## Tickets (stage 7)
 | NN | title | blocked by | status | worktree | last commit |
 |---|---|---|---|---|---|
-| 01 | prefactor: extract OrderIntake seam | none | merged | removed | 1a2b3c4 |
-| 02 | … | 01 | merged | removed | … |
+| 01 | prefactor: extract OrderIntake seam | none | done | removed | 1a2b3c4 |
+| 02 | … | 01 | done | removed | … |
 | 03 | … | 01 | in-flight (slice 2/4) | .worktrees/goal-<slug>-t03 | c0ffee1 |
-| 04 | … | 02 | ready | | |
+| 04 | … | 02 | ready-for-agent | | |
 | 05 | … | 02, 03 | blocked | | |
 ```
 
-Ticket statuses: `blocked` → `ready` → `in-flight` → `returned` → `merged`, or `stuck` (reason: heartbeat / no progress / failing test ×5 / too big / claims breach ×2, named in NOW). Prerequisite stuck marks dependent tickets `blocked: prerequisite <id> stuck`.
+The Stages section is exactly what `goal.mjs init` writes: one `- [ ] <id> <name>` line per stage, in order. Tick a stage `[x]` when its criterion holds; a skipped stage is ticked with `(skipped: <reason>)`. `goal.mjs next` reads this grammar and reports a todo.md missing any stage line as malformed.
 
-One line per stage, every stage present, in this order; a skipped stage is ticked with `(skipped: <reason>)`. `goal.mjs next` parses exactly this grammar and reports a todo.md missing any line as malformed.
+The Tickets table mirrors the tracker's statuses (CONTROL.md § Tracker grammar): `blocked` → `ready-for-agent` → `in-flight` → `done`, or `stuck` with its reason (heartbeat / no progress / failing test ×5 / too big / claims breach ×2, named in NOW). When a prerequisite is stuck, its dependents become `blocked: prerequisite <id> stuck`.
 
 ## Re-entry protocol
 

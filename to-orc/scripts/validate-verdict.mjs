@@ -65,6 +65,10 @@ else {
     const expected = lockedWorker(runDir);
     if (expected && os.dispatched_to !== expected) bad(`orchestration_summary.dispatched_to is "${os.dispatched_to}" but ${path.join(runDir, "run.json")} fixed the worker as "${expected}"`);
   }
+  if (runDir && isStr(os.flags)) {
+    const model = lockedModel(runDir);
+    if (model && !os.flags.includes(`--model ${model}`)) bad(`orchestration_summary.flags must record "--model ${model}" as ${path.join(runDir, "run.json")} fixed it`);
+  }
   if (!isStr(os.flags) || /[<>]/.test(os.flags)) bad("orchestration_summary.flags must record the real worker flags (e.g. \"--model my-provider/my-model:high\"), not a template placeholder");
   if (!STATUSES.includes(os.status)) bad(`orchestration_summary.status must be one of ${STATUSES.join(", ")}`);
 }
@@ -123,10 +127,18 @@ if (pa && PHASE_FLAGS.every((f) => pa[f] === false)) {
 
 report();
 
+function lockedModel(dir) {
+  try { return JSON.parse(fs.readFileSync(path.join(dir, "run.json"), "utf8")).worker?.model ?? null; } catch { return null; }
+}
+
 function lockedWorker(dir) {
   const f = path.join(dir, "run.json");
   try {
     const w = JSON.parse(fs.readFileSync(f, "utf8")).worker;
+    if (!w?.model) {
+      bad(`${f} has no proven worker yet (no dispatch completed on pi's default); validate without --run-dir`);
+      return null;
+    }
     return `pi / ${w.provider}/${w.requestedModelId}`;
   } catch {
     bad(`--run-dir given but ${f} is missing or unreadable`);

@@ -6,7 +6,7 @@ Source: the docs pages in `mattpocock/skills` (`docs/engineering/*.md`, `.agents
 |---|---|---|
 | research | The background agent re-spawns another research agent (issue #530); one task cost ~450k tokens across three runs. | Brief the agent: "You are already the research subagent; do the reading yourself and spawn no further agents." Watch the task list; stop a duplicate. |
 | research | No stopping criterion: goes too deep or misses the one detail. | One narrow question per call; the requirement it must answer is in the brief. |
-| ask-matt | Reports user-invoked skills as "not installed" because the harness hides them from the skill list. | Every skill is loaded by path through `matt.mjs resolve`; `matt.mjs check` in stage 0 proves each one is linked. |
+| ask-matt | Reports user-invoked skills as "not installed" because the harness hides them from the skill list. | Every skill is loaded by path through `matt.mjs resolve`; `matt.mjs check` in stage 00 proves each one is linked. |
 | ask-matt | Describes a skill from its one-line gloss, not its SKILL.md; once told the user to skip to-spec and undercounted the work. | Open the SKILL.md before acting on any load-bearing claim; never skip spec or tickets on the router's word. |
 | grill-with-docs | Inside an orchestration layer the interview runs but `CONTEXT.md`/ADR writing silently does not. | Verify `CONTEXT.md` changed on disk before leaving stage 4. |
 | grill-with-docs | Loads `grilling` without `domain-modeling` and produces a question dump with no paper trail. | Resolve and read both files; confirm both loaded. |
@@ -26,7 +26,7 @@ Source: the docs pages in `mattpocock/skills` (`docs/engineering/*.md`, `.agents
 | tdd | Proposes work belonging to a sibling ticket. | Pass the spec path alongside the ticket; right-size tickets in stage 5. |
 | code-review | Diffs `<fixed>...HEAD`, so uncommitted work is invisible. | Commit before every review. |
 | code-review | Sub-agents rediscover the skill and fan out (50+ agents reported). | Add to both sub-agent briefs: "Do not invoke code-review or spawn additional agents; perform this review directly." |
-| code-review | Name clash with Claude Code's built-in `/code-review`. | Load it by path from the pin (`matt.mjs resolve code-review`); the built-in is never invoked. |
+| code-review | Name clash with Claude Code's built-in `/code-review`. | Load it by path from the pin (`matt.mjs resolve code-review`), which reaches Matt's skill whatever the harness ships. |
 | all | A bug noticed while reading a file is parked as a comment or "known issue" and lost by the next context. | BUILD.md § Bugs found in flight: record in `bugs.md`, fix or ticket now, blocker otherwise; debt grep checks added lines only (`grep '^+' | grep -v '^+++'`) so deleting old TODO markers succeeds. |
 | code-review | Finds new leads every run; no convergence; findings are hypotheses. | One final pass; act only on findings with a cited rule or spec line; require independent targeted re-verification of each fixed finding against the resulting deliverable snapshot. |
 | code-review | Same session reviewing its own diff is confirmation bias. | Per-ticket review runs over `<ticket-base>...HEAD` (full ticket range); the final pass runs in a fresh review subagent against the immutable `review_base`. |

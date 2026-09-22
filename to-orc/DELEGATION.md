@@ -26,7 +26,7 @@ node <skill-dir>/scripts/orc-dispatch.mjs \
   --task <id> --brief <run-dir>/briefs/<id>.txt \
   --run-dir <run-dir> --repo <path> \
   [--model <provider/id[:thinking]>] [--provider <name>] \
-  [--background] [--session <id>] [--max-cost <usd>]
+  [--cycles <n>] [--max-cost <usd>] [--background] [--session <id>]
 ```
 
 `--phase` is the only policy input. It sets the write rule, the timeout, the session rule, the ordering precondition and the cycle accounting, so there is no flag combination to get wrong:
@@ -39,7 +39,7 @@ node <skill-dir>/scripts/orc-dispatch.mjs \
 | `verify` | none | `accepted/implement.md` exists | 1h | fresh |
 | `repair` | allowed | `accepted/verify.md` exists | 2h | `--session` required |
 
-`--model` is required on the run's first dispatch and fixed in `run.json` from then on (SKILL.md § Worker configuration). The dispatcher refuses success unless the relay proves pi ran that model. Use this one invocation; `pi` and `relay.mjs` are reached only through it. `--dry-run` validates without spending; `-h` prints the full contract. `verify` is refused unless the workspace is still the exact snapshot the last compliant `implement`/`repair` produced.
+`--model`, `--cycles`, and `--max-cost` are optional after the run's first dispatch, which fixes them in `run.json`; `--model` is optional on the first dispatch too (pi's configured default otherwise) and fixed in `run.json` from then on (SKILL.md § Worker configuration). The dispatcher refuses success unless the relay proves which model pi ran, and that it is the one requested. Use this one invocation; `pi` and `relay.mjs` are reached only through it. `--dry-run` validates without spending; `-h` prints the full contract. `verify` is refused unless the workspace is still the exact snapshot the last compliant `implement`/`repair` produced.
 
 ## Long phases must be backgrounded
 

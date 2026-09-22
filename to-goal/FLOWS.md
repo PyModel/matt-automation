@@ -1,6 +1,6 @@
 # Routing: ask-matt first, then the autonomy overlay
 
-`ask-matt` is the map. Stage 1 always reads it first (`node ROOT/scripts/matt.mjs resolve ask-matt`), at the pinned commit, and takes the route it names for the objective. This file does not restate that map. It says what an autonomous run does at each point where ask-matt expects a human, and it adds the three situations ask-matt does not route: a checkout already mid-merge, a refactor of a named area, and a greenfield target.
+`ask-matt` is the map. Stage 00 reads it (`node ROOT/scripts/matt.mjs resolve ask-matt`) at the pinned commit, and stage 1 takes the route it names for the objective. This file does not restate that map. It says what an autonomous run does at each point where ask-matt expects a human, and it adds the one situation ask-matt does not route: a refactor of a named area.
 
 If ask-matt at the pin contradicts this file, follow ask-matt. Record the contradiction in `bugs.md` and the retro proposes the fix to this file. Per-skill stages and substitutes are in [INTEGRATION.md](INTEGRATION.md).
 
@@ -10,12 +10,12 @@ Test the rows in order; the first match sets the on-ramp. Every route then merge
 
 | # | Situation | ask-matt section | Classification | Autonomous route |
 |---|---|---|---|---|
-| 0 | The checkout is mid-merge or mid-rebase | Standalone: `/resolving-merge-conflicts` | (none) | Resolve first, then re-enter this table. |
+| 0 | The checkout is mid-merge or mid-rebase | Standalone: `/resolving-merge-conflicts` | (none) | Resolve first (never `--abort`), then re-enter this table. |
 | 1 | The objective is a raw issue someone else filed | On-ramps: `/triage` | `issue` | Triage self-answered; main flow from the agent-ready issue. Never for tickets `/to-goal` created. |
 | 2 | Something is broken, flaky, or regressed | On-ramps: `/diagnosing-bugs` | `bug` | Loop goes red first, then fix with a regression test; PLAN.md § Bug fast path decides whether stages 4 to 6 run. A post-mortem with no seam queues `improve-codebase-architecture` as a lead. `/to-bug` enters here directly. |
 | 3 | A refactor, cleanup, rewrite, or modernization of a named area | not routed by ask-matt | `refactor` | `zero-tech-debt` pre-flight; its one-paragraph end state is the idea for the main flow. Hotfix shapes go to row 2. |
 | 4 | Upkeep with no target named | Codebase health: `/improve-codebase-architecture` | `upkeep` | Report written to the temp dir, not opened; its Top recommendation is the idea for the main flow. |
-| 5 | No repo, an empty repo, or the objective creates a new project, package, service, or skill | not routed by ask-matt | `greenfield` | Switch to the `to-new` overrides (`ROOT/to-new/SKILL.md`): scaffold first, then the `wayfinder` on-ramp. |
+| 5 | The objective creates a new project, package, service, or skill | On-ramps: `/wayfinder` (a greenfield project) | `greenfield` | The `to-new` overrides (`ROOT/to-new/SKILL.md`): repo initialized at stage 0, research up-front, then the wayfinder map; the scaffold is ticket 01. |
 | 6 | Too foggy or large for one session | On-ramps: `/wayfinder` | `fog` | Decision tickets self-answered; merge at stage 5 with `to-spec <map>`. Never loop the map straight into implement. |
 | 7 | Otherwise | The main flow | `feature` | grill-with-docs → to-spec → to-tickets → implement-spec (implement per ticket) → code-review. |
 
@@ -34,7 +34,7 @@ Three installed skills outside the Matt set deepen the pathway: `research-stack`
 
 ## Research need (stage 1 output)
 
-Research is a cost, not a stage every run pays. Stage 1 sets one of three values; stage 3 and every later subagent obey it.
+Research is a cost, not a stage every run pays. Stage 1 logs `research: none | targeted: Q1… | up-front`; stage 3 and every later subagent obey it. Any external unknown met later (an on-ramp hypothesis, a grilling round, an implementer, the review) becomes a Q in `findings.md` and fires one `research` call only when its row below says so.
 
 | Classification | Default need | Fires `research` when |
 |---|---|---|
@@ -47,7 +47,7 @@ Research is a cost, not a stage every run pays. Stage 1 sets one of three values
 | fog (wayfinder) | targeted | per research ticket, spawned by wayfinder |
 | greenfield (to-new) | up-front | stack and version choices; every dependency pinned from a source |
 
-`research-stack` is loaded the first time any of these fires and stays the router for the rest of the run; a raw web search is never used.
+Every external lookup, in every stage and subagent, goes through `research-stack`, loaded the first time one fires and kept as the router for the rest of the run; a raw web search is never used.
 
 ## On-ramp completion criteria (stage 2)
 
@@ -56,7 +56,3 @@ Research is a cost, not a stage every run pays. Stage 1 sets one of three values
 - **wayfinder**: every decision ticket on the map is resolved with a logged answer; research tickets burned down via `research`; map issue identified for `to-spec`.
 - **improve-codebase-architecture**: candidate list produced; one chosen and logged as the idea.
 - **zero-tech-debt**: every pre-flight box checked from repo evidence; end-state paragraph written; external callers of the changed surface enumerated.
-
-## Context hygiene
-
-ask-matt's rule, applied: stages 1 to 6 in one window (grilling, spec, and tickets build on the same thinking). Stage 7 gets a fresh context per ticket (subagent). `/compact` only at a stage boundary before stage 6, after NOW is rewritten, seeded with the ledger path. `/clear` never mid-run.

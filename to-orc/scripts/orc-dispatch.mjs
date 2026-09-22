@@ -527,10 +527,10 @@ function priorDispatches(runDir, ownTask) {
 
 function resolveRelay(selfDir) {
   // The relay is the pi-delegate skill: a sibling of this skill, or in any skill home
-  // (AGENT_SKILL_HOMES, path-delimited; else ~/.agents/skills and ~/.claude/skills).
+  // (AGENT_SKILL_HOMES, path-delimited; else ~/.claude/skills and ~/.agents/skills, as matt.mjs).
   const homes = process.env.AGENT_SKILL_HOMES
     ? process.env.AGENT_SKILL_HOMES.split(path.delimiter).filter(Boolean)
-    : [path.join(os.homedir(), ".agents/skills"), path.join(os.homedir(), ".claude/skills")];
+    : [path.join(os.homedir(), ".claude/skills"), path.join(os.homedir(), ".agents/skills")];
   const candidates = [
     process.env.TO_ORC_RELAY,
     path.resolve(selfDir, "../../pi-delegate/scripts/relay.mjs"),

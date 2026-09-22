@@ -7,7 +7,7 @@ Every run on a repo shares one **control plane**: the branch `goal/control`, che
   runs.json                       # run registry: slug, objective, run_id, started, status, agent, harness (goal.mjs owns it)
   tracker/<feature-slug>/spec.md
   tracker/<feature-slug>/issues/NN-<slug>.md
-  runs/<slug>/ledger.md  todo.md  log.md  bugs.md  findings.md  spec.md  notes/  tickets/NN.status.md  retro.md
+  runs/<slug>/ledger.md  todo.md  log.md  bugs.md  findings.md  spec.md  notes/  tickets/NN.status.md  final-verdict.json  retro.md
   runs/<slug>/STOP                # kill switch (committed so it survives everything)
   kun/<sha>/ENTRY.md TOOLS.md OPINIONS.md VOICE.md
   quarantine.json                 # flaky tests at base, per base commit
@@ -33,11 +33,10 @@ Locks are the one thing not committed: `mkdir` directories under `$(git rev-pars
 
 ## Rules
 
-
-- Create the control plane once (stage 0, under the `control` lock): `git worktree add --orphan -b goal/control .worktrees/control` (git ≥ 2.42), first commit `Init to-goal control plane`. If it exists, `git -C .worktrees/control pull --ff-only` when a remote tracks it, else nothing.
+- `goal.mjs control` creates the control plane once, under the `control` lock: `.worktrees/` into `.git/info/exclude` (not `.gitignore`, which would be a tracked change), then `git worktree add --orphan -b goal/control .worktrees/control` (git ≥ 2.42), first commit `Init to-goal control plane`. It is idempotent. When a remote tracks `goal/control`, follow it with `git -C .worktrees/control pull --ff-only`.
 - Every control-plane write is committed with `goal.mjs commit`, subject `[<slug>] <what>`; the user reads the whole factory's history with `git log goal/control`. A file only one agent writes (its own `runs/<slug>/` files, its ticket status file) needs no lock for the write itself; a file several agents write is written only by the command that owns it: `runs.json` by `init`, `registry`, and `stop`; tracker tickets by `take` and `status`, which read, write, and commit under the ticket lock.
 - The control worktree is shared by every run and every subagent; it is the only path that crosses run boundaries.
-- `.worktrees/` stays in `.git/info/exclude`; `goal/control` is a normal branch and may be pushed if the user wants the factory history on the remote (report says how; never pushed by a run).
+- `goal/control` is a normal branch and may be pushed if the user wants the factory history on the remote (report says how; never pushed by a run).
 
 ## Run registry (`runs.json`)
 
@@ -45,7 +44,7 @@ Locks are the one thing not committed: `mkdir` directories under `$(git rev-pars
 [{"slug":"add-login","objective":"…","run_id":3,"started":"2026-09-07T13:40:00.000Z","status":"building","agent":"<session id>","harness":"<harness name>"}]
 ```
 
-`run_id` is the next unused integer; it scopes ports and database names (BOOTSTRAP.md § 0c). `goal.mjs` owns the file: `slug` derives the slug (lower-case, non-alphanumerics to `-`, collapsed, at most 40 chars; `--new` picks the next free `-2`, `-3` for a deliberate re-run), `init` appends the entry, `registry <slug> <status>` moves it (`bootstrapping` → `planning` → `specced` → `ticketed` → `building` → `reviewing` → `done`, or `stopped`), `stop` writes `STOP` and sets `stopped`, and `resume` removes `STOP` and restores the status the stop replaced. The entry records the `agent` and `harness` that `init` was given; `--gc` judges liveness by them. The ≥ 80 % token-overlap duplicate check is the agent's judgement, before `init`. `--stop` without a slug stops the single running entry, or reports the list when there are several.
+`run_id` is the next unused integer; it scopes ports and database names (BOOTSTRAP.md § 0d). `goal.mjs` owns the file: `slug` derives the slug (lower-case, non-alphanumerics to `-`, collapsed, at most 40 chars; `--new` picks the next free `-2`, `-3` for a deliberate re-run), `init` appends the entry, `registry <slug> <status>` moves it (`bootstrapping` → `planning` → `specced` → `ticketed` → `building` → `reviewing` → `done`, or `stopped`, or `dry-run`), `stop` writes `STOP` and sets `stopped`, and `resume` removes `STOP` and restores the status the stop replaced. The entry records the `agent` and `harness` that `init` was given; `--gc` judges liveness by them. The duplicate-run check is BOOTSTRAP.md § 0. `--stop` without a slug stops the single running entry, or reports the list when there are several.
 
 ## Tracker grammar (local tracker)
 

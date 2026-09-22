@@ -39,7 +39,7 @@ node <skill-dir>/scripts/orc-dispatch.mjs \
 | `verify` | none | `accepted/implement.md` exists | 1h | fresh |
 | `repair` | allowed | `accepted/verify.md` exists | 2h | `--session` required |
 
-`--model`, `--cycles`, and `--max-cost` are optional after the run's first dispatch, which fixes them in `run.json`; `--model` is optional on the first dispatch too (pi's configured default otherwise) and fixed in `run.json` from then on (SKILL.md § Worker configuration). The dispatcher refuses success unless the relay proves which model pi ran, and that it is the one requested. Use this one invocation; `pi` and `relay.mjs` are reached only through it. `--dry-run` validates without spending; `-h` prints the full contract. `verify` is refused unless the workspace is still the exact snapshot the last compliant `implement`/`repair` produced.
+What the first dispatch fixes in `run.json`: SKILL.md § Worker configuration. The dispatcher refuses success unless the relay proves which model pi ran, and that it is the one requested. Use this one invocation; `pi` and `relay.mjs` are reached only through it. `--dry-run` validates without spending; `-h` prints the full contract.
 
 ## Long phases must be backgrounded
 
@@ -82,6 +82,8 @@ Before and after every dispatch the workspace is fingerprinted: `HEAD`, the dige
 Use `changeSet.worktreeDiffSha` + `headAfter` as **the** diff identifier. Comparing the implement dispatch's pair against the verify dispatch's pair is a string comparison on machine-produced evidence: if they differ, the verifier did not look at the final change set and `verify` must be repeated. A worker's own reported revision is a cross-check, never the source.
 
 When `changeSet.verified` is `false` (the workspace is not a git repository) writes are **unverifiable**: no diff identifier exists, the no-write gate cannot fire, and every claim about "nothing else changed" is an unknown. Record that in the ledger and in `findings`; never round it up to a clean tree. Files the repository ignores are invisible to the fingerprint in every case — say so rather than claiming the workspace was untouched.
+
+Scout, research and verify are read-only, and the dispatcher enforces it: before the phase it pins the workspace (the index, HEAD, and a snapshot commit of every non-ignored file under `refs/to-orc/<id>/before`); after it, a write is `NO_WRITES_VIOLATED`, the writes are pinned under `refs/to-orc/<id>/after`, and HEAD, index and tree are put back and re-fingerprinted. `changeSet.restore.verified: true` means the workspace is byte-for-byte what it was before the phase; `false` names the error and both refs, and is a blocker. Ignored files are neither checked nor restored.
 
 ## Budget
 

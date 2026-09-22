@@ -8,13 +8,13 @@ This table is checked: `node ROOT/scripts/matt.mjs check` fails when a vendored 
 
 | Skill | Stage in /to-goal | Touchpoint(s) the skill has | Autonomous substitute |
 |---|---|---|---|
-| ask-matt | 1 | Recommends and stops; user types the next skill | The router. Stage 1 reads it first, takes the route it names for the objective, then applies FLOWS.md § Routing tree. Any load-bearing claim about a skill is checked against that skill's file. |
+| ask-matt | 1 | Recommends and stops; user types the next skill | The router. Stage 00 reads it; stage 1 takes the route it names (FLOWS.md § Routing tree). Any load-bearing claim about a skill is checked against that skill's file. |
 | grill-with-docs | 4 | Delegates to grilling + domain-modeling | Both loaded; `/to-goal` answers the rounds (see grilling). Verify `CONTEXT.md` changed on disk. |
 | to-spec | 5 | "Check with the user that these seams match" | Seams were fixed in stage 4; carried into Testing Decisions; logged `(source: findings)`. Publish to the local tracker, `ready-for-agent`. |
-| to-tickets | 6 | "Quiz the user … iterate until the user approves" | Self-quiz with the three questions (granularity, edges, merge/split) answered by kun or defaults; add a demo-path line; check criteria red at base; publish blockers-first (files numbered in dependency order; `gh --parent --blocked-by` only on GitHub). |
-| implement | 7 | None by design; but never closes the ticket | The implementer subagent's brief inside implement-spec. Orchestrator closes the ticket, ticks boxes; a merger subagent merges the ticket branch. |
-| tdd | 7 (every slice, in the ticket subagent) | "Confirm seams with the user" | Seams pre-agreed in stage 4 and written in the spec; brief lists them; no test at any other seam. Red first; one slice per cycle; browser tests after behaviour. |
-| code-review | 7 (per ticket), 8 (final) | "If they didn't specify a fixed point, ask"; "ask the user where the spec is" | Fixed point always passed (previous commit / branch point); spec path always passed. Sub-agent briefs carry "do not load code-review or spawn agents". Commit before review. Loaded by path, which also sidesteps Claude Code's built-in `/code-review` name clash. |
+| to-tickets | 6 | "Quiz the user … iterate until the user approves" | Self-quiz (granularity, edges, merge/split) answered per KUN.md; PLAN.md stage 6 and the 6b gate. |
+| implement | 7 | None by design; but never closes the ticket | The implementer brief inside implement-spec (BUILD.md); the orchestrator closes the ticket and ticks boxes; a merger subagent merges the ticket branch. |
+| tdd | 7 (every slice, in the ticket subagent) | "Confirm seams with the user" | Seams agreed in PLAN.md stage 4 and passed in the brief; BUILD.md implementer brief, rule 2. |
+| code-review | 7 (per ticket), 8 (final) | "If they didn't specify a fixed point, ask"; "ask the user where the spec is" | Fixed point always passed (`<ticket-base>` or `review_base`); spec path always passed. Brief guards per PITFALLS.md (code-review rows). |
 | handoff | phase boundary only | Writes a portable doc | Only when the run must move harness or directory (e.g. a ticket needs a tool this harness lacks). Otherwise subagents carry context pointers. |
 | prototype | skipped | Produces an artifact for a human to react to; HITL by definition | A question that "needs runnable code" is answered by a red test at the seam (tdd) or a research call; if neither settles it, log the default and continue. |
 
@@ -38,8 +38,8 @@ This table is checked: `node ROOT/scripts/matt.mjs check` fails when a vendored 
 
 | Skill | Stage in /to-goal | Touchpoint(s) the skill has | Autonomous substitute |
 |---|---|---|---|
-| grilling | 4; 3 | Rounds wait for the user's answers; "do not act until the user confirms" | Rounds run in full; answered by KUN.md § Grilling rounds, preferring the skill's own recommended answer unless findings or codebase contradict it; frontier recomputed; done when the frontier is empty. Facts are found by sub-agents as the skill says. |
-| research | 3 (conditional, per open Q); 2 (wayfinder research tickets); 4, 7, 8 on demand | None (AFK) | Fires only when FLOWS.md § Research need says so. Brief adds "you are already the research subagent; spawn nothing"; one narrow question per call; findings file kept in `.worktrees/control/runs/<slug>/`. |
+| grilling | 4; 3 | Rounds wait for the user's answers; "do not act until the user confirms" | Rounds run in full, answered per KUN.md § Grilling rounds (the skill's recommended answer goes to kun as input); facts are found by sub-agents as the skill says. |
+| research | 3 (conditional, per open Q); 2 (wayfinder research tickets); 4, 7, 8 on demand | None (AFK) | Fires only per FLOWS.md § Research need; briefed per PITFALLS.md (research rows); findings kept in `runs/<slug>/findings.md`. |
 | resolving-merge-conflicts | 7 (ticket-branch rebase onto run branch); 0 (checkout already mid-merge) | None | As-is. Never `--abort`. |
 | to-questionnaire | 4 (a question only a named person can answer) | Two interview exchanges about the send | Answer the two exchanges from the decision log (recipient = repo owner unless the objective names someone); write `to-questionnaire-<slug>.md` in `.worktrees/control/runs/<slug>/`; continue with the default and list the file as a blocker. |
 | wizard | 7 (human-only step), 2 (wayfinder task ticket) | "Show the user the ordered list of stages and confirm" | Skip confirmation; author from repo evidence only, never invent UI steps; `bash -n` + shellcheck; script path is a named blocker in the report. |
@@ -73,6 +73,6 @@ This table is checked: `node ROOT/scripts/matt.mjs check` fails when a vendored 
 | Skill | Stage in /to-goal | Touchpoint(s) | Autonomous substitute |
 |---|---|---|---|
 | kun | every question (KUN.md) | It is the user's voice | Cached per KUN.md § Cache once; never asked twice. |
-| research-stack | 3 (first external need) and inside every subagent that looks outside the repo | None | Loaded on first need, not up front; route table loaded once; bounds and refunds applied per call. |
+| research-stack | 3 (first external need) and inside every subagent that looks outside the repo | None | Loaded per FLOWS.md § Research need; bounds and refunds applied per call. |
 | defensive-design | 4 (Design), 7 (Implement), 8 (Review) | Mode must be stated; "do not edit unless authorized" in Review | Mode passed explicitly per call; Implement authority comes from the ticket; evidence state recorded per control. Tier 3 findings that need authority the run lacks are blockers. |
 | zero-tech-debt | 2 (refactor on-ramp), 6 (prefactoring tickets) | "once a deletion is approved"; "stop and recommend a targeted change" for hotfix shapes | Self-approve after the pre-flight passes, log each deletion; hotfix shapes are re-routed to diagnosing-bugs. |

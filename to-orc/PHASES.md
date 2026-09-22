@@ -28,7 +28,7 @@ implement: head=<sha> worktreeDiffSha=<sha>
 verify:    head=<sha> worktreeDiffSha=<sha>   ← must match the line above
 ```
 
-A flag flips to `true` when the phase's exit gate is met — *completed*, not necessarily *passed*. A verifier that finishes and reports failing tests completes verification; the verdict is then `REVISE`.
+A flag flips to `true` when the phase's exit gate is met — *completed*, not necessarily *passed* (VERDICT.md § Verdict rules).
 
 ## Accepting a phase
 
@@ -41,7 +41,7 @@ Never write an acceptance file to unblock yourself. If the gate is not met, send
 The run directory is the state. On any entry that is not the first — a resumed session, a compacted context, a crashed run — reconstruct before dispatching anything:
 
 1. Read `ledger.md`, then every `<task>/orc-status.json`, then `accepted/*.md`, then `spend.json`.
-2. If any task directory still holds a `RUNNING` sentinel with no `orc-status.json`, that dispatch is either still running or died. Poll it; do not re-dispatch the same task id.
+2. If any `orc-status.json` still says `RUNNING`, that dispatch is either still running or died. Poll it (`--poll`); do not re-dispatch the same task id.
 3. Resume at the first phase whose predecessor is accepted and which has no `COMPLIANT` dispatch of its own.
 4. Rewrite the ledger to match what the status files actually say before continuing. Where they disagree, the status files win.
 
@@ -53,7 +53,7 @@ Require: baseline revision, existing uncommitted changes, the likely change boun
 
 **Exit gate:** an evidence-backed repository map with concrete paths, baseline state, dependencies, and a validation strategy. Reject vague inventories with no file references. Record the baseline revision from `changeSet.headBefore`, not from the worker's prose.
 
-If `changeSet.verified` is `false`, the workspace is not a git repository: there is no baseline, no diff identifier and no write gate for the whole run. Decide explicitly — proceed in a documented degraded mode where every "nothing else changed" claim is an unknown, or stop and report `FAIL` if the task needs a verifiable change set.
+If `changeSet.verified` is `false` (DELEGATION.md § The change set), there is no baseline, diff identifier, or write gate for the whole run. Decide explicitly — proceed in a documented degraded mode where every "nothing else changed" claim is an unknown, or stop and report `FAIL` if the task needs a verifiable change set.
 
 ## Phase 2 — `research` (no writes)
 
@@ -77,7 +77,7 @@ Workers must report a required scope change before making it. A material design 
 
 **Exit gate:** a report identifying the actual changes, plan steps completed, and checks performed, reconciled against the dispatcher's `changeSet`. If the worker's account and the fingerprint disagree, the fingerprint wins and the discrepancy is a deviation. Record `changeSet.headAfter` + `changeSet.worktreeDiffSha` in the ledger as the diff identifier.
 
-`TIMEOUT` or `ABORTED` here means the change set is **partial**: do not accept it, do not verify it, and do not repair it by resuming that session — dispatch a fresh `implement` with a longer `--timeout`.
+`TIMEOUT` or `ABORTED` here: a partial change set, handled per DELEGATION.md § The evidence contract; never repaired by resuming that session.
 
 ## Phase 4 — `verify` (fresh worker, no writes)
 

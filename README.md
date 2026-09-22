@@ -25,7 +25,7 @@
 | 🎯 | [`to-goal/`](to-goal/SKILL.md) | The pipeline: **ask-matt → on-ramp → research → grill → spec → tickets → build → review → retro**. |
 | 🐛 | [`to-bug/`](to-bug/SKILL.md) | `to-goal` with the route pinned to `diagnosing-bugs` and the bug fast path armed. |
 | 🌱 | [`to-new/`](to-new/SKILL.md) | `to-goal` for a greenfield repo, package, service, or skill. |
-| 🛰️ | [`to-orc/`](to-orc/SKILL.md) | Delegation-only orchestrator: pi workers on any model, gated evidence, a raw-JSON verdict. |
+| 🛰️ | [`to-orc/`](to-orc/SKILL.md) | Delegation-only orchestrator: pi workers on any model, gated evidence, a raw-JSON verdict. Also `to-goal`'s optional pi implementer backend. |
 | 📌 | `vendor/mattpocock-skills/` | Upstream Matt skills as a git submodule, pinned to one commit. |
 | 🔗 | `matt/<name>` | Committed symlinks into the submodule: the only place runs load Matt skills from. |
 | ⚙️ | [`scripts/`](scripts) | `matt.mjs` resolves and checks skills; `goal.mjs` owns resumption, tickets, claims, and locks. |
@@ -51,7 +51,7 @@ A run also needs four installed skills: `kun`, `research-stack`, `defensive-desi
 
 1. **Route.** Stage `00` runs the wiring check and reads `ask-matt`; `to-goal/FLOWS.md` adds only the autonomy rules on top of its map.
 2. **Resume anywhere.** Every invocation, first run or fiftieth loop tick, asks `goal.mjs next <slug>` where it stands. A ticked stage whose artifact is missing is not trusted.
-3. **Build in parallel.** Tickets carry file claims; `goal.mjs take` hands out the frontier under a lock, and each ticket runs in its own worktree.
+3. **Build in parallel.** Tickets carry file claims; `goal.mjs take` hands out the frontier under a lock, and each ticket runs in its own worktree, on a subagent or a pi worker.
 4. **Halt cleanly.** Every stop, yours or the run's own, goes through `goal.mjs stop`; `goal.mjs resume` picks up after you fix the cause.
 
 ## 🧰 Commands

@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" role="img" aria-labelledby="t d">
+  <title id="t">matt-automations</title>
+  <desc id="d">Matt Pocock's skills driven end to end, autonomously, in a loop: ask-matt, grill, to-spec, to-tickets, implement, code-review, retro.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="0.55" stop-color="#111a33"/>
+      <stop offset="1" stop-color="#0a1a24"/>
+    </linearGradient>
+    <linearGradient id="title" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f472b6"/>
+      <stop offset="0.5" stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.35" r="0.6">
+      <stop offset="0" stop-color="#7c3aed" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7c3aed" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#ffffff" stroke-opacity="0.035"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#64748b"/>
+    </marker>
+    <marker id="loop" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#22d3ee"/>
+    </marker>
+  </defs>
+
+  <rect width="1280" height="320" rx="18" fill="url(#bg)"/>
+  <rect width="1280" height="320" rx="18" fill="url(#grid)"/>
+  <rect width="1280" height="320" rx="18" fill="url(#glow)"/>
+
+  <text x="640" y="112" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="64" font-weight="800" letter-spacing="-1.5" fill="url(#title)">matt-automations</text>
+  <text x="640" y="156" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="21" fill="#cbd5e1">Matt Pocock's skills, driven end to end · autonomous · in a loop · any harness, any model</text>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" text-anchor="middle" fill="#e2e8f0">
+    <g stroke-width="1.5" fill-opacity="0.07">
+      <rect x="134"  y="222" width="110" height="40" rx="20" fill="#f472b6" stroke="#f472b6"/>
+      <rect x="288"  y="222" width="80"  height="40" rx="20" fill="#a78bfa" stroke="#a78bfa"/>
+      <rect x="412"  y="222" width="100" height="40" rx="20" fill="#a78bfa" stroke="#a78bfa"/>
+      <rect x="556"  y="222" width="125" height="40" rx="20" fill="#a78bfa" stroke="#a78bfa"/>
+      <rect x="725"  y="222" width="118" height="40" rx="20" fill="#22d3ee" stroke="#22d3ee"/>
+      <rect x="887"  y="222" width="135" height="40" rx="20" fill="#34d399" stroke="#34d399"/>
+      <rect x="1066" y="222" width="80"  height="40" rx="20" fill="#34d399" stroke="#34d399"/>
+    </g>
+    <text x="189"  y="247">ask-matt</text>
+    <text x="328"  y="247">grill</text>
+    <text x="462"  y="247">to-spec</text>
+    <text x="618"  y="247">to-tickets</text>
+    <text x="784"  y="247">implement</text>
+    <text x="954"  y="247">code-review</text>
+    <text x="1106" y="247">retro</text>
+  </g>
+
+  <g stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)">
+    <line x1="250"  y1="242" x2="282"  y2="242"/>
+    <line x1="374"  y1="242" x2="406"  y2="242"/>
+    <line x1="518"  y1="242" x2="550"  y2="242"/>
+    <line x1="687"  y1="242" x2="719"  y2="242"/>
+    <line x1="849"  y1="242" x2="881"  y2="242"/>
+    <line x1="1028" y1="242" x2="1060" y2="242"/>
+  </g>
+
+  <path d="M1106 266 C1106 300, 1060 300, 1000 300 L280 300 C220 300, 189 300, 189 270" fill="none" stroke="#22d3ee" stroke-opacity="0.7" stroke-width="1.5" stroke-dasharray="5 6" marker-end="url(#loop)"/>
+  <rect x="540" y="290" width="200" height="20" rx="10" fill="#0f172a"/>
+  <text x="640" y="304" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#67e8f9">goal.mjs next · every tick</text>
+
+  <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" text-anchor="middle" fill-opacity="0.85">
+    <text x="189"  y="210" fill="#f472b6">ROUTE</text>
+    <text x="462"  y="210" fill="#a78bfa">PLAN</text>
+    <text x="784"  y="210" fill="#22d3ee">BUILD</text>
+    <text x="1030" y="210" fill="#34d399">CLOSE</text>
+  </g>
+</svg>

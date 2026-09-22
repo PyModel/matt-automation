@@ -1,44 +1,75 @@
-# matt-automations
+<p align="center">
+  <img src="assets/banner.svg" alt="matt-automations: Matt Pocock's skills driven end to end, autonomously, in a loop" width="100%">
+</p>
 
-Autonomous drivers for [Matt Pocock's skills](https://github.com/mattpocock/skills). They route every objective through `ask-matt`, then run the Matt skills end to end without a human in the loop.
+<p align="center">
+  <a href="https://github.com/PyModel/matt-automation/actions/workflows/test.yml"><img alt="tests" src="https://github.com/PyModel/matt-automation/actions/workflows/test.yml/badge.svg"></a>
+  <a href="https://github.com/mattpocock/skills"><img alt="Matt skills pinned" src="https://img.shields.io/badge/matt%20skills-pinned%20c55ee46-a78bfa?logo=git&logoColor=white"></a>
+  <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A520-339933?logo=nodedotjs&logoColor=white">
+  <img alt="harness" src="https://img.shields.io/badge/harness-any-22d3ee">
+  <img alt="model" src="https://img.shields.io/badge/model-any-f472b6">
+  <img alt="dependencies" src="https://img.shields.io/badge/dependencies-0-34d399">
+</p>
 
-| Path | What it is |
-|---|---|
-| `to-goal/` | The pipeline: route (ask-matt) → on-ramp → research → grill → spec → tickets → build → review → retro. |
-| `to-bug/`, `to-new/` | `to-goal` with the route pinned to a bug fix or a greenfield target. |
-| `to-orc/` | A separate delegation-only orchestrator: pi workers on any model the run names. It does not use the Matt skills. |
-| `vendor/mattpocock-skills/` | Upstream Matt skills as a git submodule, pinned to one commit. |
-| `matt/<name>` | Committed symlinks into the submodule: the only place the automations load Matt skills from. |
-| `scripts/matt.mjs` | Resolves skills, regenerates `matt/`, and checks the wiring. |
-| `scripts/goal.mjs` | The mechanical half of a run: where it resumes, the ticket frontier and claims, control-plane locks and commits. |
+<p align="center">
+  Give it an objective, walk away, come back to reviewed commits on a branch.<br>
+  Every run is routed by <code>ask-matt</code>, then driven through Matt's own skills with no human in the loop.
+</p>
 
-## Setup
+---
+
+## ✨ What's inside
+
+| | Path | What it does |
+|---|---|---|
+| 🎯 | [`to-goal/`](to-goal/SKILL.md) | The pipeline: **ask-matt → on-ramp → research → grill → spec → tickets → build → review → retro**. |
+| 🐛 | [`to-bug/`](to-bug/SKILL.md) | `to-goal` with the route pinned to `diagnosing-bugs` and the bug fast path armed. |
+| 🌱 | [`to-new/`](to-new/SKILL.md) | `to-goal` for a greenfield repo, package, service, or skill. |
+| 🛰️ | [`to-orc/`](to-orc/SKILL.md) | Delegation-only orchestrator: pi workers on any model, gated evidence, a raw-JSON verdict. |
+| 📌 | `vendor/mattpocock-skills/` | Upstream Matt skills as a git submodule, pinned to one commit. |
+| 🔗 | `matt/<name>` | Committed symlinks into the submodule: the only place runs load Matt skills from. |
+| ⚙️ | [`scripts/`](scripts) | `matt.mjs` resolves and checks skills; `goal.mjs` owns resumption, tickets, claims, and locks. |
+
+## 🚀 Quick start
 
 ```sh
-git clone --recurse-submodules <this repo>   # or: git submodule update --init
-node scripts/matt.mjs check                  # must print "ok"
+git clone --recurse-submodules git@github.com:PyModel/matt-automation.git
+cd matt-automation
+node scripts/matt.mjs check        # prints "ok"
 ```
 
-Besides the vendored Matt skills, a run needs four installed skills: `kun`, `research-stack`, `defensive-design`, and `zero-tech-debt`. `resolve` and `check` look for them in `$AGENT_SKILL_HOMES` (path-separated) when set, else in `~/.claude/skills` and `~/.agents/skills`. `check` names any that are missing; `check --vendored` checks only this repo's own wiring (what CI runs).
+Symlink `to-goal`, `to-bug`, `to-new` and `to-orc` into your harness's skills directory (for example `~/.agents/skills/` or `~/.claude/skills/`), then:
 
-Install the automations by symlinking `to-goal`, `to-bug`, `to-new` (and `to-orc`) into each harness's skills directory (for example `~/.agents/skills/` and `~/.claude/skills/`). Nothing is tied to one harness or model. The Matt skills do not need to be installed for the automations to work: `to-goal` loads them from `matt/` by path.
+```text
+/to-goal add rate limiting to the public API
+/loop /to-goal add rate limiting to the public API   # or any recurring runner
+```
 
-## Commands
+A run also needs four installed skills: `kun`, `research-stack`, `defensive-design`, `zero-tech-debt`. They are found in `$AGENT_SKILL_HOMES` (path-separated), else `~/.claude/skills` and `~/.agents/skills`; `check` names any that are missing.
+
+## 🔁 How a run works
+
+1. **Route.** Stage `00` runs the wiring check and reads `ask-matt`; `to-goal/FLOWS.md` adds only the autonomy rules on top of its map.
+2. **Resume anywhere.** Every invocation, first run or fiftieth loop tick, asks `goal.mjs next <slug>` where it stands. A ticked stage whose artifact is missing is not trusted.
+3. **Build in parallel.** Tickets carry file claims; `goal.mjs take` hands out the frontier under a lock, and each ticket runs in its own worktree.
+4. **Halt cleanly.** Every stop, yours or the run's own, goes through `goal.mjs stop`; `goal.mjs resume` picks up after you fix the cause.
+
+## 🧰 Commands
 
 ```sh
-node scripts/matt.mjs resolve ask-matt   # SKILL.md path the automations load
-node scripts/matt.mjs check              # nonzero on any wiring drift; prints pin + installed-copy drift
+node scripts/matt.mjs resolve ask-matt   # SKILL.md path a run loads
+node scripts/matt.mjs check              # wiring + installed skills; prints pin and drift
 node scripts/matt.mjs link               # regenerate matt/ after the pin moves
-node scripts/goal.mjs next <slug>        # where a /to-goal run resumes (what every loop tick asks)
+node scripts/goal.mjs next <slug>        # where a run resumes
 node scripts/goal.mjs frontier <feature> # ticket grammar, frontier, overlapping claims
-npm test                                 # unit tests, to-orc selftest, adversarial audit
+npm test                                 # unit tests · to-orc selftest · adversarial audit
 ```
 
-## Bumping the Matt pin
+## 📌 Bumping the Matt pin
 
 ```sh
 git -C vendor/mattpocock-skills fetch && git -C vendor/mattpocock-skills checkout origin/main
 node scripts/matt.mjs link && node scripts/matt.mjs check
 ```
 
-When `check` fails, a new or renamed upstream skill needs a row in `to-goal/INTEGRATION.md`: either what the pipeline does with it, or `not used` and why. Then re-read the upstream docs against `to-goal/PITFALLS.md` and commit the submodule, the `matt/` links, and the doc changes together.
+A failing `check` means an upstream skill is new or renamed: give it a row in [`to-goal/INTEGRATION.md`](to-goal/INTEGRATION.md) (what the pipeline does with it, or `not used` and why), re-read [`to-goal/PITFALLS.md`](to-goal/PITFALLS.md), and commit the submodule, `matt/` and docs together.

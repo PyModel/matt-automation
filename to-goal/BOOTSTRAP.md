@@ -9,7 +9,7 @@ Read CONTROL.md, then PIPELINE.md § Isolation and § Setup defaults.
 1. With `goal.mjs with-lock exclude --` add `.worktrees/` to `.git/info/exclude` if absent.
 2. With `goal.mjs with-lock control --`: if `.worktrees/control/` is missing, create it (CONTROL.md § Rules). If a remote tracks `goal/control`, fast-forward it.
 3. Inside one `goal.mjs with-lock registry --` transaction: derive the slug, check `runs.json` for a duplicate or overlapping running objective (refuse and report unless `--force`), append this run with the next `run_id`, `status: bootstrapping`, the harness name and this agent's id or pid; commit.
-4. Create `runs/<slug>/` with `ledger.md` (NOW: stage 0, run_id), `todo.md` (all stages unchecked), `log.md`, `bugs.md`; commit `[<slug>] start`.
+4. `node ROOT/scripts/goal.mjs init <slug> "<objective>"` creates and commits `runs/<slug>/` with `ledger.md`, `todo.md` (every stage line, unticked, in the grammar `goal.mjs next` parses), `log.md`, and `bugs.md`. Then write `run_id` into NOW and tick `00`.
 5. If the user's checkout has uncommitted changes (`git status --porcelain` non-empty), write `dirty-checkout: yes (N files)` into NOW: the run builds from the base commit and will not see them; the report repeats it.
 6. `--gc` candidate sweep (report-only by default; § Kill switch and GC below).
 

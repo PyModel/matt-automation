@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, next, frontier, take, setStatus, claimsBreach, withLock, commit, controlDir } from './goal.mjs';
+import { STAGES, init, next, frontier, take, setStatus, claimsBreach, withLock, commit, controlDir } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -174,4 +174,25 @@ test('take refuses a tracker that fails the claims gate', () => {
   write(path.join(issues, '01-a.md'), ticket('ready-for-agent', 'None', 'exclusive: src/'));
   write(path.join(issues, '02-b.md'), ticket('ready-for-agent', 'None', 'exclusive: src/b.ts'));
   assert.throws(() => take(repo, 'f', 2), /claims gate/);
+});
+
+test('init writes a run that next can resume, commits it, and refuses to overwrite', () => {
+  const { repo, control } = repoWithControl();
+  init(repo, 'add-login', 'Add login');
+  const result = next(control, 'add-login');
+  assert.equal(result.malformed, undefined);
+  assert.equal(result.stage, '00');
+  assert.equal(git(control, 'status', '--porcelain'), '');
+  assert.throws(() => init(repo, 'add-login', 'again'), /already exists/);
+  assert.throws(() => init(repo, 'Bad Slug', 'x'), /bad slug/);
+});
+
+test('commit ignores files another agent staged', () => {
+  const { repo, control } = repoWithControl();
+  write(path.join(control, 'other.md'), 'staged by someone else');
+  git(control, 'add', 'other.md');
+  write(path.join(control, 'mine.md'), 'mine');
+  commit(repo, 'mine', ['mine.md']);
+  assert.equal(git(control, 'show', '--name-only', '--format=', 'HEAD'), 'mine.md');
+  assert.equal(commit(repo, 'nothing new', ['mine.md']), 'nothing to commit');
 });

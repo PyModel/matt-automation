@@ -100,15 +100,18 @@ test('check fails when ask-matt routes to a skill that is not linked', () => {
   assert.ok(errors.some((e) => e.includes('ask-matt') && e.includes('scaffold-exercises')), errors.join('\n'));
 });
 
-test('check fails when INTEGRATION.md names a skill nothing resolves', () => {
+test('check reports a row that is neither vendored nor installed as missing, not as a wiring error', () => {
   const { root, homes } = fixture();
   fs.appendFileSync(path.join(root, 'to-goal/INTEGRATION.md'), '| Skill | x |\n|---|---|\n| phantom | y |\n');
   link(root);
-  const { errors } = check(root, { homes });
-  assert.ok(errors.some((e) => e.includes('phantom')), errors.join('\n'));
+  const { errors, missing } = check(root, { homes });
+  assert.deepEqual(errors, []);
+  assert.ok(missing.some((m) => m.includes('phantom')), missing.join('\n'));
+  assert.equal(check(root, { homes: [] }).missing.length, 2); // research-stack is gone too
 });
 
-test('this repo: matt/ is in sync with the pin and every skill is integrated', () => {
-  const { errors } = check(REPO);
+test('this repo: matt/ is in sync with the pin and every vendored skill is integrated', () => {
+  // No skill homes: the repo's own wiring must hold on a machine with nothing installed (CI).
+  const { errors } = check(REPO, { homes: [] });
   assert.deepEqual(errors, []);
 });

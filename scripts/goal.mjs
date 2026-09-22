@@ -2,6 +2,7 @@
 // The mechanical half of a /to-goal run: everything that is a rule over files, so
 // no agent re-derives it from prose.
 //
+//   node scripts/goal.mjs init <slug> <objective>         create runs/<slug>/ with a todo.md that next can parse, and commit it
 //   node scripts/goal.mjs next <slug>                     where the run resumes (JSON)
 //   node scripts/goal.mjs frontier <feature>              ticket grammar, frontier, claim overlaps (JSON)
 //   node scripts/goal.mjs take <feature> <n>              atomically flip up to <n> frontier tickets (n = free slots) to in-flight (JSON ids)
@@ -61,6 +62,22 @@ export function parseTodo(text) {
     if (m && STAGES.some((s) => s.id === m[2])) ticked.set(m[2], m[1] === 'x');
   }
   return ticked;
+}
+
+export function init(repo, slug, objective) {
+  if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(slug)) throw new Error(`bad slug: ${slug} (kebab-case, at most 40 chars)`);
+  const control = controlDir(repo);
+  const runDir = path.join(control, 'runs', slug);
+  if (fs.existsSync(runDir)) throw new Error(`runs/${slug}/ already exists; resume it with \`goal.mjs next ${slug}\``);
+  const files = {
+    'todo.md': `# to-goal todo: ${objective}\n\n## Stages\n${STAGES.map((s) => `- [ ] ${s.id} ${s.name}`).join('\n')}\n\n## Tickets (stage 7)\n`,
+    'ledger.md': `# to-goal: ${objective}\n\n## NOW\n- stage: 0 control plane\n- next: finish BOOTSTRAP.md stage 0\n\n## Events\n`,
+    'log.md': `# Decisions: ${objective}\n\n`,
+    'bugs.md': `# Bugs noticed in flight: ${objective}\n\n`,
+  };
+  fs.mkdirSync(runDir, { recursive: true });
+  for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(runDir, name), text);
+  return commit(repo, `[${slug}] start`, Object.keys(files).map((name) => path.join('runs', slug, name)));
 }
 
 export function next(control, slug) {
@@ -264,7 +281,7 @@ export function commit(repo, message, files) {
   const control = controlDir(repo);
   return withLock(repo, 'control', () => {
     git(control, ['add', '--', ...files]);
-    const staged = git(control, ['diff', '--cached', '--name-only']);
+    const staged = git(control, ['diff', '--cached', '--name-only', '--', ...files]);
     if (!staged) return 'nothing to commit';
     git(control, ['commit', '-q', '-m', message, '--', ...files]);
     return git(control, ['rev-parse', '--short', 'HEAD']);
@@ -291,6 +308,10 @@ function main(argv) {
   }
   const [command, ...rest] = args;
   const print = (value) => console.log(JSON.stringify(value, null, 2));
+  if (command === 'init' && rest.length === 2) {
+    console.log(init(repo, rest[0], rest[1]));
+    return 0;
+  }
   if (command === 'next' && rest.length === 1) {
     const result = next(controlDir(repo), rest[0]);
     print(result);
@@ -321,7 +342,7 @@ function main(argv) {
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }
-  console.error('usage: goal.mjs [--repo <path>] next <slug> | frontier <feature> | take <feature> <max> | status <feature> <id> <status> | claims <ticket.md> <path>... | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
+  console.error('usage: goal.mjs [--repo <path>] init <slug> <objective> | next <slug> | frontier <feature> | take <feature> <max> | status <feature> <id> <status> | claims <ticket.md> <path>... | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
   return 2;
 }
 

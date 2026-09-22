@@ -3,11 +3,13 @@
 //
 //   node scripts/matt.mjs resolve <name>   absolute SKILL.md path the automations must load
 //   node scripts/matt.mjs link             regenerate matt/<name> symlinks from the pinned submodule
-//   node scripts/matt.mjs check            fail on any wiring drift; print pin and installed-copy drift
+//   node scripts/matt.mjs check            fail on any wiring drift or missing installed skill; print pin and drift
+//   node scripts/matt.mjs check --vendored fail only on the repo's own wiring (CI: no skills are installed there)
 //
 // Matt skills come from vendor/mattpocock-skills (a pinned git submodule) through
 // the committed symlinks in matt/. Skills outside the set (research-stack,
-// defensive-design, kun, ...) come from the user's installed skill directories.
+// defensive-design, kun, ...) come from the installed-skill directories: MATT_SKILL_HOMES
+// (path-delimited) when set, else ~/.claude/skills and ~/.agents/skills.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -22,7 +24,9 @@ const EXCLUDED_BUCKETS = new Set(['deprecated', 'misc']);
 // Harness commands ask-matt names that are not skills.
 const HARNESS_COMMANDS = new Set(['clear', 'compact']);
 const INTEGRATION = 'to-goal/INTEGRATION.md';
-const DEFAULT_HOMES = [path.join(os.homedir(), '.claude/skills'), path.join(os.homedir(), '.agents/skills')];
+const DEFAULT_HOMES = process.env.MATT_SKILL_HOMES
+  ? process.env.MATT_SKILL_HOMES.split(path.delimiter).filter(Boolean)
+  : [path.join(os.homedir(), '.claude/skills'), path.join(os.homedir(), '.agents/skills')];
 
 export function scanVendor(root) {
   const skillsDir = path.join(root, VENDOR, 'skills');
@@ -76,6 +80,7 @@ export function resolve(root, name, { homes = DEFAULT_HOMES } = {}) {
 
 export function check(root, { homes = DEFAULT_HOMES } = {}) {
   const errors = [];
+  const missing = [];
   const info = [];
   const vendored = scanVendor(root);
   const linksDir = path.join(root, LINKS);
@@ -94,11 +99,13 @@ export function check(root, { homes = DEFAULT_HOMES } = {}) {
   for (const name of vendored.keys()) {
     if (!integrated.has(name)) errors.push(`${name}: vendored skill has no row in ${INTEGRATION} (integrate it or list it as not used)`);
   }
+  // A row that is not vendored must be an installed skill; its absence is an install problem, not wiring.
   for (const name of integrated) {
+    if (vendored.has(name)) continue;
     try {
       resolve(root, name, { homes });
     } catch {
-      errors.push(`${name}: named in ${INTEGRATION} but resolves nowhere`);
+      missing.push(`${name}: named in ${INTEGRATION}, not vendored, and not installed in ${homes.join(', ') || '(no skill homes)'}`);
     }
   }
 
@@ -118,7 +125,7 @@ export function check(root, { homes = DEFAULT_HOMES } = {}) {
       if (fs.existsSync(installed) && !sameTree(installed, dir)) info.push(`drift: ${name} installed at ${installed} differs from the pin`);
     }
   }
-  return { errors, info };
+  return { errors, missing, info };
 }
 
 // Every table in INTEGRATION.md that has a "Skill" header column contributes its first token per row.
@@ -183,14 +190,16 @@ function main([command, ...args]) {
   } else if (command === 'link' && args.length === 0) {
     const { linked, removed } = link(root);
     console.log(`linked ${linked.length} skills into ${LINKS}/${removed.length ? `; removed ${removed.join(', ')}` : ''}`);
-  } else if (command === 'check' && args.length === 0) {
-    const { errors, info } = check(root);
+  } else if (command === 'check' && (args.length === 0 || (args.length === 1 && args[0] === '--vendored'))) {
+    const { errors, missing, info } = check(root);
+    const failures = args[0] === '--vendored' ? errors : [...errors, ...missing];
     for (const line of info) console.log(line);
-    for (const line of errors) console.error(`error: ${line}`);
-    if (errors.length) process.exit(1);
+    if (args[0] === '--vendored') for (const line of missing) console.log(`not installed: ${line}`);
+    for (const line of failures) console.error(`error: ${line}`);
+    if (failures.length) process.exit(1);
     console.log('ok');
   } else {
-    console.error('usage: matt.mjs resolve <name> | link | check');
+    console.error('usage: matt.mjs resolve <name> | link | check [--vendored]');
     process.exit(2);
   }
 }

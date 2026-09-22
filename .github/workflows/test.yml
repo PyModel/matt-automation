@@ -11,5 +11,5 @@ jobs:
         with:
           node-version: 24
       - run: git config --global user.email ci@example.com && git config --global user.name ci
-      - run: npm run check
+      - run: node scripts/matt.mjs check --vendored
       - run: npm test

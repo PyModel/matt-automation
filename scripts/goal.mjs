@@ -70,6 +70,7 @@ function ticketFiles(issues) {
 }
 const STALE_LOCK_MS = 10 * 60 * 1000;
 const LOCK_WAIT_MS = 120 * 1000;
+const GUARD_STALE_MS = 60 * 1000;
 
 const CONTROL_BRANCH = 'goal/control';
 
@@ -352,27 +353,20 @@ export function claimsBreach(ticketText, touched) {
 const held = new Set((process.env.GOAL_LOCKS_HELD ?? '').split(',').filter(Boolean));
 
 export function withLock(repo, name, fn) {
-  if (!/^[a-z0-9][a-z0-9._-]*$/.test(name)) throw new Error(`bad lock name: ${name}`);
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) throw new Error(`bad lock name: ${name}`); // no dots: .new-* and .break are reserved
   if (held.has(name)) return fn();
   const locks = path.join(git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']), 'goal-locks');
   fs.mkdirSync(locks, { recursive: true });
   const lock = path.join(locks, name);
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
-    try {
-      fs.mkdirSync(lock);
-      fs.writeFileSync(path.join(lock, 'pid'), String(process.pid));
-      break;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const stalePid = stalePidOf(lock);
-      if (stalePid !== null) {
-        breakStale(lock, stalePid);
-        continue;
-      }
-      if (Date.now() > deadline) throw new Error(`lock ${name} still held after ${LOCK_WAIT_MS / 1000}s (${lock})`);
-      sleep(100);
+    if (tryAcquire(lock)) break;
+    if (stalePidOf(lock) !== null) {
+      breakStale(lock);
+      continue;
     }
+    if (Date.now() > deadline) throw new Error(`lock ${name} still held after ${LOCK_WAIT_MS / 1000}s (${lock})`);
+    sleep(100);
   }
   held.add(name);
   try {
@@ -396,7 +390,7 @@ function stalePidOf(lock) {
   try {
     pid = Number(fs.readFileSync(path.join(lock, 'pid'), 'utf8'));
   } catch {
-    return -1; // an old lock that never got its pid file: its creator died mid-mkdir
+    return -1; // no pid file: left by an older goal.mjs that wrote it after mkdir
   }
   try {
     process.kill(pid, 0);
@@ -406,22 +400,43 @@ function stalePidOf(lock) {
   }
 }
 
-// Two agents can find the same stale lock. Renaming is atomic, so only one moves it;
-// if what it moved is not the stale lock it inspected (another agent broke it and
-// re-took it in between), it puts that live lock back.
-function breakStale(lock, stalePid) {
-  const tomb = `${lock}.stale-${process.pid}-${Date.now()}`;
+// The lock directory appears with its pid already inside (built aside, then renamed into
+// place), so no lock is ever observed half-made.
+function tryAcquire(lock) {
+  const draft = `${lock}.new-${process.pid}-${Date.now()}`;
+  fs.mkdirSync(draft);
+  fs.writeFileSync(path.join(draft, 'pid'), String(process.pid));
   try {
-    fs.renameSync(lock, tomb);
-  } catch {
-    return; // someone else moved it first
+    fs.renameSync(draft, lock);
+    return true;
+  } catch (error) {
+    fs.rmSync(draft, { recursive: true, force: true });
+    if (['EEXIST', 'ENOTEMPTY', 'ENOTDIR', 'EISDIR'].includes(error.code)) return false;
+    throw error;
   }
-  let movedPid = -1;
-  try { movedPid = Number(fs.readFileSync(path.join(tomb, 'pid'), 'utf8')); } catch { /* no pid file */ }
-  if (movedPid !== stalePid) {
-    try { fs.renameSync(tomb, lock); return; } catch { /* the lock was re-taken meanwhile; the moved one is spent */ }
+}
+
+// Breaks are serialized by a guard directory, and the lock is re-judged stale while the guard
+// is held: a breaker that judged an old lock stale never removes a lock someone re-took since,
+// because only a guard holder removes one and a fresh lock is never stale.
+// A guard outlives its holder only if that holder dies inside the millisecond break window;
+// it is cleared after GUARD_STALE_MS.
+export function breakStale(lock) {
+  const guard = `${lock}.break`;
+  try {
+    fs.mkdirSync(guard);
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    try {
+      if (Date.now() - fs.statSync(guard).mtimeMs > GUARD_STALE_MS) fs.rmdirSync(guard);
+    } catch { /* another breaker cleared it */ }
+    return;
   }
-  fs.rmSync(tomb, { recursive: true, force: true });
+  try {
+    if (stalePidOf(lock) !== null) fs.rmSync(lock, { recursive: true, force: true });
+  } finally {
+    fs.rmdirSync(guard);
+  }
 }
 
 export function commit(repo, message, files) {

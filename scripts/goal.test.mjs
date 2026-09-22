@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, withLock, commit, controlDir } from './goal.mjs';
+import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, withLock, breakStale, commit, controlDir } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -133,6 +133,34 @@ test('withLock breaks a stale lock whose holder is dead', () => {
   const old = new Date(Date.now() - 11 * 60 * 1000);
   fs.utimesSync(lock, old, old);
   assert.equal(withLock(repo, 'control', () => 'got it'), 'got it');
+});
+
+test('a breaker never deletes a lock that was re-taken after it judged the old one stale', () => {
+  const { repo } = repoWithControl();
+  const lock = path.join(repo, '.git/goal-locks/control');
+  // Breaker B judged an old pid-less lock stale (pid -1); before it acts, A breaks that lock and
+  // re-takes the name. B must leave A's fresh lock alone, pid-less mid-acquire or complete.
+  fs.mkdirSync(lock, { recursive: true });
+  breakStale(lock);
+  assert.ok(fs.existsSync(lock), 'fresh pid-less lock was deleted');
+  fs.writeFileSync(path.join(lock, 'pid'), String(process.pid));
+  breakStale(lock);
+  assert.equal(fs.readFileSync(path.join(lock, 'pid'), 'utf8'), String(process.pid));
+});
+
+test('racing processes that all find one stale lock still hold it one at a time', async () => {
+  const { repo } = repoWithControl();
+  const lock = path.join(repo, '.git/goal-locks/race');
+  fs.mkdirSync(lock, { recursive: true });
+  const old = new Date(Date.now() - 11 * 60 * 1000);
+  fs.utimesSync(lock, old, old); // stale and pid-less
+  const counter = path.join(repo, 'counter');
+  fs.writeFileSync(counter, '0');
+  const bump = `const fs=require('fs');const n=+fs.readFileSync(${JSON.stringify(counter)},'utf8');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,30);fs.writeFileSync(${JSON.stringify(counter)},String(n+1))`;
+  const racers = Array.from({ length: 8 }, () => spawn(process.execPath, [GOAL, '--repo', repo, 'with-lock', 'race', '--', process.execPath, '-e', bump]));
+  const codes = await Promise.all(racers.map((child) => new Promise((r) => child.on('exit', r))));
+  assert.deepEqual(codes, Array(8).fill(0));
+  assert.equal(fs.readFileSync(counter, 'utf8'), '8');
 });
 
 test('commit stages only the named files', () => {

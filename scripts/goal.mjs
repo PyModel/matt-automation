@@ -268,9 +268,11 @@ export function parseTicket(text) {
   if (!blocked) problems.push('no **Blocked by:** line');
   if (!claims) problems.push('no **Claims:** line');
   const blockers = [];
-  if (blocked && blocked !== 'None') {
-    for (const token of blocked.split(',').map((b) => b.trim()).filter(Boolean)) {
-      const id = ticketId(token);
+  // to-tickets writes `None (can start immediately)` and `01 (why)`; a parenthetical or a trailing title is prose.
+  const edges = (blocked ?? '').replace(/\([^)]*\)/g, '').trim();
+  if (blocked && !/^None\b/i.test(edges)) {
+    for (const token of edges.split(',').map((b) => b.trim()).filter(Boolean)) {
+      const id = ticketId(token.match(/^(\d+)(?:$|[\s:\u2013-])/)?.[1] ?? '');
       if (id) blockers.push(id);
       else problems.push(`unreadable blocker "${token}" (use ticket numbers, e.g. 03)`);
     }

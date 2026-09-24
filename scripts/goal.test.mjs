@@ -375,6 +375,17 @@ test('an unreadable blocker makes the ticket malformed instead of dropping the e
   assert.deepEqual(result.frontier, []);
 });
 
+test('blockers in the to-tickets template form parse: None (…) and NN (reason)', () => {
+  const { control } = repoWithControl();
+  const issues = path.join(control, 'tracker/f/issues');
+  write(path.join(issues, '01-a.md'), ticket('ready-for-agent', 'None (can start immediately)', 'exclusive: a.ts'));
+  write(path.join(issues, '02-b.md'), ticket('ready-for-agent', '01 (logout helper, and resolver seam)', 'exclusive: b.ts'));
+  write(path.join(issues, '03-c.md'), ticket('ready-for-agent', '01-a, 02 - shared handler', 'exclusive: c.ts'));
+  const result = frontier(control, 'f');
+  assert.deepEqual(result.malformed, []);
+  assert.deepEqual(result.frontier, ['01']);
+});
+
 test('init records the agent and harness it is given', () => {
   const { repo, control } = repoWithControl();
   init(repo, 'x', 'X', { agent: 'session-42', harness: 'codex' });

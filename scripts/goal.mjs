@@ -390,6 +390,9 @@ export function amendClaims(repo, feature, id, kind, paths, why) {
   if (!['exclusive', 'shared-regenerate'].includes(kind)) throw new UsageError(`claim kind must be exclusive or shared-regenerate, got ${kind}`);
   if (!paths.length || !why.trim()) throw new UsageError('claim needs at least one path and a reason');
   if (/[\r\n,;]/.test(paths.join('')) || /[\r\n]/.test(why)) throw new UsageError('paths hold no , ; or newline, and the reason is one line');
+  paths = paths.map((p) => p.replace(/^(?:\.\/)+/, ''));
+  const outside = paths.filter((p) => !p || path.isAbsolute(p) || p.split('/').includes('..'));
+  if (outside.length) throw new UsageError(`claims are repo-relative paths inside the repo, got ${outside.join(', ')}`);
   const control = requireControl(repo);
   const issues = path.join(control, 'tracker', feature, 'issues');
   const want = ticketId(String(id));

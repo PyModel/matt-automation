@@ -460,6 +460,7 @@ test('claim: adds the path to the ticket and its contract, logs it, and commits 
   assert.equal(git(control, 'status', '--porcelain'), '');
   assert.deepEqual(result.cross_run, []);
   assert.equal(amendClaims(repo, 'f', '01', 'exclusive', ['a.ts'], 'again').commit, 'already claimed');
+  assert.equal(amendClaims(repo, 'f', '01', 'exclusive', ['./tests/a.fake.swift'], 'again').commit, 'already claimed');
 });
 
 test('claim: refuses a guarded path, a new in-run overlap, and a third amendment, leaving every file as it was', () => {
@@ -468,6 +469,7 @@ test('claim: refuses a guarded path, a new in-run overlap, and a third amendment
   assert.throws(() => amendClaims(repo, 'f', '01', 'guarded', ['x.ts'], 'why'), /guarded/);
   assert.throws(() => amendClaims(repo, 'f', '01', 'exclusive', ['.github/workflows/ci.yml'], 'why'), /guarded/);
   assert.throws(() => amendClaims(repo, 'f', '01', 'exclusive', ['src/b.ts'], 'why'), /ticket 02.*b\.ts/);
+  for (const p of ['/abs/x.ts', '../x.ts', 'src/../x.ts']) assert.throws(() => amendClaims(repo, 'f', '01', 'exclusive', [p], 'why'), /repo-relative/, p);
   for (const p of ['.github/workflows/ci.yml', 'db/migrations/002.sql', 'package.json']) assert.throws(() => amendClaims(repo, 'f', '01', 'exclusive', [p], 'why'), /guarded/, p);
   assert.equal(read('tracker/f/issues/01-a.md'), before);
   assert.equal(git(control, 'status', '--porcelain'), '');

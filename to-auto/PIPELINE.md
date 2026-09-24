@@ -4,7 +4,7 @@ Read once at the start of a run. Consulted per stage.
 
 ## Budgets
 
-Set in NOW `budgets:` at stage 0d and enforced in BUILD.md. Defaults, overridable by the objective ("budget: …") or `/kun`; `/kun` may raise any budget by at most 2× and never past the objective's explicit value. Briefs and stuck detection read the values in NOW, never the defaults below.
+Set in NOW `budgets:` at stage 0d and enforced in BUILD.md. Defaults, overridable by the objective ("budget: …") or `/kun`; `/kun` may raise any budget by at most 2× and never past the objective's explicit value. Briefs and stuck detection read the values in NOW, never the defaults below. The orchestrator never raises a budget on its own judgment: a raise is logged `(source: kun)` or `(source: objective)`. A ticket that looks too big for the per-ticket cap is split at 6b, not given a bigger cap.
 
 | Budget | Default | On breach |
 |---|---|---|

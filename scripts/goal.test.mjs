@@ -436,7 +436,7 @@ test('frontier resolves each ticket\'s capability: absent is standard/medium, in
 });
 
 // A run `f` with ticket 01 in flight (contract written) and ticket 02 open beside it.
-function runWithTickets(second = 'exclusive: b.ts') {
+function runWithTickets(second = 'exclusive: src/b.ts') {
   const { repo, control } = repoWithControl();
   init(repo, 'f', 'F');
   const one = 'exclusive: a.ts ; shared-regenerate: gen/ ; guarded: none';
@@ -463,16 +463,17 @@ test('claim: adds the path to the ticket and its contract, logs it, and commits 
 });
 
 test('claim: refuses a guarded path, a new in-run overlap, and a third amendment, leaving every file as it was', () => {
-  const { repo, control, read } = runWithTickets('exclusive: b.ts ; guarded: .github/**');
+  const { repo, control, read } = runWithTickets('exclusive: src/b.ts ; guarded: .github/**');
   const before = read('tracker/f/issues/01-a.md');
   assert.throws(() => amendClaims(repo, 'f', '01', 'guarded', ['x.ts'], 'why'), /guarded/);
   assert.throws(() => amendClaims(repo, 'f', '01', 'exclusive', ['.github/workflows/ci.yml'], 'why'), /guarded/);
-  assert.throws(() => amendClaims(repo, 'f', '01', 'exclusive', ['b.ts'], 'why'), /ticket 02.*b\.ts/);
+  assert.throws(() => amendClaims(repo, 'f', '01', 'exclusive', ['src/b.ts'], 'why'), /ticket 02.*b\.ts/);
+  for (const p of ['.github/workflows/ci.yml', 'db/migrations/002.sql', 'package.json']) assert.throws(() => amendClaims(repo, 'f', '01', 'exclusive', [p], 'why'), /guarded/, p);
   assert.equal(read('tracker/f/issues/01-a.md'), before);
   assert.equal(git(control, 'status', '--porcelain'), '');
-  amendClaims(repo, 'f', '01', 'exclusive', ['c.ts'], 'one');
+  amendClaims(repo, 'f', '01', 'exclusive', ['c/c.ts'], 'one');
   amendClaims(repo, 'f', '01', 'shared-regenerate', ['snap/'], 'two');
-  assert.throws(() => amendClaims(repo, 'f', '01', 'exclusive', ['d.ts'], 'three'), /mis-scoped.*6b/);
+  assert.throws(() => amendClaims(repo, 'f', '01', 'exclusive', ['d/d.ts'], 'three'), /mis-scoped.*6b/);
 });
 
 test('claim: an overlap with another unfinished run is reported, never refused', () => {
@@ -487,10 +488,10 @@ test('claim: an overlap with another unfinished run is reported, never refused',
 
 test('CLI claim takes the reason after --', () => {
   const { repo, read } = runWithTickets();
-  const out = execFileSync('node', [GOAL, '--repo', repo, 'claim', 'f', '01', 'exclusive', 'c.ts', 'd.ts', '--', 'mapper drops the field'], { encoding: 'utf8' });
+  const out = execFileSync('node', [GOAL, '--repo', repo, 'claim', 'f', '01', 'exclusive', 'src/c.ts', 'src/d.ts', '--', 'mapper drops the field'], { encoding: 'utf8' });
   assert.match(out, /"commit"/);
-  assert.match(read('tracker/f/issues/01-a.md'), /exclusive: a\.ts, c\.ts, d\.ts ;/);
-  const bad = spawnSync('node', [GOAL, '--repo', repo, 'claim', 'f', '01', 'exclusive', 'e.ts'], { encoding: 'utf8' });
+  assert.match(read('tracker/f/issues/01-a.md'), /exclusive: a\.ts, src\/c\.ts, src\/d\.ts ;/);
+  const bad = spawnSync('node', [GOAL, '--repo', repo, 'claim', 'f', '01', 'exclusive', 'src/e.ts'], { encoding: 'utf8' });
   assert.notEqual(bad.status, 0);
 });
 

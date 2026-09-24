@@ -12,7 +12,7 @@ Set in NOW `budgets:` at stage 0d and enforced in BUILD.md. Defaults, overridabl
 | `max_agents` (total subagents spawned in the run, all kinds) | 40 | finish running slices; write the ledger; `goal.mjs stop <slug> "budget: max_agents"`; report |
 | per-ticket slices / wall-clock | 12 slices / 90 min | ticket `stuck: too big`; report says to split it |
 | wall-clock | 8 h | finish running slices; write the ledger; `goal.mjs stop <slug> "budget: wall-clock"`; report |
-| re-dispatches per ticket | 1 | ticket `stuck` |
+| re-dispatches per ticket | 1 stuck re-dispatch, plus up to 2 claims-amendment dispatches (BUILD.md § Claims amendment) | ticket `stuck` |
 | bug tickets added to the frontier by this run | 3 | further bugs stay ticketed for the next run |
 
 ## Isolation (stage 0c and stage 7)

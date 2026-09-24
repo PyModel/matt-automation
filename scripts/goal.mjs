@@ -375,6 +375,8 @@ export function setStatus(repo, feature, id, status) {
 const CLAIMS_LINE = /^\*\*Claims:\*\* (.+)$/m;
 const AMENDED = /^\*\*Claims amended:\*\* /gm;
 export const MAX_AMENDMENTS = 2;
+// PLAN.md stage 6's guarded classes, which no amendment may add undeclared: CI workflows, migrations, top-level files.
+const GUARDED_CLASS = /^(?:\.github\/|\.gitlab-ci|\.circleci\/|[^/]+$)|(?:^|\/)migrations\//;
 
 /**
  * Widen an in-flight ticket's claims after its implementer reported a claims breach. Tracker issue,
@@ -397,10 +399,11 @@ export function amendClaims(repo, feature, id, kind, paths, why) {
     const before = fs.readFileSync(file, 'utf8');
     const ticket = parseTicket(before);
     if (ticket.problems.length) throw new Refusal(`ticket ${want} is malformed: ${ticket.problems.join('; ')}`);
-    const guarded = paths.filter((p) => [...files.values()].some((f) => parseTicket(fs.readFileSync(f, 'utf8')).claims.guarded.some((g) => claimsOverlap(g, p))));
-    if (guarded.length) throw new Refusal(`${guarded.join(', ')} is guarded; only the objective's grant authorizes it`);
     const fresh = paths.filter((p) => !ticket.claims[kind].some((c) => claimCovers(c, claimRoot(p))));
     if (!fresh.length) return { commit: 'already claimed', claims: before.match(CLAIMS_LINE)[1], cross_run: [] };
+    const declared = [...files.values()].flatMap((f) => parseTicket(fs.readFileSync(f, 'utf8')).claims.guarded);
+    const guarded = fresh.filter((p) => GUARDED_CLASS.test(p) || declared.some((g) => claimsOverlap(g, p)));
+    if (guarded.length) throw new Refusal(`${guarded.join(', ')} is guarded; only the objective's grant authorizes it, so it becomes a blocker, never an amendment`);
     const amended = (before.match(AMENDED) ?? []).length;
     if (amended >= MAX_AMENDMENTS) throw new Refusal(`ticket ${want} already had ${amended} claims amendments, so it is mis-scoped: stop it and split it at PLAN.md 6b`);
 
@@ -426,13 +429,17 @@ export function amendClaims(repo, feature, id, kind, paths, why) {
       fs.writeFileSync(contractFile, contract.split(oldLine).join(newLine));
       changed.push(contractRel);
     }
-    const ledger = path.join('runs', feature, 'ledger.md');
-    if (fs.existsSync(path.join(control, ledger))) {
-      appendEvent(path.join(control, ledger), 'claims', `${want} ${note}`);
-      changed.push(ledger);
-    }
     const cross = after.cross_run.filter((c) => c.tickets[0] === want && fresh.some((p) => claimsOverlap(p, c.claims[0])));
-    return { commit: commit(repo, `[${feature}] [claims] ${want} ${note}`, changed), claims: newLine, cross_run: cross };
+    const ledger = path.join('runs', feature, 'ledger.md');
+    // The ledger is shared with `event`, so its read-modify-write holds the control lock like every other ledger write.
+    const sha = withLock(repo, 'control', () => {
+      if (fs.existsSync(path.join(control, ledger))) {
+        appendEvent(path.join(control, ledger), 'claims', `${want} ${note}`);
+        changed.push(ledger);
+      }
+      return commit(repo, `[${feature}] [claims] ${want} ${note}`, changed);
+    });
+    return { commit: sha, claims: newLine, cross_run: cross };
   });
 }
 

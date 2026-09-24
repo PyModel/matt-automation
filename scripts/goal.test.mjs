@@ -386,6 +386,12 @@ test('blockers in the to-tickets template form parse: None (…) and NN (reason)
   assert.deepEqual(result.frontier, ['01']);
 });
 
+test('a claims path after ; says how to fix it', () => {
+  const { control } = repoWithControl();
+  write(path.join(control, 'tracker/f/issues/01-a.md'), ticket('ready-for-agent', 'None', 'exclusive: a.ts ; b/'));
+  assert.match(frontier(control, 'f').malformed[0].problems.join(' '), /"b\/".*paths inside a part are comma-separated/);
+});
+
 test('init records the agent and harness it is given', () => {
   const { repo, control } = repoWithControl();
   init(repo, 'x', 'X', { agent: 'session-42', harness: 'codex' });

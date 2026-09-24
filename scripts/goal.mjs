@@ -281,7 +281,7 @@ export function parseTicket(text) {
   for (const part of (claims ?? '').split(';')) {
     const m = part.trim().match(/^(exclusive|shared-regenerate|guarded):\s*(.*)$/);
     if (!m) {
-      if (part.trim()) problems.push(`unreadable claims part "${part.trim()}"`);
+      if (part.trim()) problems.push(`unreadable claims part "${part.trim()}" (each ;-part starts with exclusive:, shared-regenerate: or guarded:; paths inside a part are comma-separated)`);
       continue;
     }
     parsed[m[1]].push(...m[2].split(',').map((c) => c.trim()).filter(Boolean));

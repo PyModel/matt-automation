@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, amendClaims, event, withLock, breakStale, commit, controlDir } from './goal.mjs';
+import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, checkContract, amendClaims, event, withLock, breakStale, commit, controlDir } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -493,6 +493,27 @@ test('CLI claim takes the reason after --', () => {
   assert.match(read('tracker/f/issues/01-a.md'), /exclusive: a\.ts, src\/c\.ts, src\/d\.ts ;/);
   const bad = spawnSync('node', [GOAL, '--repo', repo, 'claim', 'f', '01', 'exclusive', 'src/e.ts'], { encoding: 'utf8' });
   assert.notEqual(bad.status, 0);
+});
+
+test('contract: base, claims and criteria must match the worktree and the ticket', () => {
+  const repo = bareRepo();
+  const head = git(repo, 'rev-parse', 'HEAD');
+  const claims = 'exclusive: src/a.ts ; guarded: none';
+  const tk = `${ticket('in-flight', 'None', claims)}\n- [ ] a is exported (Red at base: P1.)\n- [ ] suite green\n`;
+  const contract = (base, line, crit) => `# Goal: 01\n\n## Current state\n- Ticket base: ${base} (after 00)\n\n## Completion criteria\n${crit.map((c) => `- [ ] ${c}`).join('\n')}\n\n## Constraints\n- Claims: ${line}; a needed path outside them → stop\n`;
+  const good = ['a is exported (Red at base: P1.)', 'suite green'];
+  assert.deepEqual(checkContract({ text: contract(head, claims, good), ticketText: tk, worktree: repo }).problems, []);
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'Refs 01');
+  assert.deepEqual(checkContract({ text: contract(head, claims, good), ticketText: tk, worktree: repo }).problems, [], 'a re-dispatch keeps the original base');
+  const invented = `${head.slice(0, 8)}${'0'.repeat(32)}`;
+  assert.match(checkContract({ text: contract(invented, claims, good), ticketText: tk, worktree: repo }).problems.join(' | '), /Ticket base/);
+  assert.match(checkContract({ text: contract(head.slice(0, 8), claims, good), ticketText: tk, worktree: repo }).problems.join(' | '), /Ticket base/);
+  assert.match(checkContract({ text: contract(head, 'exclusive: src/a.ts', good), ticketText: tk, worktree: repo }).problems.join(' | '), /Claims/);
+  const problems = checkContract({ text: contract(head, claims, ['a is exported', 'suite green', 'extra']), ticketText: tk, worktree: repo }).problems.join(' | ');
+  assert.match(problems, /missing.*a is exported \(Red/);
+  assert.match(problems, /not in the ticket.*extra/);
+  const cli = spawnSync('node', [GOAL, 'contract', '/dev/null', '--worktree', repo, '--ticket', '/dev/null'], { encoding: 'utf8' });
+  assert.equal(cli.status, 1);
 });
 
 // A ticket branch with one commit on top of its base, as an implementer leaves it.

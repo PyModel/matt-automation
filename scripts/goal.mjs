@@ -17,13 +17,15 @@
 //   node scripts/goal.mjs claims <ticket.md> <path>...    touched paths outside the ticket's claims (JSON)
 //   node scripts/goal.mjs claim <feature> <id> <exclusive|shared-regenerate> <path>... -- <why>
 //                                                          widen a ticket's claims after a claims breach: ticket, contract, ledger, one commit (JSON)
+//   node scripts/goal.mjs contract <NN.goal.md> --worktree <wt> --ticket <ticket.md>
+//                                                          check a contract before every dispatch: base at or below the worktree HEAD, Claims and criteria verbatim (JSON)
 //   node scripts/goal.mjs receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md>
 //                                                          check an implementer's receipt against git and the ticket (JSON)
 //   node scripts/goal.mjs with-lock <name> -- <cmd...>    run one command holding a control-plane lock
 //   node scripts/goal.mjs commit -m <msg> <file>...       stage exactly <file>s in the control plane and commit, under the control lock
 //
 // Every command takes --repo <path> (default: cwd); any worktree of the repo works.
-// Exit 0 = ok, 1 = the answer is "no" (claims breach, malformed tickets, a refused take or claim, a refused receipt, stopped), 2 = usage, 3 = runtime error.
+// Exit 0 = ok, 1 = the answer is "no" (claims breach, malformed tickets, a refused take, claim, contract, a refused receipt, stopped), 2 = usage, 3 = runtime error.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -518,6 +520,27 @@ export function ticketCriteria(text) {
 }
 
 /**
+ * A contract is compiled by hand at dispatch; this checks it against the worktree and the ticket
+ * before the implementer sees it, so a guessed base SHA or a drifted Claims or criterion line never ships.
+ */
+export function checkContract({ text, ticketText, worktree }) {
+  const problems = [];
+  const base = text.match(/^- Ticket base: (\S+)/m)?.[1];
+  // At dispatch the base is the worktree HEAD; at a re-dispatch the implementer's commits sit on top of it.
+  const onBranch = /^[0-9a-f]{40}$/.test(base ?? '') && spawnSync('git', ['-C', worktree, 'merge-base', '--is-ancestor', base, 'HEAD']).status === 0;
+  if (!onBranch) problems.push(`Ticket base ${base ?? '(missing)'} is not a full sha at or below the worktree HEAD; paste \`git rev-parse HEAD\` output, never type a sha`);
+  const claims = ticketText.match(CLAIMS_LINE)?.[1];
+  if (!claims) problems.push('the ticket has no **Claims:** line');
+  else if (!text.includes(`- Claims: ${claims}`)) problems.push(`the contract's Claims line is not the ticket's verbatim: "${claims}"`);
+  const have = new Set(ticketCriteria(text).map(norm));
+  const want = ticketCriteria(ticketText);
+  for (const c of want) if (!have.has(norm(c))) problems.push(`criterion missing or not verbatim: "${c}"`);
+  const known = new Set(want.map(norm));
+  for (const c of ticketCriteria(text)) if (!known.has(norm(c))) problems.push(`criterion not in the ticket: "${c}"`);
+  return { ok: !problems.length, problems };
+}
+
+/**
  * An implementer's receipt is a claim; this checks it against what git and the ticket say.
  * Git is consulted only when `worktree` is given, the ticket only when `ticketText` is.
  */
@@ -787,6 +810,11 @@ function main(argv) {
     print(result);
     return result.ok ? 0 : 1;
   }
+  if (command === 'contract' && rest.length === 5 && rest[1] === '--worktree' && rest[3] === '--ticket') {
+    const result = checkContract({ text: fs.readFileSync(rest[0], 'utf8'), ticketText: fs.readFileSync(rest[4], 'utf8'), worktree: rest[2] });
+    print(result);
+    return result.ok ? 0 : 1;
+  }
   if (command === 'with-lock' && rest.length >= 3 && rest[1] === '--') {
     return withLock(repo, rest[0], () => {
       const env = { ...process.env, GOAL_LOCKS_HELD: [...held].join(',') };
@@ -800,7 +828,7 @@ function main(argv) {
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }
-  console.error('usage: goal.mjs [--repo <path>] control | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] | next <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
+  console.error('usage: goal.mjs [--repo <path>] control | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] | next <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
   return 2;
 }
 

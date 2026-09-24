@@ -20,6 +20,7 @@ Locks are the one thing not committed: `mkdir` directories under `$(git rev-pars
 
 - `goal.mjs commit -m "[<slug>] <what>" <file>...` stages exactly those control-plane files and commits them under the `control` lock. This is the only way to commit to the control plane.
 - `goal.mjs claim <feature> <NN> <exclusive|shared-regenerate> <path>... -- "<why>"` widens a ticket's claims after a claims breach (BUILD.md § Claims amendment): tracker issue, contract and ledger in one commit, refused for a guarded path, a new overlap inside the run, or a third amendment.
+- `goal.mjs contract <NN.goal.md> --worktree <wt> --ticket <ticket.md>` checks a compiled contract before dispatch (CONTRACT.md § The contract).
 - `goal.mjs event <slug> <stage> "<text>"` appends one `- HH:MM [stage] text` line to `runs/<slug>/ledger.md`, stamped with the real local clock, and commits it. Every ledger event goes through it.
 - `goal.mjs take <feature> <n>` flips up to `n` frontier tickets to `in-flight` under `frontier-<feature>` and commits them; `goal.mjs status <feature> <id> <status>` sets one ticket's status and commits it.
 - `goal.mjs with-lock <name> -- <cmd...>` runs one command under any lock (`integration`, `bootstrap`, `registry`, or `frontier-<feature>` on a GitHub tracker). Locks are re-entrant for that command, so it may call `goal.mjs commit` itself.

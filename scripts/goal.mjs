@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The mechanical half of a /to-goal run: everything that is a rule over files, so
+// The mechanical half of a /to-auto run: everything that is a rule over files, so
 // no agent re-derives it from prose.
 //
 //   node scripts/goal.mjs control                         create the control plane (orphan goal/control worktree) if missing
@@ -14,11 +14,13 @@
 //   node scripts/goal.mjs take <feature> <n>              atomically flip up to <n> frontier tickets (n = free slots) to in-flight (JSON ids)
 //   node scripts/goal.mjs status <feature> <id> <status>  set one ticket's **Status:** and commit
 //   node scripts/goal.mjs claims <ticket.md> <path>...    touched paths outside the ticket's claims (JSON)
+//   node scripts/goal.mjs receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md>
+//                                                          check an implementer's receipt against git and the ticket (JSON)
 //   node scripts/goal.mjs with-lock <name> -- <cmd...>    run one command holding a control-plane lock
 //   node scripts/goal.mjs commit -m <msg> <file>...       stage exactly <file>s in the control plane and commit, under the control lock
 //
 // Every command takes --repo <path> (default: cwd); any worktree of the repo works.
-// Exit 0 = ok, 1 = the answer is "no" (claims breach, malformed tickets, a refused take, stopped), 2 = usage, 3 = runtime error.
+// Exit 0 = ok, 1 = the answer is "no" (claims breach, malformed tickets, a refused take, a refused receipt, stopped), 2 = usage, 3 = runtime error.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -50,6 +52,9 @@ export const STAGES = [
 ];
 
 const STATUSES = new Set(['ready-for-agent', 'in-flight', 'done', 'stuck', 'blocked', 'needs-human']);
+// `**Capability:** <tier>/<intensity>`: what the implementer needs, not a model name. Absent = the default.
+const CAPABILITY = /^(lightweight|standard|advanced)\/(low|medium|high)$/;
+const DEFAULT_CAPABILITY = 'standard/medium';
 const STATUS_LINE = /^\*\*Status:\*\* ([a-z-]+)(?::[^\n]*)?[ \t]*$/m;
 
 /** Ticket numbers compare by value: `1`, `01`, and `001` are one ticket. */
@@ -111,7 +116,7 @@ export function ensureControl(repo) {
     if (exists) git(root, ['worktree', 'add', '-q', control, CONTROL_BRANCH]);
     else {
       git(root, ['worktree', 'add', '-q', '--orphan', '-b', CONTROL_BRANCH, control]);
-      git(control, ['commit', '-q', '--allow-empty', '-m', 'Init to-goal control plane']);
+      git(control, ['commit', '-q', '--allow-empty', '-m', 'Init to-auto control plane']);
     }
     return control;
   });
@@ -202,8 +207,8 @@ export function init(repo, slug, objective, { agent = null, harness = null } = {
     commit(repo, `[${slug}] register run ${runId}`, ['runs.json']);
   });
   const files = {
-    'todo.md': `# to-goal todo: ${objective}\n\n## Stages\n${STAGES.map((s) => `- [ ] ${s.id} ${s.name}`).join('\n')}\n\n## Tickets (stage 7)\n`,
-    'ledger.md': `# to-goal: ${objective}\n\n## NOW\n- stage: 0 register\n- next: finish BOOTSTRAP.md stage 0\n\n## Events\n`,
+    'todo.md': `# to-auto todo: ${objective}\n\n## Stages\n${STAGES.map((s) => `- [ ] ${s.id} ${s.name}`).join('\n')}\n\n## Tickets (stage 7)\n`,
+    'ledger.md': `# to-auto: ${objective}\n\n## NOW\n- stage: 0 register\n- next: finish BOOTSTRAP.md stage 0\n\n## Events\n`,
     'log.md': `# Decisions: ${objective}\n\n`,
     'bugs.md': `# Bugs noticed in flight: ${objective}\n\n`,
   };
@@ -238,7 +243,9 @@ export function parseTicket(text) {
   const status = text.match(STATUS_LINE)?.[1];
   const blocked = text.match(/^\*\*Blocked by:\*\* (.+)$/m)?.[1]?.trim();
   const claims = text.match(/^\*\*Claims:\*\* (.+)$/m)?.[1];
+  const capability = text.match(/^\*\*Capability:\*\* (.+)$/m)?.[1]?.trim() ?? DEFAULT_CAPABILITY;
   const problems = [];
+  if (!CAPABILITY.test(capability)) problems.push(`unknown capability ${capability} (lightweight|standard|advanced / low|medium|high)`);
   if (!status) problems.push('no **Status:** line');
   else if (!STATUSES.has(status)) problems.push(`unknown status ${status}`);
   if (!blocked) problems.push('no **Blocked by:** line');
@@ -260,7 +267,7 @@ export function parseTicket(text) {
     }
     parsed[m[1]].push(...m[2].split(',').map((c) => c.trim()).filter(Boolean));
   }
-  return { status, blockers, claims: parsed, problems };
+  return { status, blockers, claims: parsed, capability, problems };
 }
 
 export function frontier(control, feature) {
@@ -285,7 +292,8 @@ export function frontier(control, feature) {
       }
     }
   }
-  return { feature, frontier: malformed.length ? [] : ready, malformed, conflicts };
+  const capability = Object.fromEntries([...tickets].map(([id, t]) => [id, t.capability]));
+  return { feature, frontier: malformed.length ? [] : ready, malformed, conflicts, capability };
 }
 
 /** Under the frontier lock, so two orchestrators never take the same ticket. */
@@ -344,6 +352,104 @@ export function claimsBreach(ticketText, touched) {
     unclaimed: touched.filter((f) => !covered(claims.exclusive, f) && !covered(claims['shared-regenerate'], f) && !covered(claims.guarded, f)),
     guarded: touched.filter((f) => covered(claims.guarded, f)),
   };
+}
+
+// ------------------------------------------------------------- receipts
+
+const CONCLUSIONS = new Set(['completed', 'partial', 'blocked', 'stuck', 'claims-breach', 'stopped']);
+const RESULTS = new Set(['pass', 'fail', 'not-run']);
+const QUALITY = new Set(['accurate', 'criteria-too-vague', 'criteria-wrong', 'missing-constraint', 'over-scoped']);
+
+/** The receipt in a file: the whole file as JSON, else the last ```json fence (a worker's final message). */
+function receiptJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch { /* a final message, not a bare receipt */ }
+  const fences = [...text.matchAll(/```json[ \t]*\n([\s\S]*?)\n```/g)];
+  if (!fences.length) return null;
+  try {
+    return JSON.parse(fences.at(-1)[1]);
+  } catch {
+    return null;
+  }
+}
+
+/** The full SHA a revision names, or null when it names no commit. */
+function commitOf(cwd, rev) {
+  const run = spawnSync('git', ['-C', cwd, 'rev-parse', '--verify', '--quiet', `${rev}^{commit}`], { encoding: 'utf8' });
+  return run.status === 0 ? run.stdout.trim() : null;
+}
+
+const norm = (s) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+const strings = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string');
+
+/** Every checkbox line in a ticket is one acceptance criterion (local and GitHub templates alike). */
+export function ticketCriteria(text) {
+  return [...text.matchAll(/^\s*- \[[ xX]\] (.+)$/gm)].map((m) => m[1].trim());
+}
+
+/**
+ * An implementer's receipt is a claim; this checks it against what git and the ticket say.
+ * Git is consulted only when `worktree` is given, the ticket only when `ticketText` is.
+ */
+export function checkReceipt({ text, worktree = null, base = null, ticketText = null }) {
+  const r = receiptJson(text);
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return { ok: false, problems: ['no receipt: neither the file nor a ```json fence in it is a JSON object'] };
+  const problems = [];
+  for (const field of ['ticket', 'ticket_base', 'head']) if (typeof r[field] !== 'string' || !r[field]) problems.push(`${field} must be a non-empty string`);
+  if (!CONCLUSIONS.has(r.conclusion)) problems.push(`conclusion must be one of ${[...CONCLUSIONS].join(' | ')}, got ${JSON.stringify(r.conclusion)}`);
+  for (const field of ['changed_files', 'not_validated', 'blockers', 'external_effects']) if (!strings(r[field])) problems.push(`${field} must be an array of strings`);
+  if (typeof r.worktree_clean !== 'boolean') problems.push('worktree_clean must be true or false');
+  if (!r.review || !Number.isInteger(r.review.cited_fixed) || !strings(r.review.leads)) problems.push('review must be { cited_fixed: <integer>, leads: [<string>] }');
+  if (r.contract_quality !== undefined && r.contract_quality !== null && !QUALITY.has(r.contract_quality)) problems.push(`contract_quality must be one of ${[...QUALITY].join(' | ')}`);
+  const validation = Array.isArray(r.validation) ? r.validation : [];
+  if (!Array.isArray(r.validation) || validation.some((v) => typeof v?.command !== 'string' || !Number.isInteger(v?.exit))) problems.push('validation must be an array of { command, exit: <integer>, summary }');
+  const criteria = Array.isArray(r.criteria) ? r.criteria : [];
+  if (!Array.isArray(r.criteria)) problems.push('criteria must be an array');
+  for (const c of criteria) {
+    if (typeof c?.criterion !== 'string' || !RESULTS.has(c?.result)) problems.push(`criterion ${JSON.stringify(c?.criterion)} needs a result of pass | fail | not-run`);
+    else if (c.result !== 'not-run' && (typeof c.evidence !== 'string' || !c.evidence.trim())) problems.push(`criterion "${c.criterion}" has a ${c.result} result with no evidence`);
+  }
+  const completed = r.conclusion === 'completed';
+  if (['blocked', 'stuck', 'claims-breach'].includes(r.conclusion) && strings(r.blockers) && !r.blockers.length) problems.push(`a ${r.conclusion} receipt must name its reason in blockers`);
+  if (completed) {
+    if (strings(r.blockers) && r.blockers.length) problems.push('a completed receipt cannot carry blockers');
+    if (!validation.length) problems.push('a completed receipt needs at least one validation command');
+    if (r.worktree_clean === false) problems.push('a completed receipt needs a clean worktree');
+  }
+
+  if (ticketText !== null) {
+    const byText = new Map();
+    for (const c of criteria.filter((x) => typeof x?.criterion === 'string')) {
+      if (byText.has(norm(c.criterion))) problems.push(`receipt criterion "${c.criterion}" appears more than once`);
+      byText.set(norm(c.criterion), c);
+    }
+    const wanted = ticketCriteria(ticketText);
+    if (completed && !wanted.length) problems.push('the ticket has no acceptance criteria (checkbox lines), so nothing can show it completed');
+    for (const want of wanted) {
+      const got = byText.get(norm(want));
+      if (!got) problems.push(`ticket criterion "${want}" has no entry in the receipt`);
+      else if (completed && got.result !== 'pass') problems.push(`ticket criterion "${want}" is ${got.result}, so the receipt cannot be completed`);
+    }
+    const known = new Set(wanted.map(norm));
+    for (const c of byText.values()) if (!known.has(norm(c.criterion))) problems.push(`receipt criterion "${c.criterion}" is not in the ticket`);
+  }
+
+  if (worktree !== null) {
+    const head = git(worktree, ['rev-parse', 'HEAD']);
+    if (r.head !== head) problems.push(`head ${r.head} is not the worktree HEAD ${head}`);
+    if (base !== null && (!r.ticket_base || commitOf(worktree, r.ticket_base) !== commitOf(worktree, base))) {
+      problems.push(`ticket_base ${r.ticket_base} is not the dispatch base ${base}`);
+    }
+    if (base !== null && strings(r.changed_files)) {
+      const actual = git(worktree, ['diff', '--name-only', `${base}...HEAD`]).split('\n').filter(Boolean).sort();
+      const claimed = [...new Set(r.changed_files)].sort();
+      if (actual.join('\n') !== claimed.join('\n')) problems.push(`changed_files [${claimed.join(', ')}] differ from git diff ${base}...HEAD [${actual.join(', ')}]`);
+    }
+    const dirty = git(worktree, ['status', '--porcelain']) !== '';
+    if (typeof r.worktree_clean === 'boolean' && r.worktree_clean === dirty) problems.push(`worktree_clean is ${r.worktree_clean} but git status says the worktree is ${dirty ? 'dirty' : 'clean'}`);
+  }
+  return { ok: problems.length === 0, conclusion: r.conclusion ?? null, problems };
 }
 
 // --------------------------------------------------------------- locks
@@ -532,6 +638,13 @@ function main(argv) {
     print(result);
     return result.unclaimed.length || result.guarded.length ? 1 : 0;
   }
+  if (command === 'receipt' && rest.length === 7) {
+    const flags = Object.fromEntries([1, 3, 5].map((i) => [rest[i], rest[i + 1]]));
+    if (!flags['--worktree'] || !flags['--base'] || !flags['--ticket']) throw new UsageError('receipt needs --worktree <wt> --base <sha> --ticket <ticket.md>');
+    const result = checkReceipt({ text: fs.readFileSync(rest[0], 'utf8'), worktree: flags['--worktree'], base: flags['--base'], ticketText: fs.readFileSync(flags['--ticket'], 'utf8') });
+    print(result);
+    return result.ok ? 0 : 1;
+  }
   if (command === 'with-lock' && rest.length >= 3 && rest[1] === '--') {
     return withLock(repo, rest[0], () => {
       const env = { ...process.env, GOAL_LOCKS_HELD: [...held].join(',') };
@@ -544,7 +657,7 @@ function main(argv) {
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }
-  console.error('usage: goal.mjs [--repo <path>] control | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] | next <slug> | stop <slug> <reason> | resume <slug> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
+  console.error('usage: goal.mjs [--repo <path>] control | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] | next <slug> | stop <slug> <reason> | resume <slug> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
   return 2;
 }
 

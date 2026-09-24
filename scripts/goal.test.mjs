@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, withLock, breakStale, commit, controlDir } from './goal.mjs';
+import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, withLock, breakStale, commit, controlDir } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -355,4 +355,104 @@ test('init records the agent and harness it is given', () => {
   const [entry] = JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'));
   assert.equal(entry.agent, 'session-42');
   assert.equal(entry.harness, 'codex');
+});
+
+test('frontier resolves each ticket\'s capability: absent is standard/medium, invalid is malformed', () => {
+  const { control } = repoWithControl();
+  const issues = path.join(control, 'tracker/f/issues');
+  write(path.join(issues, '01-a.md'), ticket('ready-for-agent', 'None', 'exclusive: a.ts'));
+  write(path.join(issues, '02-b.md'), `${ticket('ready-for-agent', 'None', 'exclusive: b.ts')}**Capability:** advanced/high\n`);
+  let result = frontier(control, 'f');
+  assert.deepEqual(result.malformed, []);
+  assert.deepEqual(result.capability, { '01': 'standard/medium', '02': 'advanced/high' });
+  write(path.join(issues, '03-c.md'), `${ticket('ready-for-agent', 'None', 'exclusive: c.ts')}**Capability:** huge\n`);
+  result = frontier(control, 'f');
+  assert.equal(result.malformed[0].id, '03');
+  assert.match(result.malformed[0].problems.join(' '), /capability/);
+});
+
+// A ticket branch with one commit on top of its base, as an implementer leaves it.
+function ticketWorktree() {
+  const repo = bareRepo();
+  const base = git(repo, 'rev-parse', 'HEAD');
+  write(path.join(repo, 'src/a.ts'), 'export const a = 1;\n');
+  git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'Refs 01');
+  return { repo, base, head: git(repo, 'rev-parse', 'HEAD') };
+}
+
+const TICKET = `${ticket('in-flight', 'None', 'exclusive: src/a.ts')}\n- [ ] a is exported\n- [ ] suite green\n`;
+
+function receipt(over = {}) {
+  return {
+    ticket: '01', conclusion: 'completed', ticket_base: '', head: '', changed_files: ['src/a.ts'],
+    criteria: [
+      { criterion: 'a is exported', result: 'pass', evidence: 'npm test -- a.test.ts exit 0' },
+      { criterion: 'suite green', result: 'pass', evidence: 'npm test exit 0 (41 passed)' },
+    ],
+    validation: [{ command: 'npm test', exit: 0, summary: '41 passed' }],
+    review: { cited_fixed: 0, leads: [] }, not_validated: [], blockers: [], external_effects: [], worktree_clean: true,
+    ...over,
+  };
+}
+
+test('receipt: a completed receipt that matches git and the ticket passes', () => {
+  const { repo, base, head } = ticketWorktree();
+  const r = checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head })), worktree: repo, base, ticketText: TICKET });
+  assert.deepEqual(r.problems, []);
+  assert.equal(r.ok, true);
+});
+
+test('receipt: the last json fence of a final message is the receipt', () => {
+  const { repo, base, head } = ticketWorktree();
+  const text = `Done.\n\n\`\`\`json\n{"ignored": true}\n\`\`\`\n\nRECEIPT\n\`\`\`json\n${JSON.stringify(receipt({ ticket_base: base, head }))}\n\`\`\`\n`;
+  assert.equal(checkReceipt({ text, worktree: repo, base, ticketText: TICKET }).ok, true);
+});
+
+test('receipt: claims git does not back are refused', () => {
+  const { repo, base, head } = ticketWorktree();
+  const problems = (over) => checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head, ...over })), worktree: repo, base, ticketText: TICKET }).problems.join(' | ');
+  assert.match(problems({ head: base }), /head/);
+  assert.match(problems({ ticket_base: head }), /ticket_base/);
+  assert.match(problems({ changed_files: ['src/a.ts', 'src/b.ts'] }), /changed_files/);
+  write(path.join(repo, 'stray.txt'), 'x');
+  assert.match(problems({}), /worktree/);
+});
+
+test('receipt: every ticket criterion needs a passing, evidenced entry before completed', () => {
+  const { repo, base, head } = ticketWorktree();
+  const problems = (over) => checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head, ...over })), worktree: repo, base, ticketText: TICKET }).problems.join(' | ');
+  const [first, second] = receipt().criteria;
+  assert.match(problems({ criteria: [first] }), /suite green/);
+  assert.match(problems({ criteria: [first, { ...second, result: 'fail' }] }), /suite green/);
+  assert.match(problems({ criteria: [first, { ...second, evidence: '' }] }), /evidence/);
+  assert.match(problems({ criteria: [first, second, { criterion: 'invented', result: 'pass', evidence: 'x' }] }), /invented/);
+  assert.match(problems({ criteria: [first, second, { ...second, result: 'fail' }] }), /more than once/);
+  assert.match(problems({ blockers: ['needs a key'] }), /blockers/);
+  assert.match(problems({ validation: [] }), /validation/);
+  const bare = checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head, criteria: [] })), worktree: repo, base, ticketText: ticket('in-flight', 'None', 'exclusive: src/a.ts') });
+  assert.match(bare.problems.join(' | '), /no acceptance criteria/);
+});
+
+test('receipt: malformed shapes and unknown conclusions are refused', () => {
+  assert.match(checkReceipt({ text: 'no receipt here' }).problems.join(' '), /JSON/);
+  assert.match(checkReceipt({ text: JSON.stringify(receipt({ conclusion: 'done' })) }).problems.join(' '), /conclusion/);
+  assert.match(checkReceipt({ text: JSON.stringify(receipt({ worktree_clean: 'yes' })) }).problems.join(' '), /worktree_clean/);
+  assert.match(checkReceipt({ text: JSON.stringify(receipt({ contract_quality: 'great' })) }).problems.join(' '), /contract_quality/);
+  assert.match(checkReceipt({ text: JSON.stringify(receipt({ conclusion: 'stuck', blockers: [] })) }).problems.join(' '), /blockers/);
+});
+
+test('receipt: a stuck receipt with its reason is well-formed, and the CLI exits 1 on a bad one', () => {
+  const { repo, base } = ticketWorktree();
+  const stuck = receipt({ conclusion: 'stuck', ticket_base: base, head: git(repo, 'rev-parse', 'HEAD'), blockers: ['same test failed 5 times'],
+    criteria: [{ criterion: 'a is exported', result: 'pass', evidence: 'x' }, { criterion: 'suite green', result: 'fail', evidence: 'npm test exit 1' }] });
+  assert.equal(checkReceipt({ text: JSON.stringify(stuck), worktree: repo, base, ticketText: TICKET }).ok, true);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'receipt-'));
+  write(path.join(dir, 't.md'), TICKET);
+  write(path.join(dir, 'good.json'), JSON.stringify(stuck));
+  write(path.join(dir, 'bad.json'), JSON.stringify({ ...stuck, head: base }));
+  const cli = (file) => spawnSync(process.execPath, [GOAL, 'receipt', path.join(dir, file), '--worktree', repo, '--base', base, '--ticket', path.join(dir, 't.md')]).status;
+  assert.equal(cli('good.json'), 0);
+  assert.equal(cli('bad.json'), 1);
+  assert.equal(spawnSync(process.execPath, [GOAL, 'receipt', path.join(dir, 'good.json'), '--worktree', repo]).status, 2);
+  assert.equal(spawnSync(process.execPath, [GOAL, 'receipt', path.join(dir, 'good.json'), '--worktree', repo, '--base', base, '--tick', 'x']).status, 2);
 });

@@ -23,7 +23,7 @@ const LINKS = 'matt';
 const EXCLUDED_BUCKETS = new Set(['deprecated', 'misc']);
 // Harness commands ask-matt names that are not skills.
 const HARNESS_COMMANDS = new Set(['clear', 'compact']);
-const INTEGRATION = 'to-goal/INTEGRATION.md';
+const INTEGRATION = 'to-auto/INTEGRATION.md';
 const DEFAULT_HOMES = process.env.AGENT_SKILL_HOMES
   ? process.env.AGENT_SKILL_HOMES.split(path.delimiter).filter(Boolean)
   : [path.join(os.homedir(), '.claude/skills'), path.join(os.homedir(), '.agents/skills')];

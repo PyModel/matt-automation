@@ -1,6 +1,6 @@
 # Flight ledger
 
-A `/to-goal` run outlives any single context window: compaction, a loop tick, a crashed session, a subagent that finishes hours later. The **ledger** is the run's memory on disk. Every stage reads it before acting and writes it before moving on, so any fresh context can pick the run up from the files alone.
+A `/to-auto` run outlives any single context window: compaction, a loop tick, a crashed session, a subagent that finishes hours later. The **ledger** is the run's memory on disk. Every stage reads it before acting and writes it before moving on, so any fresh context can pick the run up from the files alone.
 
 ## Layout
 
@@ -14,18 +14,20 @@ All under `.worktrees/control/runs/<slug>/` in the control plane (CONTROL.md), c
 | `findings.md` | Stage 1 repo facts, requirements R1…, open questions Q1…; stage 3 sourced answers | orchestrator / research agent | stages 1 to 3 |
 | `spec.md` | Working copy of the published spec (PLAN.md stage 5) | orchestrator | stage 5 |
 | `notes/` | Exploration notes for implementers (implement-spec step 2) | exploration subagent | stage 7 |
+| `tickets/<NN>.goal.md` | The ticket's contract (CONTRACT.md § The contract) | orchestrator | at dispatch |
+| `tickets/<NN>.receipt.md` | The implementer's final message, ending in its receipt (CONTRACT.md § The receipt) | orchestrator | when the implementer returns |
 | `tickets/<NN>.status.md` | Per-ticket flight record: `heartbeat`, `agent: <id/pid>`, `active_cmd`, `slice: n/m`, worktree, branch, merged range, last commit, suite result, same-test-failure count, review findings, evidence states, claims touched, blockers | the ticket's implementer | after every slice and at exit |
 | `STOP` | Kill switch (BOOTSTRAP.md § Kill switch and GC) | `goal.mjs stop`: the user's `--stop` or the run's own halt | any time |
 | `bugs.md` | Every bug noticed in flight: file, symptom, introduced-by-run?, action taken (fixed @ commit / ticket NN / blocker) | whoever noticed it | the moment it is noticed |
 | `final-verdict.json` | Stage 8 review verdict | orchestrator | stage 8 |
 | `retro.md` | Stage 10 output | orchestrator | stage 10 |
 
-The tracker's ticket files stay the source of truth for *what to build*; `tickets/<NN>.status.md` is the source of truth for *how far it got*.
+The tracker's ticket files stay the source of truth for *what to build*; `tickets/<NN>.status.md` is the source of truth for *how far it got*; a receipt that passes `goal.mjs receipt` is the only evidence that it is *done*.
 
 ## ledger.md format
 
 ```markdown
-# to-goal: <objective>
+# to-auto: <objective>
 
 ## NOW
 - stage: 7 build
@@ -62,7 +64,7 @@ Rules:
 ## todo.md format
 
 ```markdown
-# to-goal todo: <objective>
+# to-auto todo: <objective>
 
 ## Stages
 - [x] 00 wiring and ask-matt
@@ -107,6 +109,6 @@ Every invocation runs this, first run or fiftieth loop tick, and so does a subag
 
 Every subagent brief ends with this, verbatim:
 
-"Spawn no agents, except the ones `code-review` starts when your brief tells you to run it; load only the skills named in your brief, by path (to-goal SKILL.md § Loading skills). Before you start, read `ledger.md` NOW and your `tickets/<NN>.status.md` if it exists. After every slice and before you return, update `tickets/<NN>.status.md` (slice, commit, suite, evidence states, blockers). Append decisions you make to `log.md`. Any bug you notice in any file goes into `bugs.md` and is fixed or ticketed now, never deferred (BUILD.md § Bugs found in flight). Return only: commit hash, suite result, cited review findings fixed, leads, blockers; or `stuck`, `claims breach`, or `stopped` with the reason."
+"Spawn no agents, except the ones `code-review` starts when your brief tells you to run it; load only the skills named in your brief, by path (to-auto SKILL.md § Loading skills). Before you start, read `ledger.md` NOW and your `tickets/<NN>.status.md` if it exists. After every slice and before you return, update `tickets/<NN>.status.md` (slice, commit, suite, evidence states, blockers). Append decisions you make to `log.md`. Any bug you notice in any file goes into `bugs.md` and is fixed or ticketed now, never deferred (BUILD.md § Bugs found in flight). Return only: if your brief carries a contract, the receipt (CONTRACT.md § The receipt), whatever the outcome; otherwise your result, blockers, and leads."
 
 Only the orchestrator, the stage 8 review subagent, and a `nested: yes` implementer are told to run `code-review`. Every other agent (answerer, challenger, reconciler, exploration, merger, fixer, research, code-review's own sub-agents) spawns nothing.

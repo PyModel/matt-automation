@@ -1,6 +1,6 @@
 # Documented pitfalls in the sub-skills, and the guard for each
 
-Source: the docs pages in `mattpocock/skills` (`docs/engineering/*.md`, `.agents/invocation.md`), read at commit 3cca18b (2026-09-04). The docs now live in `ROOT/vendor/mattpocock-skills/docs/`; re-read them against this table whenever the submodule pin moves. Each row is a reported, unfixed behaviour; the guard is what `/to-goal` does about it. Brief text in quotes is pasted verbatim.
+Source: the docs pages in `mattpocock/skills` (`docs/engineering/*.md`, `.agents/invocation.md`), read at commit 3cca18b (2026-09-04). The docs now live in `ROOT/vendor/mattpocock-skills/docs/`; re-read them against this table whenever the submodule pin moves. Each row is a reported, unfixed behaviour; the guard is what `/to-auto` does about it. Brief text in quotes is pasted verbatim.
 
 | Skill | Pitfall | Guard |
 |---|---|---|

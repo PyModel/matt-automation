@@ -11,13 +11,14 @@ Test the rows in order; the first match sets the on-ramp. Every route then merge
 | # | Situation | ask-matt section | Classification | Autonomous route |
 |---|---|---|---|---|
 | 0 | The checkout is mid-merge or mid-rebase | Standalone: `/resolving-merge-conflicts` | (none) | Resolve first (never `--abort`), then re-enter this table. |
-| 1 | The objective is a raw issue someone else filed | On-ramps: `/triage` | `issue` | Triage self-answered; main flow from the agent-ready issue. Never for tickets `/to-goal` created. |
+| 1 | The objective is a raw issue someone else filed | On-ramps: `/triage` | `issue` | Triage self-answered; main flow from the agent-ready issue. Never for tickets `/to-auto` created. |
 | 2 | Something is broken, flaky, or regressed | On-ramps: `/diagnosing-bugs` | `bug` | Loop goes red first, then fix with a regression test; PLAN.md § Bug fast path decides whether stages 4 to 6 run. A post-mortem with no seam queues `improve-codebase-architecture` as a lead. `/to-bug` enters here directly. |
-| 3 | A refactor, cleanup, rewrite, or modernization of a named area | not routed by ask-matt | `refactor` | `zero-tech-debt` pre-flight; its one-paragraph end state is the idea for the main flow. Hotfix shapes go to row 2. |
-| 4 | Upkeep with no target named | Codebase health: `/improve-codebase-architecture` | `upkeep` | Report written to the temp dir, not opened; its Top recommendation is the idea for the main flow. |
-| 5 | The objective creates a new project, package, service, or skill | On-ramps: `/wayfinder` (a greenfield project) | `greenfield` | The `to-new` overrides (`ROOT/to-new/SKILL.md`): repo initialized at stage 0, research up-front, then the wayfinder map; the scaffold is ticket 01. |
-| 6 | Too foggy or large for one session | On-ramps: `/wayfinder` | `fog` | Decision tickets self-answered; merge at stage 5 with `to-spec <map>`. Never loop the map straight into implement. |
-| 7 | Otherwise | The main flow | `feature` | grill-with-docs → to-spec → to-tickets → implement-spec (implement per ticket) → code-review. |
+| 3 | The objective names an approved spec, ticket, or issue in this repo that passes CONTRACT.md § Readiness | The main flow, entered at `/to-spec` or `/implement` | `ready` | PLAN.md § Ready source: stages 2 to 4b skipped; the source becomes `spec.md` or ticket `01`. A failing readiness box falls through to the rows below. |
+| 4 | A refactor, cleanup, rewrite, or modernization of a named area | not routed by ask-matt | `refactor` | `zero-tech-debt` pre-flight; its one-paragraph end state is the idea for the main flow. Hotfix shapes go to row 2. |
+| 5 | Upkeep with no target named | Codebase health: `/improve-codebase-architecture` | `upkeep` | Report written to the temp dir, not opened; its Top recommendation is the idea for the main flow. |
+| 6 | The objective creates a new project, package, service, or skill | On-ramps: `/wayfinder` (a greenfield project) | `greenfield` | The `to-new` overrides (`ROOT/to-new/SKILL.md`): repo initialized at stage 0, research up-front, then the wayfinder map; the scaffold is ticket 01. |
+| 7 | Too foggy or large for one session | On-ramps: `/wayfinder` | `fog` | Decision tickets self-answered; merge at stage 5 with `to-spec <map>`. Never loop the map straight into implement. |
+| 8 | Otherwise | The main flow | `feature` | grill-with-docs → to-spec → to-tickets → implement-spec (implement per ticket) → code-review. |
 
 Main-flow branch points, answered the same way every run:
 
@@ -30,7 +31,7 @@ Main-flow branch points, answered the same way every run:
 
 ask-matt's documented rhythm is one `/implement` per ticket with `/clear` between, and a human closing tickets and advancing the frontier. Autonomously the frontier would stall. `implement-spec` (in-progress upstream) runs the same `implement` brief per ticket, in its own worktree, with a merger, frontier re-kick, and a single fix subagent. Every stage after the grilling then produces an artifact the next stage consumes without a human (spec → tickets → graph → merged run branch). Its gaps (seams, tiers, tracker closing, worktree layout) are filled by BUILD.md § Bindings.
 
-Three installed skills outside the Matt set deepen the pathway: `research-stack` (every external lookup), `defensive-design` (consequence tiers: Design in stage 4, Implement in stage 7, Review in stage 8), and `zero-tech-debt` (row 3 and prefactoring tickets; its approval gates are self-approved and logged).
+Three installed skills outside the Matt set deepen the pathway: `research-stack` (every external lookup), `defensive-design` (consequence tiers: Design in stage 4, Implement in stage 7, Review in stage 8), and `zero-tech-debt` (row 4 and prefactoring tickets; its approval gates are self-approved and logged).
 
 ## Research need (stage 1 output)
 
@@ -39,6 +40,7 @@ Research is a cost, not a stage every run pays. Stage 1 logs `research: none | t
 | Classification | Default need | Fires `research` when |
 |---|---|---|
 | bug | none | a hypothesis names third-party behaviour or an unpinned library contract |
+| ready (approved source) | none | the source leaves an external unknown open (an open Q in `findings.md`) |
 | issue (triage) | none | verification needs a doc the repo lacks |
 | refactor (zero-tech-debt) | none | the intended shape depends on a library feature or version |
 | upkeep (improve-codebase-architecture) | none | never by default |

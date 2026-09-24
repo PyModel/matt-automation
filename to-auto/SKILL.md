@@ -1,13 +1,13 @@
 ---
-name: to-goal
-description: "Autonomous driver for Matt Pocock's skills: routes an objective through ask-matt, then runs on-ramp, conditional research, self-answered grilling, to-spec, to-tickets, an implement-spec task graph in parallel worktrees, code-review, and retro with no pauses, on any harness and model. Use on /to-goal <objective> or $to-goal, when the user wants a feature or skill delivered fully autonomously, or under a loop."
+name: to-auto
+description: "Autonomous driver for Matt Pocock's skills: routes an objective through ask-matt, then runs on-ramp, conditional research, self-answered grilling, to-spec, to-tickets, an implement-spec task graph in parallel worktrees, code-review, and retro with no pauses, on any harness and model. Use on /to-auto <objective> or $to-auto, when the user wants a feature or skill delivered fully autonomously, or under a loop."
 user-invocable: true
 argument-hint: "<objective> [--force] [budget: …]   |   --gc   |   --stop [slug]   |   --dry-run <objective>"
 metadata:
   short-description: "ask-matt route → on-ramp → research (if needed) → grill → to-spec → to-tickets → build → review → retro, autonomously."
 ---
 
-# to-goal
+# to-auto
 
 Drive one **objective** from question to reviewed commits in a single run, on any harness that speaks Agent Skills. The objective is the argument; if empty, take it from the last user message. `--gc`, `--stop` and `--dry-run` are maintenance verbs (BOOTSTRAP.md § Kill switch and GC).
 
@@ -22,11 +22,11 @@ This file is an index. Each phase has one file; load a phase file **only when en
 | Phase | Stages | File | Load when |
 |---|---|---|---|
 | Bootstrap | 00 control plane, wiring check, ask-matt map; 0 register; 0a cache kun, 0b setup, 0c isolate, 0d environment contract + baseline + capability probe | [BOOTSTRAP.md](BOOTSTRAP.md) | at run start, or on re-entry when stage 0 is unmet |
-| Plan | 1 route, 2 on-ramp, 3 research (conditional), 4 grill, 4b challenge, 5 spec, 5b reconcile, 6 tickets, 6b claims | [PLAN.md](PLAN.md) | after bootstrap |
-| Build | 7 task graph with budgets, heartbeats, claims | [BUILD.md](BUILD.md) | after stage 6b |
+| Plan | 1 route, 2 on-ramp, 3 research (conditional), 4 grill, 4b challenge, 5 spec, 5b reconcile, 6 tickets, 6b claims + readiness (2–4b skipped for a ready source) | [PLAN.md](PLAN.md) | after bootstrap |
+| Build | 7 task graph: contract per ticket, receipt checked against git before merge | [BUILD.md](BUILD.md) | after stage 6b |
 | Close | 8 fresh-context review, 9 hand back, 10 retro | [CLOSE.md](CLOSE.md) | after stage 7 |
 
-Always-on references, pointed at from the phase files: [CONTROL.md](CONTROL.md) (the shared control plane, locks, run registry, tracker grammar), [KUN.md](KUN.md) (how every question is answered), [LEDGER.md](LEDGER.md) (flight records, re-entry, the subagent contract), [PIPELINE.md](PIPELINE.md) (budgets, isolation, defaults, completion criteria), [FLOWS.md](FLOWS.md) (routing: ask-matt first, then the autonomy overlay), [PITFALLS.md](PITFALLS.md) (known sub-skill bugs and guards), [INTEGRATION.md](INTEGRATION.md) (every skill and its touchpoint substitution).
+Always-on references, pointed at from the phase files: [CONTRACT.md](CONTRACT.md) (readiness, capability, the per-ticket contract, the receipt and its check), [CONTROL.md](CONTROL.md) (the shared control plane, locks, run registry, tracker grammar), [KUN.md](KUN.md) (how every question is answered), [LEDGER.md](LEDGER.md) (flight records, re-entry, the subagent contract), [PIPELINE.md](PIPELINE.md) (budgets, isolation, defaults, completion criteria), [FLOWS.md](FLOWS.md) (routing: ask-matt first, then the autonomy overlay), [PITFALLS.md](PITFALLS.md) (known sub-skill bugs and guards), [INTEGRATION.md](INTEGRATION.md) (every skill and its touchpoint substitution).
 
 ## Rules that hold in every phase
 
@@ -52,7 +52,7 @@ This skill lives in the matt-automations repo, which vendors Matt Pocock's skill
 
 ## Daily use
 
-- `/to-goal <objective>` from the repo root, then walk away. One run = one branch `goal/<slug>` to merge when you are back.
+- `/to-auto <objective>` from the repo root, then walk away. One run = one branch `goal/<slug>` to merge when you are back.
 - `/to-bug <symptom | failing command | issue>` is this pipeline with the route pinned to `diagnosing-bugs` and the bug fast path armed. `/to-new <thing to create>` is this pipeline for a greenfield project, package, service, or skill: the repo is initialized at stage 0 and the scaffold is ticket 01. Both live in sibling folders and override only what their SKILL.md lists.
 - Under a loop: PIPELINE.md § Under a loop.
 - Several objectives at once: one session per objective; worktrees and the per-feature local tracker keep them apart.

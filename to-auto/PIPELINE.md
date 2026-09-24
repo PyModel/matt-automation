@@ -1,4 +1,4 @@
-# /to-goal pipeline reference
+# /to-auto pipeline reference
 
 Read once at the start of a run. Consulted per stage.
 
@@ -17,7 +17,7 @@ Set in NOW `budgets:` at stage 0d and enforced in BUILD.md. Defaults, overridabl
 
 ## Isolation (stage 0c and stage 7)
 
-Several agents may run `/to-goal` against one repo at once, so each run owns a branch and a worktree, and each ticket owns a branch and a worktree under it. Nothing shares a working directory, index, or HEAD.
+Several agents may run `/to-auto` against one repo at once, so each run owns a branch and a worktree, and each ticket owns a branch and a worktree under it. Nothing shares a working directory, index, or HEAD.
 
 | Level | Branch | Worktree | Cut from | Lifetime |
 |---|---|---|---|---|
@@ -51,7 +51,7 @@ Rules:
 
 ## Setup defaults (stage 0b)
 
-`setup-matt-pocock-skills` is interactive upstream; `/to-goal` runs it with every answer pre-filled and logs each as `(source: default)`:
+`setup-matt-pocock-skills` is interactive upstream; `/to-auto` runs it with every answer pre-filled and logs each as `(source: default)`:
 
 | Setup question | Answer |
 |---|---|
@@ -82,6 +82,7 @@ KUN.md decides when these apply: kun answers with a question of its own, or answ
 | Grilling question with no evidence either way | Pick the answer that keeps scope smallest and is easiest to reverse; log it as a default. |
 | Granularity right / merge or split? | 3–7 tickets; merge any ticket with no demo path; split any that would not fit one fresh window. |
 | Blocking edges correct? | A ticket blocks only what cannot compile or run without it. |
+| Which capability does this ticket need? | The lowest pair that can reliably finish it (CONTRACT.md § Capability); split rather than upgrade a large ticket. |
 | Browser or end-to-end tests first? | No: behaviour first at the seam, browser tests after it works. |
 | Which file to edit, CLAUDE.md or AGENTS.md? | Whichever exists; create neither. |
 | Commit or open a PR? | Commit on the ticket branch; merge into the run branch. |
@@ -99,14 +100,14 @@ A stage is done exactly when its line holds. Phase files point here.
 - **0a Cache kun**: `kun/<sha>/` present in the control plane; SHA in NOW.
 - **0b Setup**: `docs/agents/issue-tracker.md`, `docs/agents/domain.md`, `docs/agents/triage-labels.md` and the `## Agent skills` block exist on `goal/bootstrap` (or were already on base).
 - **0c Isolate**: `git worktree list` shows the run worktree on `goal/<slug>`; `base`, `review_base`, `run_branch` in NOW.
-- **0d Environment contract**: NOW carries `commands:`, `packages:` (if monorepo), `per-worktree:` (run-scoped), `budgets:`, `baseline:` (per-test set, 3 runs), `quarantine:`, `nested:`, `worker:` (`subagent`, or `pi[/<provider>/<model>]`, BUILD.md § Implementer backend).
-- **1 Route**: classification logged (`bug | issue | refactor | upkeep | fog | greenfield | feature`); flow named; adopted-patterns list, each line `pattern, from /<skill>`; research need logged (`none | targeted | up-front`); `findings.md` exists with repo facts, requirements R1…, open questions Q1….
-- **2 On-ramp**: the chosen on-ramp's criteria in FLOWS.md § On-ramp completion criteria, or `skipped: plain feature` logged; for route `bug`, the fast-path decision logged with its reason.
+- **0d Environment contract**: NOW carries `commands:`, `packages:` (if monorepo), `per-worktree:` (run-scoped), `budgets:`, `baseline:` (per-test set, 3 runs), `quarantine:`, `nested:`, `worker:` (`subagent`, or `pi[/<provider>/<model>]`, BUILD.md § Implementer backend), `tiers:` (capability → model map, or `none`).
+- **1 Route**: classification logged (`bug | issue | ready | refactor | upkeep | fog | greenfield | feature`); flow named; adopted-patterns list, each line `pattern, from /<skill>`; research need logged (`none | targeted | up-front`); `findings.md` exists with repo facts, requirements R1…, open questions Q1….
+- **2 On-ramp**: the chosen on-ramp's criteria in FLOWS.md § On-ramp completion criteria, or `skipped: plain feature` / `skipped: ready source <ref>` logged; for route `bug`, the fast-path decision logged with its reason.
 - **3 Research**: every Q in `findings.md` closed with a sourced fact, or `research: skipped (no external unknown)` logged; no "TBD".
 - **4/4b Grill + challenge**: frontier empty; every answer logged `(source: kun)` or `(source: default, contested)`; seams named; `CONTEXT.md` changed on disk (or an evidence-backed no-change log; no manufactured no-op edits); ADRs only where all three gates pass.
 - **5/5b Spec + reconcile**: every to-spec template section filled; user stories scaled to actual decisions; no file paths or code in Implementation Decisions; the reconciliation gate's list is empty; `runs/<slug>/spec.md` present.
-- **6/6b Tickets + claims**: one file per ticket; each has a demo path, tier, claims, "Blocked by"; new-behaviour criteria red at base and preserved invariants green; no cycles; no two unordered open tickets share an `exclusive` claim; `ready-for-agent` stripped from the parent spec; ticket table in `todo.md`.
-- **7 Build**: every ticket `done` (merged fast-forward as a recorded range, boxes ticked, ticket closed) or `stuck` with its reason; per-test comparison against baseline passes; the debt grep (BUILD.md § Bugs found in flight) is empty; per ticket a defensive-design evidence state per control, a red test before code per slice (visible `tdd` calls), and typecheck, lint, and suite output captured; only the run worktree remains; (GitHub, push authorized) draft PR open closing spec and tickets.
+- **6/6b Tickets + claims**: one file per ticket; each has a demo path, tier, capability, claims, "Blocked by", and passes CONTRACT.md § Readiness; new-behaviour criteria red at base and preserved invariants green; no cycles; no two unordered open tickets share an `exclusive` claim; `ready-for-agent` stripped from the parent spec; ticket table in `todo.md`.
+- **7 Build**: every ticket `done` (a `completed` receipt that passed `goal.mjs receipt`, merged fast-forward as a recorded range, boxes ticked, ticket closed) or `stuck` with its reason; every dispatched ticket has `tickets/<NN>.goal.md` and `tickets/<NN>.receipt.md`; per-test comparison against baseline passes; the debt grep (BUILD.md § Bugs found in flight) is empty; per ticket a defensive-design evidence state per control, a red test before code per slice (visible `tdd` calls), and typecheck, lint, and suite output captured; only the run worktree remains; (GitHub, push authorized) draft PR open closing spec and tickets.
 - **8 Final review**: ran in a fresh review subagent against `review_base`; cited findings fixed by one fix subagent, independently re-verified against the resulting snapshot, and committed; suite no worse than baseline; `final-verdict.json` written; uncited leads listed.
 - **9 Hand back**: only the user's checkout, `.worktrees/control`, the run worktree, and active peer run worktrees remain in `git worktree list`; an authorized PR is marked ready for review.
 - **10 Retro**: `retro.md` written with candidates ordered by severity.
@@ -114,4 +115,4 @@ A stage is done exactly when its line holds. Phase files point here.
 
 ## Under a loop
 
-Any recurring runner works: Claude Code's `/loop /to-goal <objective>`, a cron or CI job, or a script that re-invokes the agent. Each tick runs the LEDGER.md re-entry protocol, which starts with `goal.mjs next <slug>`: a deterministic answer from the files, so every tick resumes at the same place whatever model or harness runs it. `done` or `stop` ends the loop.
+Any recurring runner works: Claude Code's `/loop /to-auto <objective>`, a cron or CI job, or a script that re-invokes the agent. Each tick runs the LEDGER.md re-entry protocol, which starts with `goal.mjs next <slug>`: a deterministic answer from the files, so every tick resumes at the same place whatever model or harness runs it. `done` or `stop` ends the loop.

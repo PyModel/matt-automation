@@ -31,7 +31,7 @@ function fixture() {
   skill(path.join(vendor, 'deprecated'), 'old-thing');
   const home = path.join(root, 'home-skills');
   skill(home, 'research-stack');
-  write(path.join(root, 'to-goal/INTEGRATION.md'), [
+  write(path.join(root, 'to-auto/INTEGRATION.md'), [
     '| Skill | Stage |', '|---|---|',
     '| ask-matt | 1 |', '| tdd | 7 |', '| `to-spec` | 5 |', '| retro (in-progress) | 10 |',
     '', '| Skill | Source |', '|---|---|', '| research-stack | external |', '',
@@ -102,7 +102,7 @@ test('check fails when ask-matt routes to a skill that is not linked', () => {
 
 test('check reports a row that is neither vendored nor installed as missing, not as a wiring error', () => {
   const { root, homes } = fixture();
-  fs.appendFileSync(path.join(root, 'to-goal/INTEGRATION.md'), '| Skill | x |\n|---|---|\n| phantom | y |\n');
+  fs.appendFileSync(path.join(root, 'to-auto/INTEGRATION.md'), '| Skill | x |\n|---|---|\n| phantom | y |\n');
   link(root);
   const { errors, missing } = check(root, { homes });
   assert.deepEqual(errors, []);

@@ -15,13 +15,15 @@
 //   node scripts/goal.mjs take <feature> <n>              atomically flip up to <n> frontier tickets (n = free slots) to in-flight (JSON ids)
 //   node scripts/goal.mjs status <feature> <id> <status>  set one ticket's **Status:** and commit
 //   node scripts/goal.mjs claims <ticket.md> <path>...    touched paths outside the ticket's claims (JSON)
+//   node scripts/goal.mjs claim <feature> <id> <exclusive|shared-regenerate> <path>... -- <why>
+//                                                          widen a ticket's claims after a claims breach: ticket, contract, ledger, one commit (JSON)
 //   node scripts/goal.mjs receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md>
 //                                                          check an implementer's receipt against git and the ticket (JSON)
 //   node scripts/goal.mjs with-lock <name> -- <cmd...>    run one command holding a control-plane lock
 //   node scripts/goal.mjs commit -m <msg> <file>...       stage exactly <file>s in the control plane and commit, under the control lock
 //
 // Every command takes --repo <path> (default: cwd); any worktree of the repo works.
-// Exit 0 = ok, 1 = the answer is "no" (claims breach, malformed tickets, a refused take, a refused receipt, stopped), 2 = usage, 3 = runtime error.
+// Exit 0 = ok, 1 = the answer is "no" (claims breach, malformed tickets, a refused take or claim, a refused receipt, stopped), 2 = usage, 3 = runtime error.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -172,15 +174,18 @@ export function event(repo, slug, stage, text) {
   if (/[\r\n]/.test(stage + text)) throw new Error('an event is one line');
   const control = requireControl(repo);
   const rel = path.join('runs', slug, 'ledger.md');
-  const file = path.join(control, rel);
-  if (!fs.existsSync(file)) throw new Error(`${slug} has no ledger at ${rel}`);
-  const now = new Date();
-  const hhmm = [now.getHours(), now.getMinutes()].map((n) => String(n).padStart(2, '0')).join(':');
+  if (!fs.existsSync(path.join(control, rel))) throw new Error(`${slug} has no ledger at ${rel}`);
   return withLock(repo, 'control', () => {
-    const body = fs.readFileSync(file, 'utf8');
-    fs.writeFileSync(file, `${body}${body.endsWith('\n') ? '' : '\n'}- ${hhmm} [${stage}] ${text}\n`);
+    appendEvent(path.join(control, rel), stage, text);
     return commit(repo, `[${slug}] [${stage}] ${text}`, [rel]);
   });
+}
+
+function appendEvent(file, stage, text) {
+  const now = new Date();
+  const hhmm = [now.getHours(), now.getMinutes()].map((n) => String(n).padStart(2, '0')).join(':');
+  const body = fs.readFileSync(file, 'utf8');
+  fs.writeFileSync(file, `${body}${body.endsWith('\n') ? '' : '\n'}- ${hhmm} [${stage}] ${text}\n`);
 }
 
 /** Undo a stop once its cause is fixed: remove STOP and put back the registry status it replaced. */
@@ -365,6 +370,80 @@ export function setStatus(repo, feature, id, status) {
     fs.writeFileSync(full, text.replace(STATUS_LINE, `**Status:** ${status}`));
     return commit(repo, `[${feature}] ticket ${want} → ${status}`, [path.relative(control, full)]);
   });
+}
+
+const CLAIMS_LINE = /^\*\*Claims:\*\* (.+)$/m;
+const AMENDED = /^\*\*Claims amended:\*\* /gm;
+export const MAX_AMENDMENTS = 2;
+
+/**
+ * Widen an in-flight ticket's claims after its implementer reported a claims breach. Tracker issue,
+ * contract and ledger change in one commit; a guarded path, a new overlap inside the run, or a third
+ * amendment (the ticket is mis-scoped) is refused and nothing changes. Other runs' overlaps are reported.
+ */
+export function amendClaims(repo, feature, id, kind, paths, why) {
+  if (kind === 'guarded') throw new Refusal('a guarded path needs the objective\'s grant, never an amendment');
+  if (!['exclusive', 'shared-regenerate'].includes(kind)) throw new UsageError(`claim kind must be exclusive or shared-regenerate, got ${kind}`);
+  if (!paths.length || !why.trim()) throw new UsageError('claim needs at least one path and a reason');
+  if (/[\r\n,;]/.test(paths.join('')) || /[\r\n]/.test(why)) throw new UsageError('paths hold no , ; or newline, and the reason is one line');
+  const control = requireControl(repo);
+  const issues = path.join(control, 'tracker', feature, 'issues');
+  const want = ticketId(String(id));
+  return withLock(repo, `frontier-${feature}`, () => {
+    const { files, duplicates } = ticketFiles(issues);
+    if (duplicates.some((d) => d.id === want)) throw new Error(`ticket number ${want} is used by more than one file in tracker/${feature}/issues`);
+    const file = files.get(want);
+    if (!file) throw new Error(`no ticket ${id} in tracker/${feature}/issues`);
+    const before = fs.readFileSync(file, 'utf8');
+    const ticket = parseTicket(before);
+    if (ticket.problems.length) throw new Refusal(`ticket ${want} is malformed: ${ticket.problems.join('; ')}`);
+    const guarded = paths.filter((p) => [...files.values()].some((f) => parseTicket(fs.readFileSync(f, 'utf8')).claims.guarded.some((g) => claimsOverlap(g, p))));
+    if (guarded.length) throw new Refusal(`${guarded.join(', ')} is guarded; only the objective's grant authorizes it`);
+    const fresh = paths.filter((p) => !ticket.claims[kind].some((c) => claimCovers(c, claimRoot(p))));
+    if (!fresh.length) return { commit: 'already claimed', claims: before.match(CLAIMS_LINE)[1], cross_run: [] };
+    const amended = (before.match(AMENDED) ?? []).length;
+    if (amended >= MAX_AMENDMENTS) throw new Refusal(`ticket ${want} already had ${amended} claims amendments, so it is mis-scoped: stop it and split it at PLAN.md 6b`);
+
+    const oldLine = before.match(CLAIMS_LINE)[1];
+    const newLine = withClaims(oldLine, kind, fresh);
+    const note = `+${fresh.join(', ')} (${kind}): ${why.trim()}`;
+    const contractRel = path.join('runs', feature, 'tickets', `${want}.goal.md`);
+    const contractFile = path.join(control, contractRel);
+    const contract = fs.existsSync(contractFile) ? fs.readFileSync(contractFile, 'utf8') : null;
+    if (contract !== null && !contract.includes(oldLine)) throw new Refusal(`${contractRel} does not carry the ticket's Claims line verbatim; resync the contract first`);
+
+    const known = new Set(frontier(control, feature).conflicts.map((c) => JSON.stringify(c)));
+    fs.writeFileSync(file, before.replace(CLAIMS_LINE, () => `**Claims:** ${newLine}\n**Claims amended:** ${note}`));
+    const after = frontier(control, feature);
+    const added = after.conflicts.filter((c) => c.tickets.includes(want) && !known.has(JSON.stringify(c)));
+    if (added.length) {
+      fs.writeFileSync(file, before);
+      const [c] = added;
+      throw new Refusal(`the new claim overlaps ticket ${c.tickets.find((t) => t !== want)}'s ${c.claims.join(' / ')}; add a blocking edge or split the change into its own ticket`);
+    }
+    const changed = [path.relative(control, file)];
+    if (contract !== null) {
+      fs.writeFileSync(contractFile, contract.split(oldLine).join(newLine));
+      changed.push(contractRel);
+    }
+    const ledger = path.join('runs', feature, 'ledger.md');
+    if (fs.existsSync(path.join(control, ledger))) {
+      appendEvent(path.join(control, ledger), 'claims', `${want} ${note}`);
+      changed.push(ledger);
+    }
+    const cross = after.cross_run.filter((c) => c.tickets[0] === want && fresh.some((p) => claimsOverlap(p, c.claims[0])));
+    return { commit: commit(repo, `[${feature}] [claims] ${want} ${note}`, changed), claims: newLine, cross_run: cross };
+  });
+}
+
+/** Add paths to one class of a Claims line, creating the class part if the line has none. */
+function withClaims(line, kind, add) {
+  const parts = line.split(';').map((p) => p.trim()).filter(Boolean);
+  const at = parts.findIndex((p) => p.startsWith(`${kind}:`));
+  if (at < 0) return [...parts, `${kind}: ${add.join(', ')}`].join(' ; ');
+  const have = parts[at].slice(kind.length + 1).split(',').map((c) => c.trim()).filter((c) => c && c !== 'none');
+  parts[at] = `${kind}: ${[...have, ...add].join(', ')}`;
+  return parts.join(' ; ');
 }
 
 function dependsOn(tickets, from, to, seen = new Set()) {
@@ -661,6 +740,11 @@ function main(argv) {
     console.log(event(repo, rest[0], rest[1], rest[2]));
     return 0;
   }
+  if (command === 'claim' && rest.indexOf('--') >= 4) {
+    const cut = rest.indexOf('--');
+    print(amendClaims(repo, rest[0], rest[1], rest[2], rest.slice(3, cut), rest.slice(cut + 1).join(' ')));
+    return 0;
+  }
   if (command === 'resume' && rest.length === 1) {
     console.log(resume(repo, rest[0]));
     return 0;
@@ -709,7 +793,7 @@ function main(argv) {
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }
-  console.error('usage: goal.mjs [--repo <path>] control | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] | next <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
+  console.error('usage: goal.mjs [--repo <path>] control | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] | next <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
   return 2;
 }
 

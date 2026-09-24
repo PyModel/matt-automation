@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, event, withLock, breakStale, commit, controlDir } from './goal.mjs';
+import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, amendClaims, event, withLock, breakStale, commit, controlDir } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -433,6 +433,65 @@ test('frontier resolves each ticket\'s capability: absent is standard/medium, in
   result = frontier(control, 'f');
   assert.equal(result.malformed[0].id, '03');
   assert.match(result.malformed[0].problems.join(' '), /capability/);
+});
+
+// A run `f` with ticket 01 in flight (contract written) and ticket 02 open beside it.
+function runWithTickets(second = 'exclusive: b.ts') {
+  const { repo, control } = repoWithControl();
+  init(repo, 'f', 'F');
+  const one = 'exclusive: a.ts ; shared-regenerate: gen/ ; guarded: none';
+  write(path.join(control, 'tracker/f/issues/01-a.md'), ticket('in-flight', 'None', one));
+  write(path.join(control, 'tracker/f/issues/02-b.md'), ticket('ready-for-agent', 'None', second));
+  write(path.join(control, 'runs/f/tickets/01.goal.md'), `# 01\n\n- Claims: ${one}; a needed path outside them → stop, return \`claims-breach\`\n`);
+  commit(repo, '[f] seed', ['tracker/f/issues/01-a.md', 'tracker/f/issues/02-b.md', 'runs/f/tickets/01.goal.md']);
+  return { repo, control, read: (rel) => fs.readFileSync(path.join(control, rel), 'utf8') };
+}
+
+test('claim: adds the path to the ticket and its contract, logs it, and commits all three at once', () => {
+  const { repo, control, read } = runWithTickets();
+  const head = git(control, 'rev-parse', 'HEAD');
+  const result = amendClaims(repo, 'f', '1', 'exclusive', ['tests/a.fake.swift'], 'protocol conformer must gain the new method');
+  const want = 'exclusive: a.ts, tests/a.fake.swift ; shared-regenerate: gen/ ; guarded: none';
+  assert.match(read('tracker/f/issues/01-a.md'), new RegExp(`^\\*\\*Claims:\\*\\* ${want.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`, 'm'));
+  assert.match(read('tracker/f/issues/01-a.md'), /^\*\*Claims amended:\*\* \+tests\/a\.fake\.swift \(exclusive\): protocol conformer/m);
+  assert.ok(read('runs/f/tickets/01.goal.md').includes(`- Claims: ${want}; a needed path`));
+  assert.match(read('runs/f/ledger.md').trimEnd().split('\n').at(-1), /^- \d\d:\d\d \[claims\] 01 \+tests\/a\.fake\.swift \(exclusive\): protocol conformer/);
+  assert.equal(git(control, 'rev-list', '--count', `${head}..HEAD`), '1');
+  assert.equal(git(control, 'status', '--porcelain'), '');
+  assert.deepEqual(result.cross_run, []);
+  assert.equal(amendClaims(repo, 'f', '01', 'exclusive', ['a.ts'], 'again').commit, 'already claimed');
+});
+
+test('claim: refuses a guarded path, a new in-run overlap, and a third amendment, leaving every file as it was', () => {
+  const { repo, control, read } = runWithTickets('exclusive: b.ts ; guarded: .github/**');
+  const before = read('tracker/f/issues/01-a.md');
+  assert.throws(() => amendClaims(repo, 'f', '01', 'guarded', ['x.ts'], 'why'), /guarded/);
+  assert.throws(() => amendClaims(repo, 'f', '01', 'exclusive', ['.github/workflows/ci.yml'], 'why'), /guarded/);
+  assert.throws(() => amendClaims(repo, 'f', '01', 'exclusive', ['b.ts'], 'why'), /ticket 02.*b\.ts/);
+  assert.equal(read('tracker/f/issues/01-a.md'), before);
+  assert.equal(git(control, 'status', '--porcelain'), '');
+  amendClaims(repo, 'f', '01', 'exclusive', ['c.ts'], 'one');
+  amendClaims(repo, 'f', '01', 'shared-regenerate', ['snap/'], 'two');
+  assert.throws(() => amendClaims(repo, 'f', '01', 'exclusive', ['d.ts'], 'three'), /mis-scoped.*6b/);
+});
+
+test('claim: an overlap with another unfinished run is reported, never refused', () => {
+  const { repo, control } = runWithTickets();
+  write(path.join(control, 'tracker/g/issues/01-x.md'), ticket('in-flight', 'None', 'exclusive: shared/view.swift'));
+  const runs = JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'));
+  runs.push({ slug: 'g', status: 'building' });
+  fs.writeFileSync(path.join(control, 'runs.json'), JSON.stringify(runs));
+  const result = amendClaims(repo, 'f', '01', 'exclusive', ['shared/view.swift'], 'needed');
+  assert.deepEqual(result.cross_run.map((c) => c.run), ['g']);
+});
+
+test('CLI claim takes the reason after --', () => {
+  const { repo, read } = runWithTickets();
+  const out = execFileSync('node', [GOAL, '--repo', repo, 'claim', 'f', '01', 'exclusive', 'c.ts', 'd.ts', '--', 'mapper drops the field'], { encoding: 'utf8' });
+  assert.match(out, /"commit"/);
+  assert.match(read('tracker/f/issues/01-a.md'), /exclusive: a\.ts, c\.ts, d\.ts ;/);
+  const bad = spawnSync('node', [GOAL, '--repo', repo, 'claim', 'f', '01', 'exclusive', 'e.ts'], { encoding: 'utf8' });
+  assert.notEqual(bad.status, 0);
 });
 
 // A ticket branch with one commit on top of its base, as an implementer leaves it.

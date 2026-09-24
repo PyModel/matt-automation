@@ -497,6 +497,10 @@ test('CLI claim takes the reason after --', () => {
 
 test('contract: base, claims and criteria must match the worktree and the ticket', () => {
   const repo = bareRepo();
+  const stale = git(repo, 'rev-parse', 'HEAD');
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'ticket 00');
+  git(repo, 'branch', 'goal/f');
+  git(repo, 'checkout', '-q', '-b', 'goal/f-t01');
   const head = git(repo, 'rev-parse', 'HEAD');
   const claims = 'exclusive: src/a.ts ; guarded: none';
   const tk = `${ticket('in-flight', 'None', claims)}\n- [ ] a is exported (Red at base: P1.)\n- [ ] suite green\n`;
@@ -504,7 +508,9 @@ test('contract: base, claims and criteria must match the worktree and the ticket
   const good = ['a is exported (Red at base: P1.)', 'suite green'];
   assert.deepEqual(checkContract({ text: contract(head, claims, good), ticketText: tk, worktree: repo }).problems, []);
   git(repo, 'commit', '-q', '--allow-empty', '-m', 'Refs 01');
+  git(repo, 'checkout', '-q', 'goal/f'); git(repo, 'commit', '-q', '--allow-empty', '-m', 'ticket 02 merged'); git(repo, 'checkout', '-q', 'goal/f-t01');
   assert.deepEqual(checkContract({ text: contract(head, claims, good), ticketText: tk, worktree: repo }).problems, [], 'a re-dispatch keeps the original base');
+  assert.match(checkContract({ text: contract(stale, claims, good), ticketText: tk, worktree: repo }).problems.join(' | '), /Ticket base/, 'an older ancestor is not the base');
   const invented = `${head.slice(0, 8)}${'0'.repeat(32)}`;
   assert.match(checkContract({ text: contract(invented, claims, good), ticketText: tk, worktree: repo }).problems.join(' | '), /Ticket base/);
   assert.match(checkContract({ text: contract(head.slice(0, 8), claims, good), ticketText: tk, worktree: repo }).problems.join(' | '), /Ticket base/);

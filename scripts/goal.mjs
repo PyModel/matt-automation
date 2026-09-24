@@ -18,7 +18,7 @@
 //   node scripts/goal.mjs claim <feature> <id> <exclusive|shared-regenerate> <path>... -- <why>
 //                                                          widen a ticket's claims after a claims breach: ticket, contract, ledger, one commit (JSON)
 //   node scripts/goal.mjs contract <NN.goal.md> --worktree <wt> --ticket <ticket.md>
-//                                                          check a contract before every dispatch: base at or below the worktree HEAD, Claims and criteria verbatim (JSON)
+//                                                          check a contract before every dispatch: base = where the ticket branch left the run branch, Claims and criteria verbatim (JSON)
 //   node scripts/goal.mjs receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md>
 //                                                          check an implementer's receipt against git and the ticket (JSON)
 //   node scripts/goal.mjs with-lock <name> -- <cmd...>    run one command holding a control-plane lock
@@ -526,9 +526,11 @@ export function ticketCriteria(text) {
 export function checkContract({ text, ticketText, worktree }) {
   const problems = [];
   const base = text.match(/^- Ticket base: (\S+)/m)?.[1];
-  // At dispatch the base is the worktree HEAD; at a re-dispatch the implementer's commits sit on top of it.
-  const onBranch = /^[0-9a-f]{40}$/.test(base ?? '') && spawnSync('git', ['-C', worktree, 'merge-base', '--is-ancestor', base, 'HEAD']).status === 0;
-  if (!onBranch) problems.push(`Ticket base ${base ?? '(missing)'} is not a full sha at or below the worktree HEAD; paste \`git rev-parse HEAD\` output, never type a sha`);
+  // The base is where goal/<slug>-t<NN> left goal/<slug>: HEAD at dispatch, still the fork point at a re-dispatch.
+  const out = (args) => { const r = spawnSync('git', ['-C', worktree, ...args], { encoding: 'utf8' }); return r.status === 0 ? r.stdout.trim() : null; };
+  const run = out(['rev-parse', '--abbrev-ref', 'HEAD'])?.match(/^(goal\/.+)-t\d+$/)?.[1];
+  const fork = run ? out(['merge-base', 'HEAD', run]) : out(['rev-parse', 'HEAD']);
+  if (!/^[0-9a-f]{40}$/.test(base ?? '') || base !== fork) problems.push(`Ticket base ${base ?? '(missing)'} is not ${fork ?? 'the fork point'} (where the ticket branch left ${run ?? 'the run branch'}); paste \`git rev-parse HEAD\` output at dispatch, never type a sha`);
   const claims = ticketText.match(CLAIMS_LINE)?.[1];
   if (!claims) problems.push('the ticket has no **Claims:** line');
   else if (!text.includes(`- Claims: ${claims}`)) problems.push(`the contract's Claims line is not the ticket's verbatim: "${claims}"`);

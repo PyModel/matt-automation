@@ -61,7 +61,7 @@ Never edit a Claims line by hand.
 
 No deferred actions. Any bug, error, or anomaly noticed in any file, by any agent, at any stage:
 
-1. **Record now:** `bugs.md` and a `[bug]` event: file, symptom, how noticed, introduced by this run or pre-existing.
+1. **Record now:** `bugs.md` and a `[bug]` event: file, symptom, how noticed, introduced by this run or pre-existing. A test that passed every baseline run and now fails, even once, is introduced by this run until shown otherwise. It becomes pre-existing only when it also fails at the base commit under the same conditions (the same full-suite load, as many runs as it took to fail here), with the command and count recorded; passing when run alone proves nothing.
 2. **In scope or introduced by this run** (touches a claimed path, or was not present at the branch point): fix now, red regression test first, same ticket branch; `diagnosing-bugs` if the cause is not obvious.
 3. **Pre-existing and out of scope:** open a ticket now (`bug`, `ready-for-agent`, repro, claims). Ask `/kun` whether this run builds it; yes and the bug-ticket budget allows → it passes the PLAN.md 6b gate and then joins the frontier; otherwise it stays ticketed for the next run with its id in the report. Either way it is never a comment, TODO, or "known issue".
 4. **Cannot be fixed by this run** (authority, credentials, human-only): blocker in NOW and the report, with the ticket id.

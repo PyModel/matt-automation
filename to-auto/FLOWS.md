@@ -26,6 +26,7 @@ Main-flow branch points, answered the same way every run:
 - **"Is this a multi-session build?"** Always yes: the run is autonomous and multi-context by construction (one fresh context per ticket), so the spec and tickets are always kept. That is the condition under which `to-spec` earns its step.
 - **Knowledge only a specific person has** → `to-questionnaire`; the questionnaire is a blocker in the report; continue with defaults.
 - **A step only a human can perform** → `wizard` where it bites (stage 7); its script is a blocker in the report.
+- **An objective that asks only for a plan** (investigate, plan, design, spec it) → run through 6b, then `goal.mjs stop <slug> "plan-only: build awaits the user's go"` and send the final report with the spec and ticket paths. On the user's go: `goal.mjs resume <slug>`, then invoke again; `next` resumes at stage 7.
 
 ## Why implement-spec drives stage 7
 

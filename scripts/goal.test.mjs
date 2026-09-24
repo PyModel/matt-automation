@@ -497,6 +497,16 @@ test('receipt: every ticket criterion needs a passing, evidenced entry before co
   assert.match(bare.problems.join(' | '), /no acceptance criteria/);
 });
 
+test('receipt: a criterion quoted without its trailing parenthetical note still matches', () => {
+  const { repo, base, head } = ticketWorktree();
+  const noted = `${ticket('in-flight', 'None', 'exclusive: src/a.ts')}\n- [ ] a is exported (on disk). (Red at base: a is missing; P2.)\n- [ ] suite green (Invariant, green at base.)\n`;
+  const check = (criteria) => checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head, criteria })), worktree: repo, base, ticketText: noted }).problems;
+  const [first, second] = receipt().criteria;
+  assert.deepEqual(check([{ ...first, criterion: 'a is exported (on disk).' }, second]), []);
+  assert.deepEqual(check([{ ...first, criterion: 'a is exported (on disk). (Red at base: a is missing; P2.)' }, { ...second, criterion: 'suite green (Invariant, green at base.)' }]), []);
+  assert.match(check([first, second]).join(' | '), /a is exported \(on disk\)/);
+});
+
 test('receipt: malformed shapes and unknown conclusions are refused', () => {
   assert.match(checkReceipt({ text: 'no receipt here' }).problems.join(' '), /JSON/);
   assert.match(checkReceipt({ text: JSON.stringify(receipt({ conclusion: 'done' })) }).problems.join(' '), /conclusion/);

@@ -422,6 +422,8 @@ function commitOf(cwd, rev) {
 }
 
 const norm = (s) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+// Implementers quote a criterion without its trailing "(Red at base: …)" or "(Invariant …)" note; one such group may be dropped.
+const withoutNote = (s) => s.replace(/\s*\((?:[^()]|\([^()]*\))*\)\s*$/, '');
 const strings = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string');
 
 /** Every checkbox line in a ticket is one acceptance criterion (local and GitHub templates alike). */
@@ -468,11 +470,11 @@ export function checkReceipt({ text, worktree = null, base = null, ticketText = 
     const wanted = ticketCriteria(ticketText);
     if (completed && !wanted.length) problems.push('the ticket has no acceptance criteria (checkbox lines), so nothing can show it completed');
     for (const want of wanted) {
-      const got = byText.get(norm(want));
+      const got = byText.get(norm(want)) ?? byText.get(norm(withoutNote(want)));
       if (!got) problems.push(`ticket criterion "${want}" has no entry in the receipt`);
       else if (completed && got.result !== 'pass') problems.push(`ticket criterion "${want}" is ${got.result}, so the receipt cannot be completed`);
     }
-    const known = new Set(wanted.map(norm));
+    const known = new Set(wanted.flatMap((w) => [norm(w), norm(withoutNote(w))]));
     for (const c of byText.values()) if (!known.has(norm(c.criterion))) problems.push(`receipt criterion "${c.criterion}" is not in the ticket`);
   }
 

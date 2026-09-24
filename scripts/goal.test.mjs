@@ -392,6 +392,19 @@ test('a claims path after ; says how to fix it', () => {
   assert.match(frontier(control, 'f').malformed[0].problems.join(' '), /"b\/".*paths inside a part are comma-separated/);
 });
 
+test('frontier reports exclusive-claim overlaps with other active runs, ignoring finished ones', () => {
+  const { repo, control } = repoWithControl();
+  for (const slug of ['a', 'b', 'old']) init(repo, slug, slug);
+  setRegistry(repo, 'old', 'done');
+  write(path.join(control, 'tracker/a/issues/01-x.md'), ticket('ready-for-agent', 'None', 'exclusive: app/View.swift, lib/'));
+  write(path.join(control, 'tracker/b/issues/03-y.md'), ticket('in-flight', 'None', 'exclusive: app/View.swift'));
+  write(path.join(control, 'tracker/b/issues/04-z.md'), ticket('done', 'None', 'exclusive: lib/'));
+  write(path.join(control, 'tracker/old/issues/01-w.md'), ticket('ready-for-agent', 'None', 'exclusive: lib/'));
+  const result = frontier(control, 'a');
+  assert.deepEqual(result.cross_run, [{ run: 'b', tickets: ['01', '03'], claims: ['app/View.swift', 'app/View.swift'] }]);
+  assert.deepEqual(result.frontier, ['01']);
+});
+
 test('init records the agent and harness it is given', () => {
   const { repo, control } = repoWithControl();
   init(repo, 'x', 'X', { agent: 'session-42', harness: 'codex' });

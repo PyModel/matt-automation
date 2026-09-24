@@ -312,7 +312,29 @@ export function frontier(control, feature) {
     }
   }
   const capability = Object.fromEntries([...tickets].map(([id, t]) => [id, t.capability]));
-  return { feature, frontier: malformed.length ? [] : ready, malformed, conflicts, capability };
+  return { feature, frontier: malformed.length ? [] : ready, malformed, conflicts, capability, cross_run: crossRun(control, feature, open) };
+}
+
+const FINISHED_RUNS = new Set(['done', 'stopped', 'dry-run']);
+
+/** Exclusive-claim overlaps with open tickets of other unfinished runs: separate branches, so the second merge conflicts. */
+function crossRun(control, feature, open) {
+  const found = [];
+  for (const run of readRegistry(control)) {
+    if (run.slug === feature || FINISHED_RUNS.has(run.status)) continue;
+    const issues = path.join(control, 'tracker', run.slug, 'issues');
+    if (!fs.existsSync(issues)) continue;
+    for (const [b, file] of ticketFiles(issues).files) {
+      const tb = parseTicket(fs.readFileSync(file, 'utf8'));
+      if (['done', 'stuck'].includes(tb.status)) continue;
+      for (const [a, ta] of open) {
+        for (const ca of ta.claims.exclusive) {
+          for (const cb of tb.claims.exclusive) if (claimsOverlap(ca, cb)) found.push({ run: run.slug, tickets: [a, b], claims: [ca, cb] });
+        }
+      }
+    }
+  }
+  return found;
 }
 
 /** Under the frontier lock, so two orchestrators never take the same ticket. */

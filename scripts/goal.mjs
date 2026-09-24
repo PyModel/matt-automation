@@ -9,6 +9,7 @@
 //   node scripts/goal.mjs next <slug>                     where the run resumes (JSON)
 //   node scripts/goal.mjs stop <slug> <reason>            halt the run: write runs/<slug>/STOP and set the registry status
 //   node scripts/goal.mjs resume <slug>                   undo a stop once its cause is fixed
+//   node scripts/goal.mjs event <slug> <stage> <text>     append `- HH:MM [stage] text` (local clock) to the ledger and commit
 //   node scripts/goal.mjs registry <slug> <status>        set the run's status in runs.json and commit
 //   node scripts/goal.mjs frontier <feature>              ticket grammar, frontier, claim overlaps (JSON)
 //   node scripts/goal.mjs take <feature> <n>              atomically flip up to <n> frontier tickets (n = free slots) to in-flight (JSON ids)
@@ -164,6 +165,22 @@ export function stop(repo, slug, reason) {
   commit(repo, `[${slug}] stop: ${reason}`, [path.relative(control, file)]);
   if (readRegistry(control).some((r) => r.slug === slug)) setRegistry(repo, slug, 'stopped');
   return `stopped ${slug}`;
+}
+
+/** Append one Events line stamped with the real local clock, so no agent writes a time it guessed. */
+export function event(repo, slug, stage, text) {
+  if (/[\r\n]/.test(stage + text)) throw new Error('an event is one line');
+  const control = requireControl(repo);
+  const rel = path.join('runs', slug, 'ledger.md');
+  const file = path.join(control, rel);
+  if (!fs.existsSync(file)) throw new Error(`${slug} has no ledger at ${rel}`);
+  const now = new Date();
+  const hhmm = [now.getHours(), now.getMinutes()].map((n) => String(n).padStart(2, '0')).join(':');
+  return withLock(repo, 'control', () => {
+    const body = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, `${body}${body.endsWith('\n') ? '' : '\n'}- ${hhmm} [${stage}] ${text}\n`);
+    return commit(repo, `[${slug}] [${stage}] ${text}`, [rel]);
+  });
 }
 
 /** Undo a stop once its cause is fixed: remove STOP and put back the registry status it replaced. */
@@ -614,6 +631,10 @@ function main(argv) {
     console.log(init(repo, rest[0], rest[1], options));
     return 0;
   }
+  if (command === 'event' && rest.length === 3) {
+    console.log(event(repo, rest[0], rest[1], rest[2]));
+    return 0;
+  }
   if (command === 'resume' && rest.length === 1) {
     console.log(resume(repo, rest[0]));
     return 0;
@@ -661,7 +682,7 @@ function main(argv) {
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }
-  console.error('usage: goal.mjs [--repo <path>] control | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] | next <slug> | stop <slug> <reason> | resume <slug> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
+  console.error('usage: goal.mjs [--repo <path>] control | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] | next <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
   return 2;
 }
 

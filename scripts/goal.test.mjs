@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, withLock, breakStale, commit, controlDir } from './goal.mjs';
+import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, event, withLock, breakStale, commit, controlDir } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -217,6 +217,23 @@ test('init writes a run that next can resume, commits it, and refuses to overwri
   assert.equal(git(control, 'status', '--porcelain'), '');
   assert.throws(() => init(repo, 'add-login', 'again'), /already exists/);
   assert.throws(() => init(repo, 'Bad Slug', 'x'), /bad slug/);
+});
+
+test('event appends a clock-stamped, stage-tagged line to the ledger and commits it', () => {
+  const { repo, control } = repoWithControl();
+  init(repo, 'add-login', 'Add login');
+  const before = new Date();
+  event(repo, 'add-login', '0c', 'worktree ready');
+  const lines = fs.readFileSync(path.join(control, 'runs/add-login/ledger.md'), 'utf8').trimEnd().split('\n');
+  const m = lines.at(-1).match(/^- (\d\d):(\d\d) \[0c\] worktree ready$/);
+  assert.ok(m, lines.at(-1));
+  const stamped = Number(m[1]) * 60 + Number(m[2]);
+  const now = new Date();
+  assert.ok([before, now].some((d) => d.getHours() * 60 + d.getMinutes() === stamped));
+  assert.equal(git(control, 'status', '--porcelain'), '');
+  assert.match(git(control, 'log', '-1', '--format=%s'), /^\[add-login\] \[0c\] worktree ready$/);
+  assert.throws(() => event(repo, 'nope', '1', 'x'), /no ledger/);
+  assert.throws(() => event(repo, 'add-login', '1', 'two\nlines'), /one line/);
 });
 
 test('commit ignores files another agent staged', () => {

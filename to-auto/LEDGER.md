@@ -58,7 +58,7 @@ The tracker's ticket files stay the source of truth for *what to build*; `ticket
 Rules:
 
 - **NOW is rewritten, Events are appended.** NOW is what a fresh context reads first; Events are how it verifies NOW.
-- One event per stage transition, subagent dispatch, subagent return, merge, blocker, bug noticed (`[bug]`), and compaction. Time-stamped from `date +%H:%M` (local), never estimated; stage-tagged; one line.
+- One event per stage transition, subagent dispatch, subagent return, merge, blocker, bug noticed (`[bug]`), and compaction. Appended only with `goal.mjs event <slug> <stage> "<text>"`, which stamps the real local time; never typed by hand, so no time is guessed.
 - Never paste artifacts into the ledger: point at files, commits, ticket ids.
 - Every command output written here, or to a status, bug, or notes file, is redacted first (SKILL.md § Rules, Redaction).
 

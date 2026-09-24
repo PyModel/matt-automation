@@ -19,6 +19,7 @@ Every run on a repo shares one **control plane**: the branch `goal/control`, che
 Locks are the one thing not committed: `mkdir` directories under `$(git rev-parse --git-common-dir)/goal-locks/`, shared by every worktree. Take them only through `ROOT/scripts/goal.mjs`, which holds the lock for the whole transaction, writes the holder's pid, waits up to 2 minutes for a live holder, and breaks a lock older than 10 minutes whose holder is dead:
 
 - `goal.mjs commit -m "[<slug>] <what>" <file>...` stages exactly those control-plane files and commits them under the `control` lock. This is the only way to commit to the control plane.
+- `goal.mjs event <slug> <stage> "<text>"` appends one `- HH:MM [stage] text` line to `runs/<slug>/ledger.md`, stamped with the real local clock, and commits it. Every ledger event goes through it.
 - `goal.mjs take <feature> <n>` flips up to `n` frontier tickets to `in-flight` under `frontier-<feature>` and commits them; `goal.mjs status <feature> <id> <status>` sets one ticket's status and commits it.
 - `goal.mjs with-lock <name> -- <cmd...>` runs one command under any lock (`integration`, `bootstrap`, `registry`, or `frontier-<feature>` on a GitHub tracker). Locks are re-entrant for that command, so it may call `goal.mjs commit` itself.
 - File arguments are paths inside the control worktree (`runs/<slug>/ledger.md`); a path from the current directory that lands inside it (`.worktrees/control/runs/…`) works too.

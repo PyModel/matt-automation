@@ -703,6 +703,7 @@ function main(argv) {
     });
   }
   if (command === 'commit' && rest[0] === '-m' && rest.length >= 3) {
+    if (!/^\[[a-z0-9][a-z0-9-]*\] \S/.test(rest[1])) throw new UsageError(`commit subject must start with [<slug>] (e.g. "[${'my-run'}] t01 status"), got "${rest[1]}"`);
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }

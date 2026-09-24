@@ -315,15 +315,15 @@ test('a status line may carry a reason, and blockers match by number', () => {
 test('with-lock children can take the same lock without deadlocking', () => {
   const { repo, control } = repoWithControl();
   write(path.join(control, 'k.md'), 'k');
-  const r = spawnSync(process.execPath, [GOAL, '--repo', repo, 'with-lock', 'control', '--', process.execPath, GOAL, '--repo', repo, 'commit', '-m', 'k', 'k.md'], { encoding: 'utf8', timeout: 20000 });
+  const r = spawnSync(process.execPath, [GOAL, '--repo', repo, 'with-lock', 'control', '--', process.execPath, GOAL, '--repo', repo, 'commit', '-m', '[x] k', 'k.md'], { encoding: 'utf8', timeout: 20000 });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(git(control, 'log', '-1', '--format=%s'), 'k');
+  assert.equal(git(control, 'log', '-1', '--format=%s'), '[x] k');
 });
 
 test('commit accepts a path relative to cwd that lands in the control worktree', () => {
   const { repo, control } = repoWithControl();
   write(path.join(control, 'from-cwd.md'), 'x');
-  const r = spawnSync(process.execPath, [GOAL, 'commit', '-m', 'cwd path', '.worktrees/control/from-cwd.md'], { cwd: repo, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [GOAL, 'commit', '-m', '[x] cwd path', '.worktrees/control/from-cwd.md'], { cwd: repo, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(git(control, 'show', '--name-only', '--format=', 'HEAD'), 'from-cwd.md');
 });
@@ -332,7 +332,7 @@ test('commit from a run directory takes a control-relative path as control-relat
   const { repo, control } = repoWithControl();
   const run = path.join(control, 'runs/x');
   write(path.join(run, 'ledger.md'), 'x');
-  const r = spawnSync(process.execPath, [GOAL, '--repo', repo, 'commit', '-m', 'from run dir', 'runs/x/ledger.md'], { cwd: run, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [GOAL, '--repo', repo, 'commit', '-m', '[x] from run dir', 'runs/x/ledger.md'], { cwd: run, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(git(control, 'show', '--name-only', '--format=', 'HEAD'), 'runs/x/ledger.md');
 });
@@ -403,6 +403,14 @@ test('frontier reports exclusive-claim overlaps with other active runs, ignoring
   const result = frontier(control, 'a');
   assert.deepEqual(result.cross_run, [{ run: 'b', tickets: ['01', '03'], claims: ['app/View.swift', 'app/View.swift'] }]);
   assert.deepEqual(result.frontier, ['01']);
+});
+
+test('CLI commit refuses a subject without the [<slug>] prefix', () => {
+  const { repo, control } = repoWithControl();
+  write(path.join(control, 'runs/x/tickets/01.status.md'), 'x');
+  const r = spawnSync(process.execPath, [GOAL, '--repo', repo, 'commit', '-m', 't01: status', 'runs/x/tickets/01.status.md'], { encoding: 'utf8' });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /\[<slug>\]/);
 });
 
 test('init records the agent and harness it is given', () => {

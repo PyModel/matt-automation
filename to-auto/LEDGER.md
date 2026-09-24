@@ -13,6 +13,7 @@ All under `.worktrees/control/runs/<slug>/` in the control plane (CONTROL.md), c
 | `log.md` | Decisions, one line each: `- [stage] Q: <question> → A: <answer> (source: findings \| codebase \| kun \| default)`; ticket completions as `- [implement] <ticket path> done @ <commit>` | orchestrator and subagents | at the moment a decision is made |
 | `findings.md` | Stage 1 repo facts, requirements R1…, open questions Q1…; stage 3 sourced answers | orchestrator / research agent | stages 1 to 3 |
 | `spec.md` | Working copy of the published spec (PLAN.md stage 5) | orchestrator | stage 5 |
+| `baseline.txt` | Stage 0d per-test result set, one `<test id> pass\|fail\|flaky` line each (raw suite output stays in `.worktrees/logs/<slug>/`, uncommitted) | orchestrator | stage 0d |
 | `notes/` | Exploration notes for implementers (implement-spec step 2) | exploration subagent | stage 7 |
 | `tickets/<NN>.goal.md` | The ticket's contract (CONTRACT.md § The contract) | orchestrator | at dispatch |
 | `tickets/<NN>.receipt.md` | The implementer's final message, ending in its receipt (CONTRACT.md § The receipt) | orchestrator | when the implementer returns |
@@ -57,7 +58,7 @@ The tracker's ticket files stay the source of truth for *what to build*; `ticket
 Rules:
 
 - **NOW is rewritten, Events are appended.** NOW is what a fresh context reads first; Events are how it verifies NOW.
-- One event per stage transition, subagent dispatch, subagent return, merge, blocker, bug noticed (`[bug]`), and compaction. Time-stamped, stage-tagged, one line.
+- One event per stage transition, subagent dispatch, subagent return, merge, blocker, bug noticed (`[bug]`), and compaction. Time-stamped from `date +%H:%M` (local), never estimated; stage-tagged; one line.
 - Never paste artifacts into the ledger: point at files, commits, ticket ids.
 - Every command output written here, or to a status, bug, or notes file, is redacted first (SKILL.md § Rules, Redaction).
 

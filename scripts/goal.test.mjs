@@ -311,6 +311,15 @@ test('commit accepts a path relative to cwd that lands in the control worktree',
   assert.equal(git(control, 'show', '--name-only', '--format=', 'HEAD'), 'from-cwd.md');
 });
 
+test('commit from a run directory takes a control-relative path as control-relative', () => {
+  const { repo, control } = repoWithControl();
+  const run = path.join(control, 'runs/x');
+  write(path.join(run, 'ledger.md'), 'x');
+  const r = spawnSync(process.execPath, [GOAL, '--repo', repo, 'commit', '-m', 'from run dir', 'runs/x/ledger.md'], { cwd: run, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(git(control, 'show', '--name-only', '--format=', 'HEAD'), 'runs/x/ledger.md');
+});
+
 test('take on a tracker that fails the claims gate exits 1', () => {
   const { repo, control } = repoWithControl();
   const issues = path.join(control, 'tracker/f/issues');

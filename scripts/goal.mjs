@@ -548,10 +548,14 @@ export function breakStale(lock) {
 export function commit(repo, message, files) {
   if (!files.length) throw new Error('commit needs at least one file');
   const control = requireControl(repo);
-  // Paths are relative to the control worktree; a path that resolves inside it from cwd also works.
+  // Paths are relative to the control worktree; a path that resolves inside it from cwd also works,
+  // unless only the control-relative reading names a file (commit run from inside runs/<slug>/).
   files = files.map((f) => {
     const fromCwd = path.relative(control, path.resolve(f));
-    return fromCwd && !fromCwd.startsWith('..') && !path.isAbsolute(fromCwd) ? fromCwd : f;
+    const inside = fromCwd && !fromCwd.startsWith('..') && !path.isAbsolute(fromCwd);
+    if (!inside) return f;
+    if (fromCwd !== f && !fs.existsSync(path.resolve(f)) && fs.existsSync(path.join(control, f))) return f;
+    return fromCwd;
   });
   return withLock(repo, 'control', () => {
     git(control, ['add', '--', ...files]);

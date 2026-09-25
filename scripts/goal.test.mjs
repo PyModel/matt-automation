@@ -467,6 +467,9 @@ test('registry reviewing refuses while a ticket is neither done nor stuck (stage
   write(path.join(issues, '02-b.md'), ticket('blocked', '01', 'exclusive: b.ts'));
   commit(repo, '[x] tickets', ['tracker/x/issues/01-a.md', 'tracker/x/issues/02-b.md']);
   assert.throws(() => setRegistry(repo, 'x', 'reviewing'), /02 \(blocked\)/);
+  setRegistry(repo, 'x', 'building');
+  init(repo, 'y', 'Y');
+  setRegistry(repo, 'y', 'reviewing');
   setStatus(repo, 'x', '02', 'stuck');
   setRegistry(repo, 'x', 'reviewing');
   assert.equal(JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'))[0].status, 'reviewing');

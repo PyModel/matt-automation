@@ -200,6 +200,31 @@ test('take flips frontier tickets to in-flight once, and status commits the chan
   assert.match(git(control, 'log', '-1', '--format=%s'), /ticket 03 → ready-for-agent/);
 });
 
+test('status and claim refuse a ticket with uncommitted hand edits, so no edit rides in under their message', () => {
+  const { repo, control, read } = runWithTickets();
+  const head = git(control, 'rev-parse', 'HEAD');
+  const t02 = 'tracker/f/issues/02-b.md';
+  const edited = `${read(t02)}- [ ] a criterion swapped in by hand\n`;
+  fs.writeFileSync(path.join(control, t02), edited);
+  assert.throws(() => setStatus(repo, 'f', '02', 'in-flight'), /uncommitted edits.*goal\.mjs commit/);
+  assert.equal(read(t02), edited, 'the hand edit is left for its own commit');
+  commit(repo, '[f] 02: swap criterion (why)', [t02]);
+  setStatus(repo, 'f', '02', 'in-flight');
+  assert.match(git(control, 'log', '-1', '--format=%s'), /ticket 02 → in-flight/);
+  assert.equal(git(control, 'show', '--format=', '--numstat', 'HEAD').trim().split('\n').length, 1);
+
+  const t03 = 'tracker/f/issues/03-c.md';
+  write(path.join(control, t03), ticket('ready-for-agent', 'None', 'exclusive: src/c.ts'));
+  assert.throws(() => setStatus(repo, 'f', '03', 'in-flight'), /uncommitted edits/, 'a never-committed ticket is refused too');
+
+  fs.appendFileSync(path.join(control, 'runs/f/tickets/01.goal.md'), '- extra scope\n');
+  const mid = git(control, 'rev-parse', 'HEAD');
+  assert.throws(() => amendClaims(repo, 'f', '01', 'exclusive', ['src/z.ts'], 'forced'), /01\.goal\.md has uncommitted edits/);
+  assert.equal(git(control, 'rev-parse', 'HEAD'), mid);
+  assert.doesNotMatch(read('tracker/f/issues/01-a.md'), /src\/z\.ts/);
+  assert.notEqual(head, mid);
+});
+
 test('take refuses a tracker that fails the claims gate', () => {
   const { repo, control } = repoWithControl();
   const issues = path.join(control, 'tracker/f/issues');

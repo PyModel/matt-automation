@@ -356,6 +356,15 @@ export function take(repo, feature, max) {
   });
 }
 
+/** A ticket-file write commits only its own change, so a hand edit never rides in under a status or claims message. */
+function requireCommitted(control, file) {
+  const rel = path.relative(control, file);
+  const tracked = spawnSync('git', ['-C', control, 'ls-files', '--error-unmatch', '--', rel]).status === 0;
+  if (!tracked || spawnSync('git', ['-C', control, 'diff', '--quiet', 'HEAD', '--', rel]).status !== 0) {
+    throw new Refusal(`${rel} has uncommitted edits; commit them first with their own reason: \`goal.mjs commit -m "<why>" ${rel}\``);
+  }
+}
+
 export function setStatus(repo, feature, id, status) {
   if (!STATUSES.has(status)) throw new Error(`unknown status ${status}`);
   const control = requireControl(repo);
@@ -367,6 +376,7 @@ export function setStatus(repo, feature, id, status) {
     if (duplicates.some((d) => d.id === want)) throw new Error(`ticket number ${want} is used by more than one file in tracker/${feature}/issues`);
     const full = files.get(want);
     if (!full) throw new Error(`no ticket ${id} in tracker/${feature}/issues`);
+    requireCommitted(control, full);
     const text = fs.readFileSync(full, 'utf8');
     if (!STATUS_LINE.test(text)) throw new Error(`${path.basename(full)} has no **Status:** line`);
     fs.writeFileSync(full, text.replace(STATUS_LINE, `**Status:** ${status}`));
@@ -401,6 +411,7 @@ export function amendClaims(repo, feature, id, kind, paths, why) {
     if (duplicates.some((d) => d.id === want)) throw new Error(`ticket number ${want} is used by more than one file in tracker/${feature}/issues`);
     const file = files.get(want);
     if (!file) throw new Error(`no ticket ${id} in tracker/${feature}/issues`);
+    requireCommitted(control, file);
     const before = fs.readFileSync(file, 'utf8');
     const ticket = parseTicket(before);
     if (ticket.problems.length) throw new Refusal(`ticket ${want} is malformed: ${ticket.problems.join('; ')}`);
@@ -417,6 +428,7 @@ export function amendClaims(repo, feature, id, kind, paths, why) {
     const note = `+${fresh.join(', ')} (${kind}): ${why.trim()}`;
     const contractRel = path.join('runs', feature, 'tickets', `${want}.goal.md`);
     const contractFile = path.join(control, contractRel);
+    if (fs.existsSync(contractFile)) requireCommitted(control, contractFile);
     const contract = fs.existsSync(contractFile) ? fs.readFileSync(contractFile, 'utf8') : null;
     if (contract !== null && !contract.includes(oldLine)) throw new Refusal(`${contractRel} does not carry the ticket's Claims line verbatim; resync the contract first`);
 

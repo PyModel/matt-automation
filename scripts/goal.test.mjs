@@ -291,9 +291,11 @@ test('waive records a proven-wrong criterion, and a partial receipt whose only m
 });
 
 test('commit refuses a criteria change on an in-flight or done ticket, which never gains criteria', () => {
-  const { repo, control, read } = runWithTickets();
+  const { repo, control, read } = runWithTickets(undefined, '- [ ] a works\n');
   const t01 = 'tracker/f/issues/01-a.md';
   const t02 = 'tracker/f/issues/02-b.md';
+  fs.writeFileSync(path.join(control, t01), read(t01).replace('- [ ] a works', '- [x] a works'));
+  assert.notEqual(commit(repo, '[f] tick 01', [t01]), 'nothing to commit', 'ticking a box is not a criteria change');
   fs.appendFileSync(path.join(control, t02), '- [ ] b works\n');
   commit(repo, '[f] 02 criterion', [t02]);
   const head = git(control, 'rev-parse', 'HEAD');

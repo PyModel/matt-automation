@@ -285,6 +285,9 @@ test('status in-flight runs the same gate as take, so a dispatch never skips it'
   assert.throws(() => setStatus(repo, 'f', '04', 'in-flight'), /not on the frontier/, 'a blocked ticket is not dispatchable');
   setStatus(repo, 'f', '03', 'in-flight');
   assert.match(git(control, 'log', '-1', '--format=%s'), /ticket 03 → in-flight/);
+  write(path.join(issues, '05-e.md'), ticket('ready-for-agent', 'None', 'exclusive: src/b.ts'));
+  commit(repo, '[f] 05 overlaps 03', ['tracker/f/issues/05-e.md']);
+  assert.doesNotThrow(() => setStatus(repo, 'f', '03', 'in-flight'), 're-marking an in-flight ticket is not a dispatch');
 });
 
 test('init writes a run that next can resume, commits it, and refuses to overwrite', () => {

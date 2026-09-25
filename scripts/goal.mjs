@@ -383,6 +383,12 @@ export function setStatus(repo, feature, id, status) {
     requireCommitted(control, full);
     const text = fs.readFileSync(full, 'utf8');
     if (!STATUS_LINE.test(text)) throw new Error(`${path.basename(full)} has no **Status:** line`);
+    // A dispatch by `status` passes the same gate as `take`; re-marking an in-flight ticket is not a dispatch.
+    if (status === 'in-flight' && text.match(STATUS_LINE)[1] !== 'in-flight') {
+      const { frontier: ready, malformed, conflicts } = frontier(control, feature);
+      if (malformed.length || conflicts.length) throw new Refusal(`tracker ${feature} fails the claims gate; run \`goal.mjs frontier ${feature}\``);
+      if (!ready.includes(want)) throw new Refusal(`ticket ${want} is not on the frontier (ready-for-agent with every blocker done); dispatch it with \`goal.mjs take\``);
+    }
     const ticked = status === 'done' ? text.replace(/^(\s*- )\[ \]/gm, '$1[x]') : text;
     fs.writeFileSync(full, ticked.replace(STATUS_LINE, `**Status:** ${status}`));
     return commit(repo, `[${feature}] ticket ${want} → ${status}`, [path.relative(control, full)]);

@@ -257,7 +257,7 @@ test('claims widened after dispatch other than by goal.mjs claim are refused bef
   fs.writeFileSync(t02, read('tracker/f/issues/02-b.md').replace('src/b.fake.ts', 'src/b.fake.ts, src/hand.ts'));
   commit(repo, '[f] 02 claims by hand', ['tracker/f/issues/02-b.md']);
   assert.match(claimsSinceDispatch(t02).join(' | '), /src\/hand\.ts.*goal\.mjs claim/);
-  setStatus(repo, 'f', '02', 'blocked');
+  setStatus(repo, 'f', '02', 'ready-for-agent');
   setStatus(repo, 'f', '02', 'in-flight');
   assert.deepEqual(claimsSinceDispatch(t02), [], 'a fresh dispatch is the new baseline');
 });
@@ -268,6 +268,23 @@ test('take refuses a tracker that fails the claims gate', () => {
   write(path.join(issues, '01-a.md'), ticket('ready-for-agent', 'None', 'exclusive: src/'));
   write(path.join(issues, '02-b.md'), ticket('ready-for-agent', 'None', 'exclusive: src/b.ts'));
   assert.throws(() => take(repo, 'f', 2), /claims gate/);
+});
+
+test('status in-flight runs the same gate as take, so a dispatch never skips it', () => {
+  const { repo, control } = repoWithControl();
+  const issues = path.join(control, 'tracker/f/issues');
+  write(path.join(issues, '01-a.md'), ticket('done', 'None', 'exclusive: src/a.ts'));
+  write(path.join(issues, '02-b.md'), ticket('blocked', '01', 'exclusive: src/b.ts'));
+  write(path.join(issues, '03-c.md'), ticket('ready-for-agent', '01', 'exclusive: src/b.ts'));
+  write(path.join(issues, '04-d.md'), ticket('blocked', '03', 'exclusive: src/d.ts'));
+  commit(repo, '[f] seed', ['01-a.md', '02-b.md', '03-c.md', '04-d.md'].map((f) => `tracker/f/issues/${f}`));
+  assert.throws(() => setStatus(repo, 'f', '03', 'in-flight'), /claims gate/, '02 and 03 claim src/b.ts unordered');
+  const b = path.join(issues, '02-b.md');
+  fs.writeFileSync(b, fs.readFileSync(b, 'utf8').replace('**Blocked by:** 01', '**Blocked by:** 03'));
+  commit(repo, '[f] 02 after 03', ['tracker/f/issues/02-b.md']);
+  assert.throws(() => setStatus(repo, 'f', '04', 'in-flight'), /not on the frontier/, 'a blocked ticket is not dispatchable');
+  setStatus(repo, 'f', '03', 'in-flight');
+  assert.match(git(control, 'log', '-1', '--format=%s'), /ticket 03 → in-flight/);
 });
 
 test('init writes a run that next can resume, commits it, and refuses to overwrite', () => {

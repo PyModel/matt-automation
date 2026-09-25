@@ -707,6 +707,7 @@ export function checkReceipt({ text, worktree = null, base = null, ticketText = 
     }
     const wanted = ticketCriteria(ticketText);
     if (completed && !wanted.length) problems.push('the ticket has no acceptance criteria (checkbox lines), so nothing can show it completed');
+    else if (completed && wanted.every((w) => waived.has(w))) problems.push('every ticket criterion is waived, so nothing shows it completed');
     for (const want of wanted) {
       const got = byText.get(norm(want)) ?? byText.get(norm(withoutNote(want)));
       if (waived.has(want)) continue;

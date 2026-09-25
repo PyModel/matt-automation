@@ -282,6 +282,8 @@ test('waive records a proven-wrong criterion, and a partial receipt whose only m
   const other = JSON.parse(partial);
   other.criteria[0].result = 'fail';
   assert.equal(checkReceipt({ text: JSON.stringify(other), ticketText: read(t01) }).conclusion, 'partial', 'an unwaived miss keeps it partial');
+  const handWaived = `${read(t01)}**Waived:** a is exported — by hand\n`;
+  assert.match(checkReceipt({ text: partial, ticketText: handWaived }).problems.join(' | '), /every ticket criterion is waived/);
 
   write(path.join(control, 'runs/f/tickets/01.receipt.md'), partial);
   commit(repo, '[f] 01 receipt', ['runs/f/tickets/01.receipt.md']);

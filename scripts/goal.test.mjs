@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, checkContract, claimsSinceDispatch, amendClaims, event, withLock, breakStale, commit, controlDir } from './goal.mjs';
+import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, checkContract, claimsSinceDispatch, amendClaims, waive, event, withLock, breakStale, commit, controlDir } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -256,6 +256,38 @@ test('status done refuses a dispatched ticket until its committed receipt passes
   commit(repo, '[f] 01 receipt fixed', [rel]);
   setStatus(repo, 'f', '01', 'done');
   assert.match(read(t01), /^\*\*Status:\*\* done$/m);
+});
+
+test('waive records a proven-wrong criterion, and a partial receipt whose only misses are waived counts as completed', () => {
+  const { repo, control, read } = runWithTickets();
+  const t01 = 'tracker/f/issues/01-a.md';
+  fs.appendFileSync(path.join(control, t01), '- [ ] a is exported\n- [ ] the flag mutant is killed\n');
+  commit(repo, '[f] 01 criteria', [t01]);
+  const partial = JSON.stringify(receipt({
+    conclusion: 'partial', ticket_base: 'b', head: 'h', blockers: ['the flag mutant is equivalent'],
+    criteria: [{ criterion: 'a is exported', result: 'pass', evidence: 'test exit 0' }, { criterion: 'the flag mutant is killed', result: 'fail', evidence: 'mutant survives 36/36' }],
+  }));
+  assert.equal(checkReceipt({ text: partial, ticketText: read(t01) }).conclusion, 'partial');
+
+  assert.throws(() => waive(repo, 'f', '01', 3, 'x'), /criterion 3/);
+  assert.throws(() => waive(repo, 'f', '01', 2, ' '), /reason/);
+  waive(repo, 'f', '01', 2, 'equivalent mutant: exit and completion share one actor job');
+  assert.match(read(t01), /^\*\*Waived:\*\* the flag mutant is killed — equivalent mutant/m);
+  assert.match(git(control, 'log', '-1', '--format=%s'), /\[waive\] 01/);
+  assert.equal(git(control, 'status', '--porcelain'), '');
+  assert.throws(() => waive(repo, 'f', '01', 1, 'x'), /no criterion left/);
+
+  const r = checkReceipt({ text: partial, ticketText: read(t01) });
+  assert.deepEqual([r.ok, r.conclusion, r.waived], [true, 'completed', ['the flag mutant is killed']]);
+  const other = JSON.parse(partial);
+  other.criteria[0].result = 'fail';
+  assert.equal(checkReceipt({ text: JSON.stringify(other), ticketText: read(t01) }).conclusion, 'partial', 'an unwaived miss keeps it partial');
+
+  write(path.join(control, 'runs/f/tickets/01.receipt.md'), partial);
+  commit(repo, '[f] 01 receipt', ['runs/f/tickets/01.receipt.md']);
+  setStatus(repo, 'f', '01', 'done');
+  assert.match(read(t01), /^\*\*Status:\*\* done$/m);
+  assert.match(read(t01), /^- \[ \] the flag mutant is killed$/m, 'a waived box is not ticked');
 });
 
 test('status done ticks every acceptance box itself', () => {

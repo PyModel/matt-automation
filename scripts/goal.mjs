@@ -19,6 +19,8 @@
 //                                                          widen a ticket's claims after a claims breach: ticket, contract, ledger, one commit (JSON)
 //   node scripts/goal.mjs contract <NN.goal.md> --worktree <wt> --ticket <ticket.md>
 //                                                          check a contract before every dispatch: base = where the ticket branch left the run branch, Claims and criteria verbatim (JSON)
+//   node scripts/goal.mjs waive <feature> <id> <criterion number> -- <why>
+//                                                          release a criterion proven wrong from the receipt check: ticket, ledger, one commit (JSON)
 //   node scripts/goal.mjs receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md>
 //                                                          check an implementer's receipt against git and the ticket (JSON)
 //   node scripts/goal.mjs with-lock <name> -- <cmd...>    run one command holding a control-plane lock
@@ -401,12 +403,12 @@ export function setStatus(repo, feature, id, status) {
       if (!fs.existsSync(receiptFile)) throw new Refusal(`ticket ${want} was dispatched but has no receipt at ${path.relative(control, receiptFile)}`);
       requireCommitted(control, receiptFile);
       const receiptText = fs.readFileSync(receiptFile, 'utf8');
-      const { problems } = checkReceipt({ text: receiptText, ticketText: text });
-      const conclusion = receiptJson(receiptText)?.conclusion;
+      const { problems, conclusion } = checkReceipt({ text: receiptText, ticketText: text });
       if (conclusion !== 'completed') problems.push(`conclusion is ${JSON.stringify(conclusion)}, not completed`);
       if (problems.length) throw new Refusal(`ticket ${want}'s receipt is refused, so it is not done: ${problems.join('; ')}`);
     }
-    const ticked = status === 'done' ? text.replace(/^(\s*- )\[ \]/gm, '$1[x]') : text;
+    const waived = new Set(waivedCriteria(text));
+    const ticked = status === 'done' ? text.replace(/^(\s*- )\[ \] (.+)$/gm, (line, lead, c) => (waived.has(c.trim()) ? line : `${lead}[x] ${c}`)) : text;
     fs.writeFileSync(full, ticked.replace(STATUS_LINE, `**Status:** ${status}`));
     return commit(repo, `[${feature}] ticket ${want} → ${status}`, [path.relative(control, full)]);
   });
@@ -488,6 +490,44 @@ export function amendClaims(repo, feature, id, kind, paths, why) {
   });
 }
 
+/**
+ * Waive one acceptance criterion proven wrong or unmeetable (an equivalent mutant, a mechanism the ticket should not have
+ * prescribed): a `**Waived:**` line in the ticket plus a ledger event, one commit. The criterion stays as written and its
+ * box stays open; the receipt check then no longer requires it. At least one criterion always stays in force.
+ */
+export function waive(repo, feature, id, index, why) {
+  if (!why.trim() || /[\r\n]/.test(why)) throw new UsageError('waive needs a one-line reason');
+  const control = requireControl(repo);
+  const issues = path.join(control, 'tracker', feature, 'issues');
+  const want = ticketId(String(id));
+  return withLock(repo, `frontier-${feature}`, () => {
+    const { files, duplicates } = ticketFiles(issues);
+    if (duplicates.some((d) => d.id === want)) throw new Error(`ticket number ${want} is used by more than one file in tracker/${feature}/issues`);
+    const file = files.get(want);
+    if (!file) throw new Error(`no ticket ${id} in tracker/${feature}/issues`);
+    requireCommitted(control, file);
+    const before = fs.readFileSync(file, 'utf8');
+    const criteria = ticketCriteria(before);
+    const criterion = criteria[Number(index) - 1];
+    if (!criterion) throw new UsageError(`ticket ${want} has no criterion ${index} (it has ${criteria.length}, numbered from 1)`);
+    const waived = new Set(waivedCriteria(before));
+    if (waived.has(criterion)) return { commit: 'already waived', criterion };
+    if (criteria.every((c) => c === criterion || waived.has(c))) throw new Refusal(`waiving it would leave no criterion left in force for ticket ${want}; the ticket is wrong, so stop it and re-plan`);
+    const note = `${criterion} — ${why.trim()}`;
+    fs.writeFileSync(file, `${before.replace(/\n*$/, '\n')}**Waived:** ${note}\n`);
+    const changed = [path.relative(control, file)];
+    const ledger = path.join('runs', feature, 'ledger.md');
+    const sha = withLock(repo, 'control', () => {
+      if (fs.existsSync(path.join(control, ledger))) {
+        appendEvent(path.join(control, ledger), 'waive', `${want} ${note}`);
+        changed.push(ledger);
+      }
+      return commit(repo, `[${feature}] [waive] ${want} ${note}`, changed);
+    });
+    return { commit: sha, criterion };
+  });
+}
+
 /** Add paths to one class of a Claims line, creating the class part if the line has none. */
 function withClaims(line, kind, add) {
   const parts = line.split(';').map((p) => p.trim()).filter(Boolean);
@@ -555,6 +595,8 @@ function commitOf(cwd, rev) {
 const norm = (s) => s.replace(/\s+/g, ' ').trim().toLowerCase();
 // Implementers quote a criterion without its trailing "(Red at base: …)" or "(Invariant …)" note; one such group may be dropped.
 const withoutNote = (s) => s.replace(/\s*\((?:[^()]|\([^()]*\))*\)\s*$/, '');
+/** Criteria a `**Waived:** <criterion verbatim> — <why>` line (written only by `goal.mjs waive`) releases from the receipt. */
+const waivedCriteria = (text) => ticketCriteria(text).filter((c) => text.split('\n').some((l) => l.startsWith(`**Waived:** ${c} — `)));
 const strings = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string');
 
 /** Every checkbox line in a ticket is one acceptance criterion (local and GitHub templates alike). */
@@ -645,10 +687,14 @@ export function checkReceipt({ text, worktree = null, base = null, ticketText = 
     if (typeof c?.criterion !== 'string' || !RESULTS.has(c?.result)) problems.push(`criterion ${JSON.stringify(c?.criterion)} needs a result of pass | fail | not-run`);
     else if (c.result !== 'not-run' && (typeof c.evidence !== 'string' || !c.evidence.trim())) problems.push(`criterion "${c.criterion}" has a ${c.result} result with no evidence`);
   }
-  const completed = r.conclusion === 'completed';
+  // A partial receipt whose every miss is a criterion the ticket waived (`goal.mjs waive`) counts as completed.
+  const waived = ticketText === null ? new Set() : new Set(waivedCriteria(ticketText));
+  const entry = (want) => criteria.find((c) => typeof c?.criterion === 'string' && [norm(want), norm(withoutNote(want))].includes(norm(c.criterion)));
+  const byWaiver = r.conclusion === 'partial' && waived.size > 0 && ticketCriteria(ticketText).every((w) => waived.has(w) || entry(w)?.result === 'pass');
+  const completed = r.conclusion === 'completed' || byWaiver;
   if (['blocked', 'stuck', 'claims-breach'].includes(r.conclusion) && strings(r.blockers) && !r.blockers.length) problems.push(`a ${r.conclusion} receipt must name its reason in blockers`);
   if (completed) {
-    if (strings(r.blockers) && r.blockers.length) problems.push('a completed receipt cannot carry blockers');
+    if (!byWaiver && strings(r.blockers) && r.blockers.length) problems.push('a completed receipt cannot carry blockers');
     if (!validation.length) problems.push('a completed receipt needs at least one validation command');
     if (r.worktree_clean === false) problems.push('a completed receipt needs a clean worktree');
   }
@@ -663,6 +709,7 @@ export function checkReceipt({ text, worktree = null, base = null, ticketText = 
     if (completed && !wanted.length) problems.push('the ticket has no acceptance criteria (checkbox lines), so nothing can show it completed');
     for (const want of wanted) {
       const got = byText.get(norm(want)) ?? byText.get(norm(withoutNote(want)));
+      if (waived.has(want)) continue;
       if (!got) problems.push(`ticket criterion "${want}" has no entry in the receipt`);
       else if (completed && got.result !== 'pass') problems.push(`ticket criterion "${want}" is ${got.result}, so the receipt cannot be completed`);
     }
@@ -686,7 +733,7 @@ export function checkReceipt({ text, worktree = null, base = null, ticketText = 
     const dirty = git(worktree, ['status', '--porcelain']) !== '';
     if (typeof r.worktree_clean === 'boolean' && r.worktree_clean === dirty) problems.push(`worktree_clean is ${r.worktree_clean} but git status says the worktree is ${dirty ? 'dirty' : 'clean'}`);
   }
-  return { ok: problems.length === 0, conclusion: r.conclusion ?? null, problems };
+  return { ok: problems.length === 0, conclusion: byWaiver ? 'completed' : r.conclusion ?? null, waived: [...waived], problems };
 }
 
 // --------------------------------------------------------------- locks
@@ -860,6 +907,10 @@ function main(argv) {
     print(amendClaims(repo, rest[0], rest[1], rest[2], rest.slice(3, cut), rest.slice(cut + 1).join(' ')));
     return 0;
   }
+  if (command === 'waive' && rest.length >= 5 && rest[3] === '--') {
+    print(waive(repo, rest[0], rest[1], rest[2], rest.slice(4).join(' ')));
+    return 0;
+  }
   if (command === 'resume' && rest.length === 1) {
     console.log(resume(repo, rest[0]));
     return 0;
@@ -915,7 +966,7 @@ function main(argv) {
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }
-  console.error('usage: goal.mjs [--repo <path>] control | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] | next <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
+  console.error('usage: goal.mjs [--repo <path>] control | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] | next <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
   return 2;
 }
 

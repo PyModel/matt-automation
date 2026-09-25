@@ -389,6 +389,17 @@ export function setStatus(repo, feature, id, status) {
       if (malformed.length || conflicts.length) throw new Refusal(`tracker ${feature} fails the claims gate; run \`goal.mjs frontier ${feature}\``);
       if (!ready.includes(want)) throw new Refusal(`ticket ${want} is not on the frontier (ready-for-agent with every blocker done); dispatch it with \`goal.mjs take\``);
     }
+    // A dispatched ticket (it has a contract) is done only on a committed receipt that passes the check (BUILD.md step 5.0).
+    const receiptFile = path.join(control, 'runs', feature, 'tickets', `${want}.receipt.md`);
+    if (status === 'done' && fs.existsSync(path.join(control, 'runs', feature, 'tickets', `${want}.goal.md`))) {
+      if (!fs.existsSync(receiptFile)) throw new Refusal(`ticket ${want} was dispatched but has no receipt at ${path.relative(control, receiptFile)}`);
+      requireCommitted(control, receiptFile);
+      const receiptText = fs.readFileSync(receiptFile, 'utf8');
+      const { problems } = checkReceipt({ text: receiptText, ticketText: text });
+      const conclusion = receiptJson(receiptText)?.conclusion;
+      if (conclusion !== 'completed') problems.push(`conclusion is ${JSON.stringify(conclusion)}, not completed`);
+      if (problems.length) throw new Refusal(`ticket ${want}'s receipt is refused, so it is not done: ${problems.join('; ')}`);
+    }
     const ticked = status === 'done' ? text.replace(/^(\s*- )\[ \]/gm, '$1[x]') : text;
     fs.writeFileSync(full, ticked.replace(STATUS_LINE, `**Status:** ${status}`));
     return commit(repo, `[${feature}] ticket ${want} → ${status}`, [path.relative(control, full)]);

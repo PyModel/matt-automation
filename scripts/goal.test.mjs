@@ -237,6 +237,27 @@ test('status and claim refuse a ticket with uncommitted hand edits, so no edit r
   assert.doesNotMatch(read('tracker/f/issues/01-a.md'), /src\/z\.ts/);
 });
 
+test('status done refuses a dispatched ticket until its committed receipt passes the receipt check', () => {
+  const { repo, control, read } = runWithTickets();
+  const t01 = 'tracker/f/issues/01-a.md';
+  fs.appendFileSync(path.join(control, t01), '- [ ] a is exported\n');
+  commit(repo, '[f] 01 criterion', [t01]);
+  assert.throws(() => setStatus(repo, 'f', '01', 'done'), /no receipt/);
+  const rel = 'runs/f/tickets/01.receipt.md';
+  const good = receipt({ ticket_base: 'b', head: 'h', criteria: [{ criterion: 'a is exported', result: 'pass', evidence: 'test exit 0' }] });
+  write(path.join(control, rel), JSON.stringify({ ...good, contract_quality: 'the criteria were off' }));
+  commit(repo, '[f] 01 receipt', [rel]);
+  assert.throws(() => setStatus(repo, 'f', '01', 'done'), /contract_quality/);
+  write(path.join(control, rel), JSON.stringify({ ...good, conclusion: 'partial' }));
+  commit(repo, '[f] 01 receipt partial', [rel]);
+  assert.throws(() => setStatus(repo, 'f', '01', 'done'), /partial/);
+  write(path.join(control, rel), JSON.stringify(good));
+  assert.throws(() => setStatus(repo, 'f', '01', 'done'), /uncommitted edits/);
+  commit(repo, '[f] 01 receipt fixed', [rel]);
+  setStatus(repo, 'f', '01', 'done');
+  assert.match(read(t01), /^\*\*Status:\*\* done$/m);
+});
+
 test('status done ticks every acceptance box itself', () => {
   const { repo, control, read } = runWithTickets();
   const t02 = 'tracker/f/issues/02-b.md';

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, checkContract, claimsSinceDispatch, amendClaims, waive, event, withLock, breakStale, commit, controlDir } from './goal.mjs';
+import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, checkContract, claimsSinceDispatch, amendClaims, waive, event, withLock, breakStale, commit, controlDir, configure } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -27,6 +27,8 @@ function bareRepo() {
 
 function repoWithControl() {
   const repo = bareRepo();
+  configure();
+  process.env.TO_AUTO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-state-'));
   return { repo, control: ensureControl(repo) };
 }
 
@@ -398,17 +400,27 @@ test('commit ignores files another agent staged', () => {
   assert.equal(commit(repo, 'nothing new', ['mine.md']), 'nothing to commit');
 });
 
-test('ensureControl creates the orphan control worktree once and excludes .worktrees/', () => {
+test('ensureControl keeps a private history outside the repo and does not touch exclude', () => {
   const repo = bareRepo();
+  configure();
+  process.env.TO_AUTO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-state-'));
+  const exclude = path.join(repo, '.git/info/exclude');
+  const before = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : null;
   const control = ensureControl(repo);
-  assert.equal(git(control, 'symbolic-ref', '--short', 'HEAD'), 'goal/control');
   assert.equal(ensureControl(repo), control);
-  assert.match(fs.readFileSync(path.join(repo, '.git/info/exclude'), 'utf8'), /^\.worktrees\/$/m);
+  assert.equal(fs.realpathSync(control), fs.realpathSync(process.env.TO_AUTO_HOME));
+  assert.notEqual(fs.realpathSync(git(control, 'rev-parse', '--git-common-dir')), fs.realpathSync(path.join(repo, '.git')));
+  assert.equal(git(control, 'log', '-1', '--format=%s'), 'Init to-auto control plane');
+  assert.equal(git(repo, 'branch', '--list', 'goal/control'), '');
+  assert.equal(fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : null, before);
   assert.equal(git(repo, 'status', '--porcelain'), '');
+  assert.equal(git(control, 'status', '--porcelain'), '');
 });
 
-test('control-plane writes refuse to run without the control worktree', () => {
+test('control-plane writes refuse to run without the control plane', () => {
   const repo = bareRepo();
+  configure();
+  process.env.TO_AUTO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-state-'));
   const head = git(repo, 'rev-parse', 'HEAD');
   assert.throws(() => init(repo, 'x', 'X'), /no control plane/);
   assert.equal(git(repo, 'rev-parse', 'HEAD'), head);
@@ -475,7 +487,7 @@ test('with-lock children can take the same lock without deadlocking', () => {
 test('commit accepts a path relative to cwd that lands in the control worktree', () => {
   const { repo, control } = repoWithControl();
   write(path.join(control, 'from-cwd.md'), 'x');
-  const r = spawnSync(process.execPath, [GOAL, 'commit', '-m', '[x] cwd path', '.worktrees/control/from-cwd.md'], { cwd: repo, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [GOAL, '--repo', repo, 'commit', '-m', '[x] cwd path', path.join(control, 'from-cwd.md')], { cwd: repo, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(git(control, 'show', '--name-only', '--format=', 'HEAD'), 'from-cwd.md');
 });

@@ -2,7 +2,7 @@
 // The mechanical half of a /to-auto run: everything that is a rule over files, so
 // no agent re-derives it from prose.
 //
-//   node scripts/goal.mjs control                         create the control plane (orphan goal/control worktree) if missing
+//   node scripts/goal.mjs control                         create the control plane in the state folder if missing
 //   node scripts/goal.mjs slug <objective> [--new]        the run slug; --new picks a free -2, -3 … for a deliberate re-run
 //   node scripts/goal.mjs init <slug> <objective> [--agent <id>] [--harness <name>]
 //                                                          register the run and create runs/<slug>/ that next can parse; commit
@@ -25,14 +25,21 @@
 //                                                          check an implementer's receipt against git and the ticket (JSON)
 //   node scripts/goal.mjs with-lock <name> -- <cmd...>    run one command holding a control-plane lock
 //   node scripts/goal.mjs commit -m <msg> <file>...       stage exactly <file>s in the control plane and commit, under the control lock
+//   node scripts/goal.mjs preflight | prepare | supervise | land [slug] | cleanup
+//   node scripts/goal.mjs check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | root
 //
+// Global flags, before the command: --repo, --state-dir, --allow (repeatable), --base, --target-branch, --status-file, --no-remote, --worker-model.
 // Every command takes --repo <path> (default: cwd); any worktree of the repo works.
 // Exit 0 = ok, 1 = the answer is "no" (claims breach, malformed tickets, a refused take, claim, contract, a refused receipt, stopped), 2 = usage, 3 = runtime error.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+
+export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // Stage order is the pipeline. `artifact` is a file in runs/<slug>/ that must exist
 // for a ticked stage to count as done: the files outrank the checkbox.
@@ -84,47 +91,99 @@ const STALE_LOCK_MS = 10 * 60 * 1000;
 const LOCK_WAIT_MS = 120 * 1000;
 const GUARD_STALE_MS = 60 * 1000;
 
-const CONTROL_BRANCH = 'goal/control';
-
 class UsageError extends Error {}
 /** The answer is "no" (a gate refused): exit 1, like a claims breach. */
 class Refusal extends Error {}
 
-export function controlDir(repo) {
-  const common = git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
-  return path.join(path.dirname(common), '.worktrees', 'control');
+// Flags for this process. `--state-dir` wins over `TO_AUTO_HOME`, which wins over the default.
+const runtimeDefault = () => ({ stateDir: null, allow: [], noRemote: false, base: null, targetBranch: null, statusFile: null });
+let runtime = runtimeDefault();
+
+export function configure(opts = {}) {
+  runtime = { ...runtimeDefault(), ...opts, allow: opts.allow ?? [] };
+  return runtime;
 }
 
-/** The control worktree, proven to be on goal/control, so a write can never land on a user branch. */
+export function repoId(repo) {
+  const common = fs.realpathSync(execFileSync('git', ['-C', repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim());
+  return createHash('sha256').update(common).digest('hex').slice(0, 16);
+}
+
+function hasMarker(dir) {
+  return fs.existsSync(path.join(dir, '.to-auto'));
+}
+
+/** The state folder: `--state-dir`, else `TO_AUTO_HOME`, else `~/.local/state/to-auto/<repo-id>`. */
+export function stateDir(repo) {
+  const resolved = path.resolve(repo);
+  if (hasMarker(resolved)) return fs.realpathSync(resolved);
+  if (runtime.stateDir) return path.resolve(runtime.stateDir);
+  if (process.env.TO_AUTO_HOME) return path.resolve(process.env.TO_AUTO_HOME);
+  return path.join(os.homedir(), '.local', 'state', 'to-auto', repoId(repo));
+}
+
+export function controlDir(repo) {
+  return stateDir(repo);
+}
+
+function assertStateOutside(repo, dir) {
+  if (hasMarker(path.resolve(repo))) return;
+  let top;
+  try {
+    top = fs.realpathSync(git(repo, ['rev-parse', '--show-toplevel']));
+  } catch {
+    return;
+  }
+  const real = canon(dir);
+  if (real === top || real.startsWith(top + path.sep)) {
+    throw new Error(`state directory ${dir} is inside the repo ${top}; pass --state-dir or set TO_AUTO_HOME to a path outside it`);
+  }
+}
+
+/** The control plane, a private git repo in the state folder, never a branch of the user repo. */
 function requireControl(repo) {
   const control = controlDir(repo);
-  let top = null;
-  let branch = null;
+  if (!hasMarker(control)) throw new Error(`no control plane at ${control}; run \`goal.mjs control\` first`);
+  let controlCommon;
   try {
-    top = fs.realpathSync(git(control, ['rev-parse', '--show-toplevel']));
-    branch = git(control, ['symbolic-ref', '--short', 'HEAD']);
-  } catch { /* not a worktree */ }
-  if (top !== (fs.existsSync(control) ? fs.realpathSync(control) : null) || branch !== CONTROL_BRANCH) {
-    throw new Error(`no control plane at ${control} on ${CONTROL_BRANCH}; run \`goal.mjs control\` first`);
+    controlCommon = fs.realpathSync(git(control, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
+  } catch {
+    throw new Error(`no control plane at ${control}; run \`goal.mjs control\` first`);
+  }
+  const controlReal = fs.realpathSync(control);
+  if (controlCommon !== path.join(controlReal, '.git') && !controlCommon.startsWith(controlReal + path.sep)) {
+    throw new Error(`control plane at ${control} is not its own git repo`);
+  }
+  try {
+    const userCommon = fs.realpathSync(git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
+    if (userCommon === controlCommon && fs.realpathSync(repo) !== controlReal) {
+      throw new Error('control plane must not share the user repo\'s git dir');
+    }
+  } catch (error) {
+    if (error.message.includes('must not share') || error.message.includes('not its own')) throw error;
   }
   return control;
 }
 
+function gitIdentity(repo) {
+  const read = (key) => spawnSync('git', ['-C', repo, 'config', key], { encoding: 'utf8' }).stdout.trim();
+  return { name: read('user.name') || 'to-auto', email: read('user.email') || 'to-auto@localhost' };
+}
+
 export function ensureControl(repo) {
   const control = controlDir(repo);
+  assertStateOutside(repo, control);
   return withLock(repo, 'control', () => {
-    if (fs.existsSync(control)) return requireControl(repo);
-    const root = path.dirname(path.dirname(control));
-    const exclude = path.join(git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']), 'info', 'exclude');
-    fs.mkdirSync(path.dirname(exclude), { recursive: true });
-    const excluded = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : '';
-    if (!excluded.split('\n').includes('.worktrees/')) fs.appendFileSync(exclude, `${excluded && !excluded.endsWith('\n') ? '\n' : ''}.worktrees/\n`);
-    const exists = spawnSync('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `refs/heads/${CONTROL_BRANCH}`]).status === 0;
-    if (exists) git(root, ['worktree', 'add', '-q', control, CONTROL_BRANCH]);
-    else {
-      git(root, ['worktree', 'add', '-q', '--orphan', '-b', CONTROL_BRANCH, control]);
-      git(control, ['commit', '-q', '--allow-empty', '-m', 'Init to-auto control plane']);
-    }
+    if (hasMarker(control)) return requireControl(repo);
+    fs.mkdirSync(control, { recursive: true });
+    execFileSync('git', ['init', '-q', control], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const id = gitIdentity(repo);
+    git(control, ['config', 'user.name', id.name]);
+    git(control, ['config', 'user.email', id.email]);
+    fs.writeFileSync(path.join(control, '.gitignore'), 'locks/\nclone/\nreturn.bundle\n');
+    fs.writeFileSync(path.join(control, '.to-auto'), `to-auto control plane\nrepo-id: ${repoId(repo)}\n`);
+    git(control, ['add', '--', '.gitignore', '.to-auto']);
+    git(control, ['commit', '-q', '-m', 'Init to-auto control plane']);
     return control;
   });
 }
@@ -145,7 +204,7 @@ function readRegistry(control) {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch {
-    throw new Error(`${file} is not valid JSON; repair it from \`git log -p goal/control -- runs.json\``);
+    throw new Error(`${file} is not valid JSON; repair it from \`git -C ${control} log -p -- runs.json\``);
   }
 }
 
@@ -224,7 +283,7 @@ export function parseTodo(text) {
 
 const resumeAt = (slug, stage, reason) => ({ slug, stage: stage.id, name: stage.name, phase: stage.phase, reason });
 
-export function init(repo, slug, objective, { agent = null, harness = null } = {}) {
+export function init(repo, slug, objective, { agent = null, harness = null, workerModel = null, noHelpers = false } = {}) {
   if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(slug)) throw new Error(`bad slug: ${slug} (kebab-case, at most 40 chars)`);
   const control = requireControl(repo);
   const runDir = path.join(control, 'runs', slug);
@@ -234,7 +293,7 @@ export function init(repo, slug, objective, { agent = null, harness = null } = {
     const runs = readRegistry(control);
     if (runs.some((r) => r.slug === slug)) throw new Error(`${slug} is already registered in runs.json`);
     const runId = runs.reduce((max, r) => Math.max(max, r.run_id ?? 0), 0) + 1;
-    runs.push({ slug, objective, run_id: runId, started: new Date().toISOString(), status: 'bootstrapping', agent, harness });
+    runs.push({ slug, objective, run_id: runId, started: new Date().toISOString(), status: 'bootstrapping', agent, harness, workerModel: workerModel ?? null, helpers: noHelpers ? 'none' : (workerModel ? 'named' : null) });
     fs.writeFileSync(path.join(control, 'runs.json'), `${JSON.stringify(runs, null, 2)}\n`);
     commit(repo, `[${slug}] register run ${runId}`, ['runs.json']);
   });
@@ -244,9 +303,27 @@ export function init(repo, slug, objective, { agent = null, harness = null } = {
     'log.md': `# Decisions: ${objective}\n\n`,
     'bugs.md': `# Bugs noticed in flight: ${objective}\n\n`,
   };
+  if (noHelpers) files['models.json'] = `${JSON.stringify({ workerModel: null, helpers: 'none', roles: {} }, null, 2)}\n`;
+  else if (workerModel) files['models.json'] = `${JSON.stringify({ workerModel, helpers: 'named', roles: {} }, null, 2)}\n`;
   fs.mkdirSync(runDir, { recursive: true });
   for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(runDir, name), text);
   return commit(repo, `[${slug}] start`, Object.keys(files).map((name) => path.join('runs', slug, name)));
+}
+
+/** Record the model a role actually used. The requested model is `workerModel` from init. */
+export function recordModel(repo, slug, role, model) {
+  if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(slug)) throw new Error(`bad slug: ${slug}`);
+  if (!/^[a-z][a-z0-9-]{0,40}$/.test(role)) throw new Error(`bad role: ${role}`);
+  if (!model || /[\r\n]/.test(model)) throw new Error('model is one line');
+  const control = requireControl(repo);
+  const rel = path.join('runs', slug, 'models.json');
+  const file = path.join(control, rel);
+  const entry = readRegistry(control).find((r) => r.slug === slug);
+  const data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { workerModel: entry?.workerModel ?? null, helpers: entry?.helpers ?? 'named', roles: {} };
+  data.roles[role] = model;
+  fs.writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`);
+  commit(repo, `[${slug}] model ${role}`, [rel]);
+  return event(repo, slug, 'model', `${role} used ${model}`);
 }
 
 export function next(control, slug) {
@@ -746,7 +823,7 @@ const held = new Set((process.env.GOAL_LOCKS_HELD ?? '').split(',').filter(Boole
 export function withLock(repo, name, fn) {
   if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) throw new Error(`bad lock name: ${name}`); // no dots: .new-* and .break are reserved
   if (held.has(name)) return fn();
-  const locks = path.join(git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']), 'goal-locks');
+  const locks = path.join(controlDir(repo), 'locks');
   fs.mkdirSync(locks, { recursive: true });
   const lock = path.join(locks, name);
   const deadline = Date.now() + LOCK_WAIT_MS;
@@ -867,29 +944,348 @@ export function commit(repo, message, files) {
 
 // ------------------------------------------------------------- plumbing
 
+function isLocalPath(value) {
+  return value.startsWith('/') || value.startsWith('.') || value.startsWith('file://');
+}
+
+function isRemoteOp(args) {
+  const cmd = args.find((a) => !a.startsWith('-'));
+  if (['push', 'pull', 'ls-remote'].includes(cmd)) return true;
+  if (cmd === 'fetch' || cmd === 'clone') {
+    const rest = args.slice(args.indexOf(cmd) + 1).filter((a) => !a.startsWith('-'));
+    return !rest.length || !isLocalPath(rest[0]);
+  }
+  return false;
+}
+
+/** Refuse push/fetch/pull against a remote when this run was started with --no-remote. A local path is not a remote. */
+export function remoteGuard(args) {
+  if (!runtime.noRemote || !isRemoteOp(args)) return;
+  throw new Refusal(`--no-remote forbids git ${args.find((a) => !a.startsWith('-'))}`);
+}
+
 function git(cwd, args) {
+  remoteGuard(args);
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+export function isLinkedWorktree(repo) {
+  const gitDir = fs.realpathSync(git(repo, ['rev-parse', '--path-format=absolute', '--git-dir']));
+  const common = fs.realpathSync(git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
+  return gitDir !== common;
+}
+
+export function commonDirWritable(repo) {
+  try {
+    fs.accessSync(git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']), fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function canon(p) {
+  const resolved = path.resolve(p);
+  if (fs.existsSync(resolved)) return fs.realpathSync(resolved);
+  const parent = path.dirname(resolved);
+  if (fs.existsSync(parent)) return path.join(fs.realpathSync(parent), path.basename(resolved));
+  return resolved;
+}
+
+function inside(root, target) {
+  const r = canon(root);
+  const t = canon(target);
+  return t === r || t.startsWith(r + path.sep);
+}
+
+export function plannedWrites(repo) {
+  const writes = [controlDir(repo)];
+  if (isLinkedWorktree(repo) && !commonDirWritable(repo)) writes.push(path.join(controlDir(repo), 'clone'));
+  writes.push(path.resolve(repo));
+  if (runtime.statusFile) writes.push(path.dirname(path.resolve(runtime.statusFile)));
+  return [...new Set(writes)];
+}
+
+export function checkAllow(repo) {
+  const planned = plannedWrites(repo);
+  if (!runtime.allow.length) return { ok: true, planned };
+  const outside = planned.filter((p) => !runtime.allow.some((a) => inside(a, p)));
+  if (outside.length) throw new Refusal(`refusing to start: writes outside the allow list: ${outside.join(', ')}. Allowed: ${runtime.allow.join(', ')}`);
+  return { ok: true, planned };
+}
+
+export function preflight(repo) {
+  const problems = [];
+  try {
+    execFileSync('git', ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch {
+    problems.push('git is not on PATH');
+  }
+  try {
+    git(repo, ['rev-parse', '--is-inside-work-tree']);
+  } catch {
+    problems.push(`${repo} is not a git repository`);
+  }
+  let state;
+  try {
+    state = controlDir(repo);
+    assertStateOutside(repo, state);
+    fs.mkdirSync(path.dirname(state), { recursive: true });
+    fs.accessSync(path.dirname(state), fs.constants.W_OK);
+  } catch (error) {
+    problems.push(error.message.includes('inside the repo') ? error.message : `state directory is not writable: ${state ?? controlDir(repo)}`);
+  }
+  if (problems.length) throw new Error(`to-auto cannot start:\n${problems.map((p) => `- ${p}`).join('\n')}`);
+  const allow = checkAllow(repo);
+  return { ok: true, stateDir: state, linked: isLinkedWorktree(repo), commonDirWritable: commonDirWritable(repo), allow, gitRequirement: 'git on PATH (no minimum version)' };
+}
+
+export function prepare(repo) {
+  preflight(repo);
+  const control = ensureControl(repo);
+  const linked = isLinkedWorktree(repo);
+  const writable = commonDirWritable(repo);
+  const base = git(repo, ['rev-parse', 'HEAD']);
+  let workspace = fs.realpathSync(repo);
+  let cloned = false;
+  if (linked && !writable) {
+    const dest = path.join(control, 'clone');
+    if (!fs.existsSync(path.join(dest, '.git'))) {
+      fs.rmSync(dest, { recursive: true, force: true });
+      remoteGuard(['clone', fs.realpathSync(repo), dest]);
+      execFileSync('git', ['clone', '--no-local', '--quiet', fs.realpathSync(repo), dest], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const id = gitIdentity(repo);
+      execFileSync('git', ['-C', dest, 'config', 'user.name', id.name], { stdio: 'ignore' });
+      execFileSync('git', ['-C', dest, 'config', 'user.email', id.email], { stdio: 'ignore' });
+    }
+    workspace = dest;
+    cloned = true;
+  }
+  const info = { cloned, workspace, returnTo: fs.realpathSync(repo), base, linked, commonDirWritable: writable };
+  fs.writeFileSync(path.join(control, 'workspace.json'), `${JSON.stringify(info, null, 2)}\n`);
+  commit(repo, '[state] workspace', ['workspace.json']);
+  return info;
+}
+
+function readJson(file) {
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+}
+
+export function supervise(repo) {
+  const report = preflight(repo);
+  const prepared = prepare(repo);
+  const saved = {
+    base: runtime.base ? git(prepared.workspace, ['rev-parse', runtime.base]) : prepared.base,
+    targetBranch: runtime.targetBranch,
+    statusFile: runtime.statusFile,
+    noRemote: runtime.noRemote,
+    workerModel: runtime.workerModel ?? null,
+  };
+  fs.writeFileSync(path.join(controlDir(repo), 'supervisor.json'), `${JSON.stringify(saved, null, 2)}\n`);
+  commit(repo, '[state] supervisor', ['supervisor.json']);
+  return { ...report, ...prepared, supervisor: saved };
+}
+
+export function land(repo, slug = null) {
+  const control = requireControl(repo);
+  const ws = readJson(path.join(control, 'workspace.json'));
+  const saved = readJson(path.join(control, 'supervisor.json'));
+  const workspace = ws.workspace || fs.realpathSync(repo);
+  const base = runtime.base || saved.base || ws.base;
+  if (!base) throw new Error('land needs a base; pass --base or run prepare');
+  const target = runtime.targetBranch || saved.targetBranch || null;
+  const statusFile = runtime.statusFile || saved.statusFile || null;
+  const range = git(workspace, ['log', '--reverse', '--format=%H %s', `${base}..HEAD`]);
+  const commits = range.split('\n').filter(Boolean).map((line) => {
+    const sp = line.indexOf(' ');
+    return { sha: line.slice(0, sp), subject: line.slice(sp + 1) };
+  });
+  const items = commits.map((c) => ({ item: c.subject.match(/\bt\d{2}\b/)?.[0] || slug || 'run', sha: c.sha, subject: c.subject }));
+  let returned = commits.at(-1)?.sha ?? null;
+  if (ws.cloned && commits.length) {
+    const returnTo = ws.returnTo;
+    if (!commonDirWritable(returnTo)) {
+      returned = path.join(control, 'return.bundle');
+      git(workspace, ['bundle', 'create', returned, `${base}..HEAD`]);
+    } else {
+      let current;
+      try {
+        current = git(returnTo, ['symbolic-ref', '--short', 'HEAD']);
+      } catch {
+        throw new Refusal('caller HEAD is detached; land refuses to switch branches');
+      }
+      if (target && current !== target) throw new Refusal(`caller is on ${current}, not ${target}; land refuses to switch branches`);
+      git(returnTo, ['fetch', workspace, 'HEAD']);
+      git(returnTo, ['merge', '--ff-only', 'FETCH_HEAD']);
+      returned = git(returnTo, ['rev-parse', 'HEAD']);
+    }
+  } else if (target && commits.length) {
+    const current = git(workspace, ['symbolic-ref', '--short', 'HEAD']);
+    if (current !== target) throw new Refusal(`caller is on ${current}, not ${target}; land refuses to switch branches`);
+  }
+  const summary = [`landed ${items.length} commit(s)${target ? ` on ${target}` : ''}`, ...items.map((i) => `${i.item} ${i.sha}`)].join('\n') + '\n';
+  if (statusFile) {
+    const dest = path.resolve(statusFile);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.appendFileSync(dest, summary);
+  }
+  if (slug) {
+    const rel = path.join('runs', slug, 'landed.txt');
+    fs.mkdirSync(path.dirname(path.join(control, rel)), { recursive: true });
+    fs.writeFileSync(path.join(control, rel), summary);
+    commit(repo, `[${slug}] land`, [rel]);
+  }
+  return { items, summary, returned };
+}
+
+export function cleanup(repo) {
+  const dir = controlDir(repo);
+  assertStateOutside(repo, dir);
+  if (!fs.existsSync(dir)) return `absent ${path.resolve(dir)}`;
+  const resolved = fs.realpathSync(dir);
+  let list = '';
+  try {
+    list = git(repo, ['worktree', 'list', '--porcelain']);
+  } catch { /* the user repo may not be listable */ }
+  for (const wt of [...list.matchAll(/^worktree (.*)$/gm)].map((m) => m[1]).slice(1)) {
+    const real = fs.existsSync(wt) ? fs.realpathSync(wt) : path.resolve(wt);
+    if (real === resolved || real.startsWith(resolved + path.sep)) git(repo, ['worktree', 'remove', wt]);
+  }
+  fs.rmSync(resolved, { recursive: true, force: true });
+  return `removed ${resolved}`;
+}
+
+function checkLine(text) {
+  const quoted = text.match(/(?:^|\s)check:\s+"([^"]+)"/);
+  if (quoted) return quoted[1];
+  const line = text.match(/(?:^|\s)check:\s+(\S.*)$/m);
+  return line ? line[1].trim() : null;
+}
+
+/** Objective `check:` wins, then AGENTS.md / CLAUDE.md, then a Makefile target, then package.json scripts. */
+export function discoverCheck(repo, objective = '') {
+  const fromObjective = checkLine(objective);
+  if (fromObjective) return { command: fromObjective, source: 'objective' };
+  for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+    const file = path.join(repo, name);
+    if (!fs.existsSync(file)) continue;
+    const found = checkLine(fs.readFileSync(file, 'utf8'));
+    if (found) return { command: found, source: name };
+  }
+  const makefile = path.join(repo, 'Makefile');
+  if (fs.existsSync(makefile)) {
+    const text = fs.readFileSync(makefile, 'utf8');
+    if (/^check:/m.test(text)) return { command: 'make check', source: 'Makefile' };
+    if (/^test:/m.test(text)) return { command: 'make test', source: 'Makefile' };
+  }
+  const pkgPath = path.join(repo, 'package.json');
+  if (fs.existsSync(pkgPath)) {
+    const scripts = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).scripts ?? {};
+    if (scripts.check) return { command: 'npm run check', source: 'package.json' };
+    if (scripts.test) return { command: 'npm test', source: 'package.json' };
+  }
+  return { command: null, source: null };
+}
+
+export function compact(repo, slug) {
+  const control = requireControl(repo);
+  const ledger = path.join(control, 'runs', slug, 'ledger.md');
+  if (!fs.existsSync(ledger)) throw new Error(`${slug} has no ledger`);
+  const now = fs.readFileSync(ledger, 'utf8').split(/^## /m).find((s) => s.startsWith('NOW'));
+  if (!now || !/^- /m.test(now)) throw new Refusal(`${slug} NOW is empty; rewrite it so it stands alone before compacting`);
+  const recorded = event(repo, slug, 'compact', 'NOW saved');
+  return { ok: true, resume: ledger, event: recorded };
 }
 
 function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+const TAKES_VALUE = new Set(['--repo', '--state-dir', '--allow', '--base', '--target-branch', '--status-file', '--worker-model']);
+
 function main(argv) {
+  configure();
   let repo = process.cwd();
   const args = [];
+  const allow = [];
   for (let i = 0; i < argv.length; i += 1) {
-    if (argv[i] === '--repo') {
-      repo = argv[++i];
-      if (!repo) throw new UsageError('--repo needs a path');
+    const flag = argv[i];
+    if (flag === '--') { args.push(...argv.slice(i)); break; }
+    if (TAKES_VALUE.has(flag)) {
+      const value = argv[++i];
+      if (!value) throw new UsageError(`${flag} needs a value`);
+      if (flag === '--repo') repo = value;
+      else if (flag === '--state-dir') runtime.stateDir = value;
+      else if (flag === '--allow') allow.push(value);
+      else if (flag === '--base') runtime.base = value;
+      else if (flag === '--target-branch') runtime.targetBranch = value;
+      else if (flag === '--status-file') runtime.statusFile = value;
+      else if (flag === '--worker-model') runtime.workerModel = value;
+      continue;
     }
-    else if (argv[i] === '--') { args.push(...argv.slice(i)); break; }
-    else args.push(argv[i]);
+    if (flag === '--no-remote') { runtime.noRemote = true; continue; }
+    args.push(...argv.slice(i));
+    break;
+  }
+  runtime.allow = allow;
+  if (args[0] === 'root') {
+    console.log(ROOT);
+    return 0;
+  }
+  let saved = null;
+  try {
+    saved = path.join(stateDir(repo), 'supervisor.json');
+  } catch { /* not a git repo yet; preflight reports that */ }
+  if (saved && fs.existsSync(saved)) {
+    const prior = JSON.parse(fs.readFileSync(saved, 'utf8'));
+    if (prior.noRemote) runtime.noRemote = true;
+    if (!runtime.base && prior.base) runtime.base = prior.base;
+    if (!runtime.targetBranch && prior.targetBranch) runtime.targetBranch = prior.targetBranch;
+    if (!runtime.statusFile && prior.statusFile) runtime.statusFile = prior.statusFile;
   }
   const [command, ...rest] = args;
   const print = (value) => console.log(JSON.stringify(value, null, 2));
+  if (command === 'root' && rest.length === 0) {
+    console.log(ROOT);
+    return 0;
+  }
+  if (command === 'preflight' && rest.length === 0) {
+    print(preflight(repo));
+    return 0;
+  }
   if (command === 'control' && rest.length === 0) {
+    preflight(repo);
     console.log(ensureControl(repo));
+    return 0;
+  }
+  if (command === 'prepare' && rest.length === 0) {
+    print(prepare(repo));
+    return 0;
+  }
+  if (command === 'supervise' && rest.length === 0) {
+    print(supervise(repo));
+    return 0;
+  }
+  if (command === 'land' && rest.length <= 1) {
+    print(land(repo, rest[0] ?? null));
+    return 0;
+  }
+  if (command === 'cleanup' && rest.length === 0) {
+    console.log(cleanup(repo));
+    return 0;
+  }
+  if (command === 'check-command' && rest.length <= 2) {
+    const objective = rest[0] === '--objective' ? rest[1] : '';
+    if (rest[0] && rest[0] !== '--objective') throw new UsageError('check-command takes --objective <text>');
+    print(discoverCheck(repo, objective ?? ''));
+    return 0;
+  }
+  if (command === 'compact' && rest.length === 1) {
+    print(compact(repo, rest[0]));
+    return 0;
+  }
+  if (command === 'model' && rest.length === 3) {
+    console.log(recordModel(repo, rest[0], rest[1], rest[2]));
     return 0;
   }
   if (command === 'slug' && (rest.length === 1 || (rest.length === 2 && rest[1] === '--new'))) {
@@ -905,10 +1301,12 @@ function main(argv) {
     return 0;
   }
   if (command === 'init' && rest.length >= 2) {
-    const options = {};
-    for (let i = 2; i < rest.length; i += 2) {
-      if (!['--agent', '--harness'].includes(rest[i]) || !rest[i + 1]) throw new UsageError(`init takes --agent <id> and --harness <name>, got ${rest[i]}`);
-      options[rest[i].slice(2)] = rest[i + 1];
+    const options = { workerModel: runtime.workerModel };
+    for (let i = 2; i < rest.length; i += 1) {
+      if (rest[i] === '--no-helpers') { options.noHelpers = true; continue; }
+      const names = { '--agent': 'agent', '--harness': 'harness', '--worker-model': 'workerModel' };
+      if (!names[rest[i]] || !rest[i + 1]) throw new UsageError(`init takes --agent <id>, --harness <name>, --worker-model <model>, and --no-helpers, got ${rest[i]}`);
+      options[names[rest[i]]] = rest[++i];
     }
     console.log(init(repo, rest[0], rest[1], options));
     return 0;
@@ -981,7 +1379,7 @@ function main(argv) {
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }
-  console.error('usage: goal.mjs [--repo <path>] control | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] | next <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
+  console.error('usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] [--worker-model <model>] [--no-helpers] | next <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
   return 2;
 }
 

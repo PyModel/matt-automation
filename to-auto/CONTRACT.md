@@ -106,7 +106,7 @@ The implementer's final message ends with exactly one fenced `json` block, the r
 The merger runs it first, before the claims check:
 
 ```
-node ROOT/scripts/goal.mjs receipt .worktrees/control/runs/<slug>/tickets/<NN>.receipt.md \
+node ROOT/scripts/goal.mjs receipt <state>/runs/<slug>/tickets/<NN>.receipt.md \
   --worktree .worktrees/goal-<slug>-t<NN> --base <ticket-base> --ticket <ticket file>
 ```
 

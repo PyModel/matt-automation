@@ -7,7 +7,7 @@
 `kun` fetches its four instruction files (`ENTRY.md`, `TOOLS.md`, `OPINIONS.md`, `VOICE.md`) from `kunchenguid/kun` on every load. In stage 0a:
 
 1. Fetch the upstream commit SHA (`https://api.github.com/repos/kunchenguid/kun/commits/main`); if `kun/<sha>/` already exists in the control plane (shared by all runs), reuse it; otherwise fetch the four files (raw GitHub, jsDelivr fallback) into it and commit. Write the SHA into NOW.
-2. Every later `/kun` call reads the cached files and states "instructions already loaded from `.worktrees/control/kun/<sha>/`", so the kun skill's own rule 1 (skip re-download when already read) applies and no network is touched mid-run.
+2. Every later `/kun` call reads the cached files and states "instructions already loaded from `<state>/kun/<sha>/`", so the kun skill's own rule 1 (skip re-download when already read) applies and no network is touched mid-run.
 3. **Fetch fails and no cache exists → hard stop**: `node ROOT/scripts/goal.mjs stop <slug> "kun unreachable: <url>"` before any other mutation, one-line report. Fetch fails but a cached SHA exists → use the newest cache and log `kun: cached <sha>, upstream unreachable`. A run without kun is not autonomous, it is guessing.
 4. On re-entry, if the cache exists, use it; do not refetch. A later run may refresh; a running run never drifts.
 

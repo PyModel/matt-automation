@@ -4,7 +4,7 @@ A `/to-auto` run outlives any single context window: compaction, a loop tick, a 
 
 ## Layout
 
-All under `.worktrees/control/runs/<slug>/` in the control plane (CONTROL.md), created at stage 0 by `goal.mjs init`, committed with `goal.mjs commit` after every write:
+All under `<state>/runs/<slug>/` in the control plane (CONTROL.md), created at stage 0 by `goal.mjs init`, committed with `goal.mjs commit` after every write. `<state>` is the path `goal.mjs control` prints:
 
 | File | What it holds | Written by | When |
 |---|---|---|---|
@@ -13,7 +13,7 @@ All under `.worktrees/control/runs/<slug>/` in the control plane (CONTROL.md), c
 | `log.md` | Decisions, one line each: `- [stage] Q: <question> → A: <answer> (source: findings \| codebase \| kun \| default)`; ticket completions as `- [implement] <ticket path> done @ <commit>` | orchestrator and subagents | at the moment a decision is made |
 | `findings.md` | Stage 1 repo facts, requirements R1…, open questions Q1…; stage 3 sourced answers | orchestrator / research agent | stages 1 to 3 |
 | `spec.md` | Working copy of the published spec (PLAN.md stage 5) | orchestrator | stage 5 |
-| `baseline.txt` | Stage 0d per-test result set, one `<test id> pass\|fail\|flaky` line each (raw suite output stays in `.worktrees/logs/<slug>/`, uncommitted) | orchestrator | stage 0d |
+| `baseline.txt` | Stage 0d per-test result set, one `<test id> pass\|fail\|flaky` line each (raw suite output stays in `<state>/logs/<slug>/`, uncommitted) | orchestrator | stage 0d |
 | `notes/` | Exploration notes for implementers (implement-spec step 2) | exploration subagent | stage 7 |
 | `tickets/<NN>.goal.md` | The ticket's contract (CONTRACT.md § The contract) | orchestrator | at dispatch |
 | `tickets/<NN>.receipt.md` | The implementer's final message, ending in its receipt (CONTRACT.md § The receipt) | orchestrator | when the implementer returns |
@@ -42,7 +42,7 @@ The tracker's ticket files stay the source of truth for *what to build*; `ticket
 - budgets: concurrent 3 (used 2), agents 40 (used 9), per-ticket 12 slices / 90 min, wall-clock 8h (used 1h07), bug-tickets 3 (used 0)
 - baseline: suite green @ base (412 tests)
 - active: t03 → .worktrees/goal-<slug>-t03 (started 14:02, slice 2/4) ; t05 → …
-- blockers: wizard script .worktrees/control/runs/<slug>/wizard-stripe.sh (t06 waits)
+- blockers: wizard script <state>/runs/<slug>/wizard-stripe.sh (t06 waits)
 - leads: [review] possible Feature Envy in OrderIntake (uncited, not acted)
 
 ## Events
@@ -103,7 +103,7 @@ Every invocation runs this, first run or fiftieth loop tick, and so does a subag
 ## Compaction and context pressure
 
 - Stages 1 to 6b stay in one window when they can: grilling, spec, and tickets build on the same thinking, and to-tickets truncates a large spec after a break (PITFALLS.md). If the window must be compacted, do it only at a stage boundary outside 5–6b, never between to-spec and to-tickets. Stage 7 gets a fresh context per ticket (a subagent). `/clear` never mid-run.
-- Before any compaction (harness-triggered or chosen), rewrite NOW so it is sufficient on its own, append a `[compact]` event, commit. The compaction summary is seeded with: "resume from `.worktrees/control/runs/<slug>/ledger.md`".
+- Before any compaction (harness-triggered or chosen), rewrite NOW so it is sufficient on its own, then `goal.mjs compact <slug>` (it refuses an empty NOW, appends a `[compact]` event, and commits). The compaction summary is seeded with: "resume from `<state>/runs/<slug>/ledger.md`".
 - Subagent briefs never carry state that the ledger holds; they carry the path to it.
 
 ## Subagent contract

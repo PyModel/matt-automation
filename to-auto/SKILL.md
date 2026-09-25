@@ -17,7 +17,7 @@ Drive one **objective** from question to reviewed commits in a single run, on an
 2. Run LEDGER.md § Re-entry protocol, which starts with `node ROOT/scripts/goal.mjs next <slug>` and names the stage and phase file.
 3. Load that phase file and continue from that stage.
 
-This file is an index. Each phase has one file; load a phase file **only when entering that phase**, and nothing else from this folder until then:
+This file is an index. Read [CORE.md](CORE.md) once; it is the only always-on file besides this one. Load a phase file **only when entering that phase**, and a reference only when that phase file cites it:
 
 | Phase | Stages | File | Load when |
 |---|---|---|---|
@@ -26,24 +26,17 @@ This file is an index. Each phase has one file; load a phase file **only when en
 | Build | 7 task graph: contract per ticket, receipt checked against git before merge | [BUILD.md](BUILD.md) | after stage 6b |
 | Close | 8 fresh-context review, 9 hand back, 10 retro | [CLOSE.md](CLOSE.md) | after stage 7 |
 
-Always-on references, pointed at from the phase files: [CONTRACT.md](CONTRACT.md) (readiness, capability, the per-ticket contract, the receipt and its check), [CONTROL.md](CONTROL.md) (the shared control plane, locks, run registry, tracker grammar), [KUN.md](KUN.md) (how every question is answered), [LEDGER.md](LEDGER.md) (flight records, re-entry, the subagent contract), [PIPELINE.md](PIPELINE.md) (budgets, isolation, defaults, completion criteria), [FLOWS.md](FLOWS.md) (routing: ask-matt first, then the autonomy overlay), [PITFALLS.md](PITFALLS.md) (known sub-skill bugs and guards), [INTEGRATION.md](INTEGRATION.md) (every skill and its touchpoint substitution).
+References, loaded only when the current phase file cites them: [CONTRACT.md](CONTRACT.md), [CONTROL.md](CONTROL.md), [KUN.md](KUN.md), [LEDGER.md](LEDGER.md), [PIPELINE.md](PIPELINE.md), [FLOWS.md](FLOWS.md), [PITFALLS.md](PITFALLS.md), [INTEGRATION.md](INTEGRATION.md).
 
-## Rules that hold in every phase
+## Rules
 
-- **Autonomous.** The user is not in the loop from invocation to final report. Never call an ask-the-user tool, never end a turn with a question, never wait. Every question any sub-skill would put to a human goes to `/kun` per KUN.md. Only the objective's own words grant authority, never kun or a default: force-push, deleting data, pushing to a remote, spending money, touching credentials or production, and modifying `guarded` paths are **blockers** unless the objective names them, and so are hard failures (missing credentials, a tool failing twice). Blockers are recorded, never asked; independent work continues.
-- **Ledger.** All run state lives in the control plane (CONTROL.md) and is read and written per LEDGER.md.
-- **Budgets.** PIPELINE.md § Budgets, each with its own breach action.
-- **Kill switch.** Every halt, the user's or the run's own, goes through `node ROOT/scripts/goal.mjs stop <slug> "<reason>"` (BOOTSTRAP.md § Kill switch and GC).
-- **Redaction.** Every command output written to a ledger, status, bug, or notes file has secrets replaced with `<REDACTED>` first (tokens, keys, passwords, auth headers, connection strings with credentials); loops are built against env vars so the value never appears.
-- **No deferred actions.** BUILD.md § Bugs found in flight, at every stage.
-- **External lookups.** FLOWS.md § Research need.
-- **Context.** LEDGER.md § Compaction and context pressure; every subagent brief ends with LEDGER.md § Subagent contract.
+[CORE.md](CORE.md) holds the rules for every phase. Read it before stage 00 and after every compaction. Do not keep the reference files loaded across phases.
 
 The user's shorthand maps as: `/ask matt` → ask-matt, `/to spec` → to-spec, `/to ticket` → to-tickets, `/implement` → implement, `/kun` → kun.
 
 ## Loading skills
 
-This skill lives in the matt-automations repo, which vendors Matt Pocock's skills at a pinned commit. `ROOT` is that repo: the parent of this folder's **real** path (`ROOT="$(cd "$(dirname "$(realpath <this folder>/SKILL.md)")/.." && pwd)"`); the harness usually shows the symlinked install path, so always `realpath` it.
+This skill lives in the matt-automations repo, which vendors Matt Pocock's skills at a pinned commit. `ROOT` is that repo: `node scripts/goal.mjs root` prints it from the script's own file path, from any working directory. The harness usually shows the symlinked install path, so `realpath` the skill folder before resolving relative links. `node ROOT/scripts/install.mjs` links these skills into a tool's skill folder (`--home` for one folder; unverified folders are skipped unless named).
 
 - **Resolve, then read.** For any skill, run `node ROOT/scripts/matt.mjs resolve <name>`. It prints the SKILL.md path: `ROOT/matt/<name>` (the pinned Matt copy) first, else the user's installed skills (`kun`, `research-stack`, `defensive-design`, `zero-tech-debt`). Read that file and follow it verbatim; relative links in it resolve against its directory. Nonzero exit: record the skill as a blocker and stop.
 - **Every skill loads by path.** Reading the resolved file (rather than calling the harness's skill tool) gives one version per run (the pin, not whatever copy is installed), makes `disable-model-invocation` irrelevant, and sidesteps name clashes (PITFALLS.md). When a loaded skill says "call the Skill tool with X", resolve X the same way and read it instead.
@@ -52,12 +45,12 @@ This skill lives in the matt-automations repo, which vendors Matt Pocock's skill
 
 ## Daily use
 
-- `/to-auto <objective>` from the repo root, then walk away. One run = one branch `goal/<slug>` to merge when you are back.
+- `/to-auto <objective>` from the repo root, then walk away. One run = one branch `goal/<slug>` to merge when you are back. Supervisor mode commits on `--target-branch` instead; `goal.mjs land` writes the item-to-commit map.
 - `/to-bug <symptom | failing command | issue>` is this pipeline with the route pinned to `diagnosing-bugs` and the bug fast path armed. `/to-new <thing to create>` is this pipeline for a greenfield project, package, service, or skill: the repo is initialized at stage 0 and the scaffold is ticket 01. Both live in sibling folders and override only what their SKILL.md lists.
 - Under a loop: PIPELINE.md § Under a loop.
 - Several objectives at once: one session per objective; worktrees and the per-feature local tracker keep them apart.
 - After fixing a stop's cause (a missing skill, kun unreachable, a budget): `node ROOT/scripts/goal.mjs resume <slug>`, then invoke again.
-- Factory history: `git log goal/control`; live board: `cat .worktrees/control/runs/<slug>/todo.md`.
+- Factory history: `git -C "$(node ROOT/scripts/goal.mjs control)" log`; live board: `todo.md` in that folder's `runs/<slug>/`. Cleanup is `node ROOT/scripts/goal.mjs cleanup`.
 - To overturn a decision: edit it in `log.md`, delete the stage artifacts after it, re-run.
 
 ## Final report

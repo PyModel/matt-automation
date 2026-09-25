@@ -1,22 +1,26 @@
-# Control plane: shared, committed, never merged
+# Control plane: private history, outside the repo
 
-Every run on a repo shares one **control plane**: the branch `goal/control`, checked out as the worktree `<repo>/.worktrees/control/`. It holds the tracker, every run's ledger, the kun cache, the run registry, and the quarantine list. It is **committed after every write** (history is kept), and it is **never merged into the default branch**: run branches carry only code.
+Every run on a repo shares one **control plane**: the state folder `goal.mjs control` prints. Chosen by `--state-dir`, else `TO_AUTO_HOME`, else `~/.local/state/to-auto/<repo-id>` (`repo-id` is a hash of the shared git dir, so every worktree of one clone shares it and a different clone does not). It is its own git repo. It holds the tracker, every run's ledger, the kun cache, the run registry, and the quarantine list. It is **committed after every write** (history is kept). It is **not a branch of the user repo** and it is **never merged** into one: run branches carry only code.
 
 ```
-.worktrees/control/               # branch goal/control (orphan: `git checkout --orphan`)
-  runs.json                       # run registry: slug, objective, run_id, started, status, agent, harness (goal.mjs owns it)
+<state>/                          # private git repo; not goal/control
+  runs.json                       # run registry: slug, objective, run_id, started, status, agent, harness, workerModel, helpers
   tracker/<feature-slug>/spec.md
   tracker/<feature-slug>/issues/NN-<slug>.md
-  runs/<slug>/ledger.md  todo.md  log.md  bugs.md  findings.md  spec.md  notes/  tickets/NN.status.md  final-verdict.json  retro.md
+  runs/<slug>/ledger.md  todo.md  log.md  bugs.md  findings.md  spec.md  notes/  tickets/NN.status.md  final-verdict.json  retro.md  models.json
   runs/<slug>/STOP                # kill switch (committed so it survives everything)
   kun/<sha>/ENTRY.md TOOLS.md OPINIONS.md VOICE.md
   quarantine.json                 # flaky tests at base, per base commit
+  workspace.json                  # prepare: checkout, or a clone when the shared git dir is not writable
+  supervisor.json                 # --base, --target-branch, --status-file, --no-remote
+  locks/                          # not committed
+  clone/                          # not committed; the S3 workspace
   gc.log
 ```
 
 ## Locks
 
-Locks are the one thing not committed: `mkdir` directories under `$(git rev-parse --git-common-dir)/goal-locks/`, shared by every worktree. Take them only through `ROOT/scripts/goal.mjs`, which holds the lock for the whole transaction, writes the holder's pid, waits up to 2 minutes for a live holder, and breaks a lock older than 10 minutes whose holder is dead:
+Locks are the one thing not committed: `mkdir` directories under `<state>/locks/`, next to the private history, so a linked worktree does not need to write the shared git dir. Take them only through `ROOT/scripts/goal.mjs`, which holds the lock for the whole transaction, writes the holder's pid, waits up to 2 minutes for a live holder, and breaks a lock older than 10 minutes whose holder is dead:
 
 - `goal.mjs commit -m "[<slug>] <what>" <file>...` stages exactly those control-plane files and commits them under the `control` lock. This is the only way to commit to the control plane. It refuses a change to the criteria (checkbox lines, ticks aside) of a ticket whose committed status is `in-flight` or `done`: new work goes to a new ticket or NOW `leads:`, and a criterion proven wrong is released with `goal.mjs waive`.
 - `goal.mjs claim <feature> <NN> <exclusive|shared-regenerate> <path>... -- "<why>"` widens a ticket's claims after a claims breach (BUILD.md § Claims amendment): tracker issue, contract and ledger in one commit, refused for a guarded path, a new overlap inside the run, or a third amendment.
@@ -25,11 +29,11 @@ Locks are the one thing not committed: `mkdir` directories under `$(git rev-pars
 - `goal.mjs event <slug> <stage> "<text>"` appends one `- HH:MM [stage] text` line to `runs/<slug>/ledger.md`, stamped with the real local clock, and commits it. Every ledger event goes through it.
 - `goal.mjs take <feature> <n>` flips up to `n` frontier tickets to `in-flight` under `frontier-<feature>` and commits them; `goal.mjs status <feature> <id> <status>` sets one ticket's status and commits it. `status … done` ticks every acceptance box itself, and for a dispatched ticket (one with `tickets/<NN>.goal.md`) refuses unless its committed `tickets/<NN>.receipt.md` passes the receipt check with conclusion `completed`, so a merge that skipped the check cannot close the ticket. `status … in-flight` on a ticket not already in flight passes the same gate as `take` (a clean claims gate, the ticket on the frontier), so a dispatch never skips it. Both, and `claim`, refuse a ticket or contract with uncommitted edits other than ticked boxes: any other change to a ticket (a new ticket, a criterion moved or added) is committed first with `goal.mjs commit` and a message saying why, so it never rides in under a status line.
 - `goal.mjs with-lock <name> -- <cmd...>` runs one command under any lock (`integration`, `bootstrap`, `registry`, or `frontier-<feature>` on a GitHub tracker). Locks are re-entrant for that command, so it may call `goal.mjs commit` itself.
-- File arguments are paths inside the control worktree (`runs/<slug>/ledger.md`); a path from the current directory that lands inside it (`.worktrees/control/runs/…`) works too.
+- File arguments are paths inside the state folder (`runs/<slug>/ledger.md`); a path from the current directory that lands inside it works too.
 
 | Lock | Guards |
 |---|---|
-| `control` | creating `goal/control`, its worktree, and the `.worktrees/` exclude (`goal.mjs control`); every commit to it (`goal.mjs commit` stages only the named files, so concurrent agents' half-written files stay out). |
+| `control` | creating the state folder (`goal.mjs control`); every commit to it (`goal.mjs commit` stages only the named files, so concurrent agents' half-written files stay out). |
 | `integration` | merging ticket branches into run branch head (rebasing, fast-forwarding, removing ticket worktrees) |
 | `bootstrap` | creating `goal/bootstrap` |
 | `frontier-<feature>` | reading the frontier and flipping a ticket to `in-flight` |
@@ -37,10 +41,16 @@ Locks are the one thing not committed: `mkdir` directories under `$(git rev-pars
 
 ## Rules
 
-- `goal.mjs control` creates the control plane once, under the `control` lock: `.worktrees/` into `.git/info/exclude` (not `.gitignore`, which would be a tracked change), then `git worktree add --orphan -b goal/control .worktrees/control` (git ≥ 2.42), first commit `Init to-auto control plane`. It is idempotent. When a remote tracks `goal/control`, follow it with `git -C .worktrees/control pull --ff-only`.
-- Every control-plane write is committed with `goal.mjs commit`, subject `[<slug>] <what>`; the user reads the whole factory's history with `git log goal/control`. A file only one agent writes (its own `runs/<slug>/` files, its ticket status file) needs no lock for the write itself; a file several agents write is written only by the command that owns it: `runs.json` by `init`, `registry`, and `stop`; tracker tickets by `take` and `status`, which read, write, and commit under the ticket lock.
-- The control worktree is shared by every run and every subagent; it is the only path that crosses run boundaries.
-- `goal/control` is a normal branch and may be pushed if the user wants the factory history on the remote (report says how; never pushed by a run).
+- `goal.mjs control` creates the control plane once, under the `control` lock: `git init` in the state folder, first commit `Init to-auto control plane`. It does not create a branch in the user repo and it does not edit `.git/info/exclude`. It is idempotent. Git 2.42 is not required. `goal.mjs preflight` checks the remaining requirements (git on PATH, a writable state folder, and the allow list) and refuses to start with a clear message when one fails.
+- `goal.mjs prepare` records the workspace. A primary checkout is used as-is. A linked worktree whose shared git dir is not writable is cloned into `<state>/clone` (`git clone --no-local`, so the clone does not hardlink into the read-only git dir). `goal.mjs land` fast-forwards those commits back when the git dir is writable, and writes `<state>/return.bundle` when it is not.
+- `--allow <path>` (repeatable) is the only set of folders the run may write. preflight checks every planned write against it and fails before the first write.
+- Supervisor flags, stored by `goal.mjs supervise`: `--base <commit>`, `--target-branch <name>`, `--status-file <path>`, `--no-remote`. `goal.mjs land` appends a summary of `item sha` lines to the status file. `--no-remote` makes `goal.mjs` refuse `git push`, `pull`, `ls-remote`, and fetch or clone of a non-local URL.
+- `--worker-model <model>` on `init` (or as a global flag) records the requested helper model. `goal.mjs model <slug> <role> <model>` records the model that role actually used. `--no-helpers` records `helpers: none`.
+- `goal.mjs check-command --objective "<text>"` prints the check command: a `check:` in the objective, else the same line in `AGENTS.md` or `CLAUDE.md`, else `make check` or `make test`, else `npm run check` or `npm test`.
+- `goal.mjs cleanup` deletes the state folder. It removes a worktree whose path is inside that folder, and it does not delete branches or edit ignore files.
+- Every control-plane write is committed with `goal.mjs commit`, subject `[<slug>] <what>`; the user reads the factory's history with `git -C <state> log`. A file only one agent writes (its own `runs/<slug>/` files, its ticket status file) needs no lock for the write itself; a file several agents write is written only by the command that owns it: `runs.json` by `init`, `registry`, and `stop`; tracker tickets by `take` and `status`, which read, write, and commit under the ticket lock.
+- The state folder is shared by every run and every subagent on this clone; it is the only path that crosses run boundaries.
+- The private history is not pushed by a run. With `--no-remote`, it is not fetched either.
 
 ## Run registry (`runs.json`)
 

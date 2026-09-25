@@ -230,6 +230,11 @@ test('status and claim refuse a ticket with uncommitted hand edits, so no edit r
   assert.equal(git(control, 'rev-parse', 'HEAD'), mid);
   assert.doesNotMatch(read('tracker/f/issues/01-a.md'), /src\/z\.ts/);
   assert.notEqual(head, mid);
+  git(control, 'checkout', '--', 'runs/f/tickets/01.goal.md');
+  fs.appendFileSync(path.join(control, 'tracker/f/issues/01-a.md'), '- [ ] scope added by hand\n');
+  assert.throws(() => amendClaims(repo, 'f', '01', 'exclusive', ['src/z.ts'], 'forced'), /01-a\.md has uncommitted edits/);
+  assert.equal(git(control, 'rev-parse', 'HEAD'), mid);
+  assert.doesNotMatch(read('tracker/f/issues/01-a.md'), /src\/z\.ts/);
 });
 
 test('status done ticks every acceptance box itself', () => {

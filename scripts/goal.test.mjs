@@ -213,6 +213,13 @@ test('status and claim refuse a ticket with uncommitted hand edits, so no edit r
   assert.match(git(control, 'log', '-1', '--format=%s'), /ticket 02 → in-flight/);
   assert.equal(git(control, 'show', '--format=', '--numstat', 'HEAD').trim().split('\n').length, 1);
 
+  const ticked = read(t02).replace('- [ ] a criterion', '- [x] a criterion');
+  fs.writeFileSync(path.join(control, t02), ticked);
+  setStatus(repo, 'f', '02', 'done');
+  assert.match(read(t02), /^\*\*Status:\*\* done$/m, 'ticked boxes (BUILD.md step 6) are not a hand edit');
+  assert.match(read(t02), /^- \[x\] a criterion/m);
+  assert.equal(git(control, 'status', '--porcelain'), '');
+
   const t03 = 'tracker/f/issues/03-c.md';
   write(path.join(control, t03), ticket('ready-for-agent', 'None', 'exclusive: src/c.ts'));
   assert.throws(() => setStatus(repo, 'f', '03', 'in-flight'), /uncommitted edits/, 'a never-committed ticket is refused too');
@@ -223,6 +230,15 @@ test('status and claim refuse a ticket with uncommitted hand edits, so no edit r
   assert.equal(git(control, 'rev-parse', 'HEAD'), mid);
   assert.doesNotMatch(read('tracker/f/issues/01-a.md'), /src\/z\.ts/);
   assert.notEqual(head, mid);
+});
+
+test('status done ticks every acceptance box itself', () => {
+  const { repo, control, read } = runWithTickets();
+  const t02 = 'tracker/f/issues/02-b.md';
+  fs.appendFileSync(path.join(control, t02), '- [ ] c1\n  - [ ] c2\n');
+  commit(repo, '[f] 02 criteria', [t02]);
+  setStatus(repo, 'f', '02', 'done');
+  assert.deepEqual(read(t02).match(/- \[.\] c\d/g), ['- [x] c1', '- [x] c2']);
 });
 
 test('take refuses a tracker that fails the claims gate', () => {

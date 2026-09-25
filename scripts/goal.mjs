@@ -356,11 +356,15 @@ export function take(repo, feature, max) {
   });
 }
 
-/** A ticket-file write commits only its own change, so a hand edit never rides in under a status or claims message. */
+/**
+ * A ticket-file write commits only its own change, so a hand edit never rides in under a status or claims
+ * message. Ticked acceptance boxes are the one edit allowed through: BUILD.md step 6 ticks them before `done`.
+ */
 function requireCommitted(control, file) {
   const rel = path.relative(control, file);
-  const tracked = spawnSync('git', ['-C', control, 'ls-files', '--error-unmatch', '--', rel]).status === 0;
-  if (!tracked || spawnSync('git', ['-C', control, 'diff', '--quiet', 'HEAD', '--', rel]).status !== 0) {
+  const committed = spawnSync('git', ['-C', control, 'show', `HEAD:${rel}`], { encoding: 'utf8' });
+  const untick = (t) => t.replace(/^(\s*- )\[[xX]\]/gm, '$1[ ]');
+  if (committed.status !== 0 || untick(committed.stdout) !== untick(fs.readFileSync(file, 'utf8'))) {
     throw new Refusal(`${rel} has uncommitted edits; commit them first with their own reason: \`goal.mjs commit -m "<why>" ${rel}\``);
   }
 }
@@ -379,7 +383,8 @@ export function setStatus(repo, feature, id, status) {
     requireCommitted(control, full);
     const text = fs.readFileSync(full, 'utf8');
     if (!STATUS_LINE.test(text)) throw new Error(`${path.basename(full)} has no **Status:** line`);
-    fs.writeFileSync(full, text.replace(STATUS_LINE, `**Status:** ${status}`));
+    const ticked = status === 'done' ? text.replace(/^(\s*- )\[ \]/gm, '$1[x]') : text;
+    fs.writeFileSync(full, ticked.replace(STATUS_LINE, `**Status:** ${status}`));
     return commit(repo, `[${feature}] ticket ${want} → ${status}`, [path.relative(control, full)]);
   });
 }

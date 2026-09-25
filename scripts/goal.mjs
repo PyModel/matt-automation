@@ -153,6 +153,12 @@ export function setRegistry(repo, slug, status) {
     const runs = readRegistry(control);
     const entry = runs.find((r) => r.slug === slug);
     if (!entry) throw new Error(`no run ${slug} in runs.json`);
+    // Stage 7 is complete only when every ticket is done or stuck with its reason (PIPELINE.md § Completion criteria).
+    const issues = path.join(control, 'tracker', slug, 'issues');
+    if (status === 'reviewing' && fs.existsSync(issues)) {
+      const open = [...ticketFiles(issues).files].map(([id, file]) => [id, parseTicket(fs.readFileSync(file, 'utf8')).status]).filter(([, s]) => !['done', 'stuck'].includes(s));
+      if (open.length) throw new Refusal(`build is not complete: ${open.map(([id, s]) => `${id} (${s})`).join(', ')}; each ticket is done or marked stuck with its reason first`);
+    }
     if (status === 'stopped' && entry.status !== 'stopped') entry.stoppedFrom = entry.status;
     if (status !== 'stopped') delete entry.stoppedFrom;
     entry.status = status;

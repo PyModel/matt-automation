@@ -21,6 +21,7 @@ Source: the docs pages in `mattpocock/skills` (`docs/engineering/*.md`, `.agents
 | implement | Several implements in one checkout corrupt each other (amend on another's commit, vanished stash); `refs/stash` is shared even across worktrees. | PIPELINE.md § Isolation. |
 | implement | `#2` resolves against any visible numbered list. | Full paths (PIPELINE.md § Tracker rules); the brief restates the ticket title. |
 | implement | Commits to whatever branch is checked out; no PR mode. | PIPELINE.md § Isolation: ticket branch in its own worktree. |
+| implement | Kills processes by pattern (`pkill -f swift-test`, `killall node`), taking down other tickets' and other runs' builds and test runs on the same machine. | Brief: "Never kill by name or pattern (`pkill`, `killall`, `pgrep … \| xargs kill`). Stop only a process you started, by the PID you recorded when you started it." |
 | tdd | Asks the user to pick a seam; refuses to write a test at an unconfirmed seam. | Seams agreed in PLAN.md stage 4 and passed in every ticket brief. |
 | tdd | Writes the implementation before the test; writes browser tests first and loops on them. | BUILD.md implementer brief, rule 2. |
 | tdd | Proposes work belonging to a sibling ticket. | The brief carries the spec path alongside the ticket and the ticket's claims. |

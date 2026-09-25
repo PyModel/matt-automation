@@ -555,6 +555,19 @@ test('receipt: a completed receipt that matches git and the ticket passes', () =
   assert.equal(r.ok, true);
 });
 
+test('receipt and contract: a path that is not a worktree root is refused, never read as the enclosing repo', () => {
+  const { repo, base, head } = ticketWorktree();
+  const inner = path.join(repo, 'src');
+  fs.mkdirSync(inner, { recursive: true });
+  const text = JSON.stringify(receipt({ ticket_base: base, head }));
+  for (const wt of [inner, path.join(repo, 'gone')]) {
+    const r = checkReceipt({ text, worktree: wt, base, ticketText: TICKET });
+    assert.equal(r.ok, false);
+    assert.match(r.problems.join(' | '), /not a worktree root/);
+    assert.match(checkContract({ text: `- Ticket base: ${base}\n`, ticketText: TICKET, worktree: wt }).problems.join(' | '), /not a worktree root/);
+  }
+});
+
 test('receipt: the last json fence of a final message is the receipt', () => {
   const { repo, base, head } = ticketWorktree();
   const text = `Done.\n\n\`\`\`json\n{"ignored": true}\n\`\`\`\n\nRECEIPT\n\`\`\`json\n${JSON.stringify(receipt({ ticket_base: base, head }))}\n\`\`\`\n`;

@@ -523,10 +523,22 @@ export function ticketCriteria(text) {
 }
 
 /**
+ * A worktree whose .git file is gone (removed mid-check) or a path inside one would make git
+ * answer for the enclosing repo, so every git check first proves the path is its own worktree root.
+ */
+function notWorktreeRoot(worktree) {
+  const r = spawnSync('git', ['-C', worktree, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+  const real = (p) => { try { return fs.realpathSync(p); } catch { return null; } };
+  return r.status === 0 && real(r.stdout.trim()) === real(worktree) ? null : `${worktree} is not a worktree root (removed, or a path inside one), so git cannot check it`;
+}
+
+/**
  * A contract is compiled by hand at dispatch; this checks it against the worktree and the ticket
  * before the implementer sees it, so a guessed base SHA or a drifted Claims or criterion line never ships.
  */
 export function checkContract({ text, ticketText, worktree }) {
+  const bad = notWorktreeRoot(worktree);
+  if (bad) return { ok: false, problems: [bad] };
   const problems = [];
   const base = text.match(/^- Ticket base: (\S+)/m)?.[1];
   // The base is where goal/<slug>-t<NN> left goal/<slug>: HEAD at dispatch, still the fork point at a re-dispatch.
@@ -592,7 +604,9 @@ export function checkReceipt({ text, worktree = null, base = null, ticketText = 
     for (const c of byText.values()) if (!known.has(norm(c.criterion))) problems.push(`receipt criterion "${c.criterion}" is not in the ticket`);
   }
 
-  if (worktree !== null) {
+  const bad = worktree !== null && notWorktreeRoot(worktree);
+  if (bad) problems.push(bad);
+  else if (worktree !== null) {
     const head = git(worktree, ['rev-parse', 'HEAD']);
     if (r.head !== head) problems.push(`head ${r.head} is not the worktree HEAD ${head}`);
     if (base !== null && (!r.ticket_base || commitOf(worktree, r.ticket_base) !== commitOf(worktree, base))) {

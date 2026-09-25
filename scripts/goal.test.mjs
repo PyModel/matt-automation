@@ -238,10 +238,8 @@ test('status and claim refuse a ticket with uncommitted hand edits, so no edit r
 });
 
 test('status done refuses a dispatched ticket until its committed receipt passes the receipt check', () => {
-  const { repo, control, read } = runWithTickets();
+  const { repo, control, read } = runWithTickets(undefined, '- [ ] a is exported\n');
   const t01 = 'tracker/f/issues/01-a.md';
-  fs.appendFileSync(path.join(control, t01), '- [ ] a is exported\n');
-  commit(repo, '[f] 01 criterion', [t01]);
   assert.throws(() => setStatus(repo, 'f', '01', 'done'), /no receipt/);
   const rel = 'runs/f/tickets/01.receipt.md';
   const good = receipt({ ticket_base: 'b', head: 'h', criteria: [{ criterion: 'a is exported', result: 'pass', evidence: 'test exit 0' }] });
@@ -259,10 +257,8 @@ test('status done refuses a dispatched ticket until its committed receipt passes
 });
 
 test('waive records a proven-wrong criterion, and a partial receipt whose only misses are waived counts as completed', () => {
-  const { repo, control, read } = runWithTickets();
+  const { repo, control, read } = runWithTickets(undefined, '- [ ] a is exported\n- [ ] the flag mutant is killed\n');
   const t01 = 'tracker/f/issues/01-a.md';
-  fs.appendFileSync(path.join(control, t01), '- [ ] a is exported\n- [ ] the flag mutant is killed\n');
-  commit(repo, '[f] 01 criteria', [t01]);
   const partial = JSON.stringify(receipt({
     conclusion: 'partial', ticket_base: 'b', head: 'h', blockers: ['the flag mutant is equivalent'],
     criteria: [{ criterion: 'a is exported', result: 'pass', evidence: 'test exit 0' }, { criterion: 'the flag mutant is killed', result: 'fail', evidence: 'mutant survives 36/36' }],
@@ -292,6 +288,21 @@ test('waive records a proven-wrong criterion, and a partial receipt whose only m
   setStatus(repo, 'f', '01', 'done');
   assert.match(read(t01), /^\*\*Status:\*\* done$/m);
   assert.match(read(t01), /^- \[ \] the flag mutant is killed$/m, 'a waived box is not ticked');
+});
+
+test('commit refuses a criteria change on an in-flight or done ticket, which never gains criteria', () => {
+  const { repo, control, read } = runWithTickets();
+  const t01 = 'tracker/f/issues/01-a.md';
+  const t02 = 'tracker/f/issues/02-b.md';
+  fs.appendFileSync(path.join(control, t02), '- [ ] b works\n');
+  commit(repo, '[f] 02 criterion', [t02]);
+  const head = git(control, 'rev-parse', 'HEAD');
+  fs.appendFileSync(path.join(control, t01), '- [ ] a review finding\n');
+  assert.throws(() => commit(repo, '[f] 01 fold review', [t01]), /01-a\.md is in-flight.*criteria/);
+  assert.equal(git(control, 'rev-parse', 'HEAD'), head);
+  fs.writeFileSync(path.join(control, t01), read(t01).replace('- [ ] a review finding\n', ''));
+  fs.appendFileSync(path.join(control, t01), '\nA note that is not a criterion.\n');
+  assert.notEqual(commit(repo, '[f] 01 note', [t01]), 'nothing to commit', 'prose around the criteria is fine');
 });
 
 test('status done ticks every acceptance box itself', () => {
@@ -591,11 +602,11 @@ test('frontier resolves each ticket\'s capability: absent is standard/medium, in
 });
 
 // A run `f` with ticket 01 in flight (contract written) and ticket 02 open beside it.
-function runWithTickets(second = 'exclusive: src/b.ts') {
+function runWithTickets(second = 'exclusive: src/b.ts', criteria = '') {
   const { repo, control } = repoWithControl();
   init(repo, 'f', 'F');
   const one = 'exclusive: a.ts ; shared-regenerate: gen/ ; guarded: none';
-  write(path.join(control, 'tracker/f/issues/01-a.md'), ticket('in-flight', 'None', one));
+  write(path.join(control, 'tracker/f/issues/01-a.md'), ticket('in-flight', 'None', one) + criteria);
   write(path.join(control, 'tracker/f/issues/02-b.md'), ticket('ready-for-agent', 'None', second));
   write(path.join(control, 'runs/f/tickets/01.goal.md'), `# 01\n\n- Claims: ${one}; a needed path outside them → stop, return \`claims-breach\`\n`);
   commit(repo, '[f] seed', ['tracker/f/issues/01-a.md', 'tracker/f/issues/02-b.md', 'runs/f/tickets/01.goal.md']);

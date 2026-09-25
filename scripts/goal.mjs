@@ -830,6 +830,19 @@ export function breakStale(lock) {
   }
 }
 
+/** A ticket in flight or done never gains, loses or rewords a criterion (BUILD.md step 6); new work goes to a new ticket or to leads. */
+function frozenCriteria(control, rel) {
+  const file = path.join(control, rel);
+  if (!/^tracker\/[^/]+\/issues\/[^/]+\.md$/.test(rel) || !fs.existsSync(file)) return;
+  const committed = spawnSync('git', ['-C', control, 'show', `HEAD:${rel}`], { encoding: 'utf8' });
+  if (committed.status !== 0) return;
+  const { status } = parseTicket(committed.stdout);
+  if (!['in-flight', 'done'].includes(status)) return;
+  if (JSON.stringify(ticketCriteria(committed.stdout)) !== JSON.stringify(ticketCriteria(fs.readFileSync(file, 'utf8')))) {
+    throw new Refusal(`${path.basename(rel)} is ${status}, so its criteria are frozen; put new work in a new ticket or NOW leads:, and waive a criterion proven wrong with \`goal.mjs waive\``);
+  }
+}
+
 export function commit(repo, message, files) {
   if (!files.length) throw new Error('commit needs at least one file');
   const control = requireControl(repo);
@@ -843,6 +856,7 @@ export function commit(repo, message, files) {
     return fromCwd;
   });
   return withLock(repo, 'control', () => {
+    for (const f of files) frozenCriteria(control, f);
     git(control, ['add', '--', ...files]);
     const staged = git(control, ['diff', '--cached', '--name-only', '--', ...files]);
     if (!staged) return 'nothing to commit';

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, checkContract, amendClaims, event, withLock, breakStale, commit, controlDir } from './goal.mjs';
+import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, checkContract, claimsSinceDispatch, amendClaims, event, withLock, breakStale, commit, controlDir } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -244,6 +244,22 @@ test('status done ticks every acceptance box itself', () => {
   commit(repo, '[f] 02 criteria', [t02]);
   setStatus(repo, 'f', '02', 'done');
   assert.deepEqual(read(t02).match(/- \[.\] c\d/g), ['- [x] c1', '- [x] c2']);
+});
+
+test('claims widened after dispatch other than by goal.mjs claim are refused before re-dispatch', () => {
+  const { repo, control, read } = runWithTickets();
+  const t02 = path.join(control, 'tracker/f/issues/02-b.md');
+  assert.deepEqual(claimsSinceDispatch(t02), [], 'never dispatched: nothing to compare');
+  setStatus(repo, 'f', '02', 'in-flight');
+  assert.deepEqual(claimsSinceDispatch(t02), []);
+  amendClaims(repo, 'f', '02', 'exclusive', ['src/b.fake.ts'], 'conformer');
+  assert.deepEqual(claimsSinceDispatch(t02), [], 'an amendment is accounted for');
+  fs.writeFileSync(t02, read('tracker/f/issues/02-b.md').replace('src/b.fake.ts', 'src/b.fake.ts, src/hand.ts'));
+  commit(repo, '[f] 02 claims by hand', ['tracker/f/issues/02-b.md']);
+  assert.match(claimsSinceDispatch(t02).join(' | '), /src\/hand\.ts.*goal\.mjs claim/);
+  setStatus(repo, 'f', '02', 'blocked');
+  setStatus(repo, 'f', '02', 'in-flight');
+  assert.deepEqual(claimsSinceDispatch(t02), [], 'a fresh dispatch is the new baseline');
 });
 
 test('take refuses a tracker that fails the claims gate', () => {

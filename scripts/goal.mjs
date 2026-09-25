@@ -575,6 +575,32 @@ export function checkContract({ text, ticketText, worktree }) {
 }
 
 /**
+ * After dispatch, claims widen only through `goal.mjs claim`: the Claims line must equal the one at the ticket's
+ * last `→ in-flight` commit plus its `**Claims amended:**` lines. Empty for a ticket never dispatched here.
+ */
+export function claimsSinceDispatch(ticketPath) {
+  const file = fs.realpathSync(ticketPath);
+  const top = spawnSync('git', ['-C', path.dirname(file), 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+  if (top.status !== 0) return [];
+  const root = fs.realpathSync(top.stdout.trim());
+  const rel = path.relative(root, file);
+  const sha = spawnSync('git', ['-C', root, 'log', '-1', '--format=%H', '--fixed-strings', '--grep=→ in-flight', '--', rel], { encoding: 'utf8' }).stdout.trim();
+  if (!sha) return [];
+  const then = parseTicket(git(root, ['show', `${sha}:${rel}`])).claims;
+  const text = fs.readFileSync(file, 'utf8');
+  const now = parseTicket(text).claims;
+  for (const [, paths, kind] of text.matchAll(/^\*\*Claims amended:\*\* \+(.+?) \((exclusive|shared-regenerate)\): /gm)) then[kind].push(...paths.split(', '));
+  const problems = [];
+  for (const kind of Object.keys(now)) {
+    const want = new Set(then[kind].filter((c) => c !== 'none'));
+    const have = new Set(now[kind].filter((c) => c !== 'none'));
+    const drift = [...[...have].filter((c) => !want.has(c)).map((c) => `+${c}`), ...[...want].filter((c) => !have.has(c)).map((c) => `-${c}`)];
+    if (drift.length) problems.push(`${kind} claims changed since dispatch (${sha.slice(0, 8)}) other than by goal.mjs claim: ${drift.join(', ')}; restore the line, then add paths with \`goal.mjs claim\` (BUILD.md § Claims amendment)`);
+  }
+  return problems;
+}
+
+/**
  * An implementer's receipt is a claim; this checks it against what git and the ticket say.
  * Git is consulted only when `worktree` is given, the ticket only when `ticketText` is.
  */
@@ -848,6 +874,8 @@ function main(argv) {
   }
   if (command === 'contract' && rest.length === 5 && rest[1] === '--worktree' && rest[3] === '--ticket') {
     const result = checkContract({ text: fs.readFileSync(rest[0], 'utf8'), ticketText: fs.readFileSync(rest[4], 'utf8'), worktree: rest[2] });
+    result.problems.push(...claimsSinceDispatch(rest[4]));
+    result.ok = !result.problems.length;
     print(result);
     return result.ok ? 0 : 1;
   }

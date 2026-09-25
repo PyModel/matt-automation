@@ -22,6 +22,7 @@ Source: the docs pages in `mattpocock/skills` (`docs/engineering/*.md`, `.agents
 | implement | `#2` resolves against any visible numbered list. | Full paths (PIPELINE.md § Tracker rules); the brief restates the ticket title. |
 | implement | Commits to whatever branch is checked out; no PR mode. | PIPELINE.md § Isolation: ticket branch in its own worktree. |
 | implement | Kills processes by pattern (`pkill -f swift-test`, `killall node`), taking down other tickets' and other runs' builds and test runs on the same machine. | Brief: "Never kill by name or pattern (`pkill`, `killall`, `pgrep … \| xargs kill`). Stop only a process you started, by the PID you recorded when you started it." |
+| orchestrator | Stops a stale CI run, simulator or worker with `pgrep -f <path> \| xargs kill`, which also matches other tickets' and other runs' processes that share the path. | Start long jobs as the harness's background tasks (stop them by task id) or record the PID at launch (`$!` into a pid file) and stop only that PID; the same never-by-pattern rule as the implement row. |
 | tdd | Asks the user to pick a seam; refuses to write a test at an unconfirmed seam. | Seams agreed in PLAN.md stage 4 and passed in every ticket brief. |
 | tdd | Writes the implementation before the test; writes browser tests first and loops on them. | BUILD.md implementer brief, rule 2. |
 | tdd | Proposes work belonging to a sibling ticket. | The brief carries the spec path alongside the ticket and the ticket's claims. |

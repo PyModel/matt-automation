@@ -274,6 +274,8 @@ test('waive records a proven-wrong criterion, and a partial receipt whose only m
   waive(repo, 'f', '01', 2, 'equivalent mutant: exit and completion share one actor job');
   assert.match(read(t01), /^\*\*Waived:\*\* the flag mutant is killed — equivalent mutant/m);
   assert.match(git(control, 'log', '-1', '--format=%s'), /\[waive\] 01/);
+  assert.match(read('runs/f/ledger.md').trimEnd().split('\n').at(-1), /^- \d\d:\d\d \[waive\] 01 the flag mutant is killed — equivalent mutant/);
+  assert.equal(git(control, 'show', '--format=', '--name-only', 'HEAD').split('\n').length, 2, 'ticket and ledger in one commit');
   assert.equal(git(control, 'status', '--porcelain'), '');
   assert.throws(() => waive(repo, 'f', '01', 1, 'x'), /no criterion left/);
 

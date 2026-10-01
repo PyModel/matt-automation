@@ -41,18 +41,18 @@ The tracker's ticket files stay the source of truth for *what to build*; `ticket
 - per-worktree: PORT=3000+100*run_id+NN, DATABASE_URL suffix _<slug>_tNN, copy .env with suffix
 - budgets: concurrent 3 (used 2), agents 40 (used 9), per-ticket 12 slices / 90 min, wall-clock 8h (used 1h07), bug-tickets 3 (used 0)
 - baseline: suite green @ base (412 tests)
-- active: t03 → .worktrees/goal-<slug>-t03 (started 14:02, slice 2/4) ; t05 → …
+- active: t03 → <path from goal.mjs worktree get> (started 14:02, slice 2/4) ; t05 → …
 - blockers: wizard script <state>/runs/<slug>/wizard-stripe.sh (t06 waits)
 - leads: [review] possible Feature Envy in OrderIntake (uncited, not acted)
 
 ## Events
-- 13:40 [0c] worktree .worktrees/goal-<slug> on goal/<slug> from 9f8e7d6
+- 13:40 [0c] worktree <path from goal.mjs worktree get> on goal/<slug> from 9f8e7d6
 - 13:41 [0b] setup: local tracker, labels default, single-context (source: default)
 - 13:55 [1] findings.md written, R1–R7, 11 sources
 - …
 - 14:20 [7] t03 dispatched → worktree …, brief: ticket 03, spec.md, CONTEXT.md, tier 2
 - 14:47 [7] t03 back from its implementer: suite green, review 0 cited / 1 lead, commit c0ffee1
-- 14:48 [7] t03 merged ff into goal/<slug>; worktree removed; ticket closed
+- 14:48 [7] t03 merged ff into goal/<slug>; worktree returned; ticket closed
 ```
 
 Rules:
@@ -81,7 +81,7 @@ Rules:
 |---|---|---|---|---|---|
 | 01 | prefactor: extract OrderIntake seam | none | done | removed | 1a2b3c4 |
 | 02 | … | 01 | done | removed | … |
-| 03 | … | 01 | in-flight (slice 2/4) | .worktrees/goal-<slug>-t03 | c0ffee1 |
+| 03 | … | 01 | in-flight (slice 2/4) | <worktree path> | c0ffee1 |
 | 04 | … | 02 | ready-for-agent | | |
 | 05 | … | 02, 03 | blocked | | |
 ```
@@ -94,9 +94,9 @@ The Tickets table (written at 6b) mirrors the tracker's statuses (CONTROL.md § 
 
 Every invocation runs this, first run or fiftieth loop tick, and so does a subagent that must orient:
 
-1. `node ROOT/scripts/goal.mjs next <slug>`. `stop` → report the reason and end; `done` → reply "done" and end (under a loop, this ends the loop); `malformed` → rewrite `todo.md` from the events, then run it again. Otherwise it names the stage and the one phase file to load. It trusts the files over the checkboxes: a ticked stage whose artifact is missing comes back as the stage to redo. Stage `00` means a fresh run: go straight to BOOTSTRAP.md.
+1. `node ROOT/scripts/goal.mjs next <slug>`. `stop` → report the reason and end; `done` → reply "done" and end (under a loop, this ends the loop); `malformed` → rewrite `todo.md` from the events, then run it again; `blocked` → NOW names a stage the registry never reached: set NOW back to the stage the run really reached (the registry and the artifacts say which), or `goal.mjs stop` the run. Never advance the registry to silence it. Otherwise it names the stage and the one phase file to load. It trusts the files over the checkboxes: a ticked stage whose artifact is missing comes back as the stage to redo. Stage `00` means a fresh run: go straight to BOOTSTRAP.md.
 2. Read `ledger.md` NOW and the last 20 events.
-3. Verify NOW against the world: `git worktree list`, `git log -1` on the run branch, each `tickets/<NN>.status.md` for in-flight tickets, the tracker's ticket statuses. A ticket NOW calls active is handled per BUILD.md § Stuck detection.
+3. Verify NOW against the world: `goal.mjs check <slug>` (exit 0), `goal.mjs worktree status <slug>`, `git log -1` on the run branch, each `tickets/<NN>.status.md` for in-flight tickets, the tracker's ticket statuses. A ticket NOW calls active is handled per BUILD.md § Stuck detection.
 4. Resume at the stage `next` named, checking its completion criterion (PIPELINE.md). Never redo a stage whose artifacts exist and verify; never trust NOW over the artifacts.
 5. Append a `[re-entry]` event saying what was verified and where the run resumed.
 

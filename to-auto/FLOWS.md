@@ -4,6 +4,10 @@
 
 If ask-matt at the pin contradicts this file, follow ask-matt. Record the contradiction in `bugs.md` and the retro proposes the fix to this file. Per-skill stages and substitutes are in [INTEGRATION.md](INTEGRATION.md).
 
+## Admission (before stage 0)
+
+A backlog is not one run, whatever ask-matt would route: "fix all N issues", "every open issue", or any open-ended or moving list. BOOTSTRAP.md § 00 step 5 splits it into bounded batch runs (or hands the batching to to-orc) before anything is registered. A repository convention (one PR per issue, a branch-naming rule) changes how a stage runs, never whether it runs: a run that cannot follow the pipeline stops with `goal.mjs stop <slug> "objective does not fit: …"` instead of adapting it.
+
 ## Routing tree (stage 1)
 
 Test the rows in order; the first match sets the on-ramp. Every route then merges onto ask-matt's main flow. Log `route: <ask-matt section> → <skill> (<classification>)`.

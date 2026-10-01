@@ -6,7 +6,11 @@
 //   node scripts/goal.mjs slug <objective> [--new]        the run slug; --new picks a free -2, -3 … for a deliberate re-run
 //   node scripts/goal.mjs init <slug> <objective> [--agent <id>] [--harness <name>]
 //                                                          register the run and create runs/<slug>/ that next can parse; commit
-//   node scripts/goal.mjs next <slug>                     where the run resumes (JSON)
+//   node scripts/goal.mjs next <slug>                     where the run resumes (JSON); blocked when NOW is ahead of the registry
+//   node scripts/goal.mjs check <slug> | check --all [--state-root <dir>] [--stale-hours <n>]
+//                                                          read-only: NOW ahead of the registry, malformed NOW, registry stale (exit 1 on any)
+//   node scripts/goal.mjs worktree get|return <slug> [NN] | worktree status <slug>
+//                                                          the run's (or ticket NN's) worktree: treehouse lease when on PATH, else git under <state>/worktrees
 //   node scripts/goal.mjs stop <slug> <reason>            halt the run: write runs/<slug>/STOP and set the registry status
 //   node scripts/goal.mjs resume <slug>                   undo a stop once its cause is fixed
 //   node scripts/goal.mjs event <slug> <stage> <text>     append `- HH:MM [stage] text` (local clock) to the ledger and commit
@@ -204,7 +208,7 @@ export function ensureControl(repo) {
     const id = gitIdentity(repo);
     git(control, ['config', 'user.name', id.name]);
     git(control, ['config', 'user.email', id.email]);
-    fs.writeFileSync(path.join(control, '.gitignore'), 'locks/\nclone/\nreturn.bundle\n');
+    fs.writeFileSync(path.join(control, '.gitignore'), 'locks/\nclone/\nworktrees/\nreturn.bundle\n');
     fs.writeFileSync(path.join(control, '.to-auto'), `to-auto control plane\nrepo-id: ${repoId(repo)}\n`);
     git(control, ['add', '--', '.gitignore', '.to-auto']);
     git(control, ['commit', '-q', '-m', 'Init to-auto control plane']);
@@ -388,6 +392,8 @@ export function next(control, slug) {
   if (fs.existsSync(path.join(runDir, 'STOP'))) {
     return { slug, stop: true, reason: `runs/${slug}/STOP: ${fs.readFileSync(path.join(runDir, 'STOP'), 'utf8').trim() || 'no reason given'}` };
   }
+  const ahead = stageProblems(control, slug).filter((p) => p.code === 'NOW_AHEAD');
+  if (ahead.length) return { slug, blocked: true, problems: ahead, reason: `${ahead[0].message}; set NOW back to the stage the run really reached, or stop the run` };
   if (!fs.existsSync(runDir)) return resumeAt(slug, STAGES[0], 'no run directory yet');
   const todoFile = path.join(runDir, 'todo.md');
   if (!fs.existsSync(todoFile)) return resumeAt(slug, STAGES[0], 'todo.md missing; stage 00 is idempotent');
@@ -399,6 +405,92 @@ export function next(control, slug) {
     if (s.artifact && !fs.existsSync(path.join(runDir, s.artifact))) return resumeAt(slug, s, `ticked, but runs/${slug}/${s.artifact} is missing`);
   }
   return { slug, done: true, reason: 'every stage ticked and every stage artifact present' };
+}
+
+// --------------------------------------------------------------- check
+
+// The registry status a run must have reached before NOW may name a stage: the NOW line is prose an agent
+// rewrites by hand, the registry only moves through `goal.mjs registry`, so NOW running ahead means the run
+// left the pipeline (the stage-7-at-bootstrapping incident).
+const STAGE_FLOOR = {
+  bootstrapping: ['00', '0', '0a', '0b', '0c'],
+  planning: ['0d', '1', '2', '3', '4', '4b', '5', '5b'],
+  specced: ['6', '6b'],
+  building: ['7'],
+  reviewing: ['8', '9', '10'],
+  done: ['done'],
+};
+const FLOOR_OF = new Map(Object.entries(STAGE_FLOOR).flatMap(([status, ids]) => ids.map((id) => [id, status])));
+const TERMINAL = new Set(['done', 'dry-run']);
+
+/** The stage id NOW names (`- stage: 7 build …` → `7`), null when there is no stage line. */
+export function nowStage(ledgerText) {
+  const block = ledgerText.split(/^## /m).find((s) => s.startsWith('NOW'));
+  return block?.match(/^- stage:\s*(\S+)/m)?.[1] ?? null;
+}
+
+/** NOW_AHEAD / NOW_MALFORMED for a registered, non-terminal run; [] for anything else. Read-only. */
+function stageProblems(control, slug) {
+  const entry = readRegistry(control).find((r) => r.slug === slug);
+  if (!entry || TERMINAL.has(entry.status)) return [];
+  const ledger = path.join(control, 'runs', slug, 'ledger.md');
+  const stage = fs.existsSync(ledger) ? nowStage(fs.readFileSync(ledger, 'utf8')) : null;
+  if (!stage || !FLOOR_OF.has(stage)) return [{ code: 'NOW_MALFORMED', message: `NOW names ${stage ? `unknown stage ${stage}` : 'no stage'}; write \`- stage: <id> <name>\` with a stage id from todo.md` }];
+  const registry = entry.status === 'stopped' ? entry.stoppedFrom ?? 'bootstrapping' : entry.status;
+  const floor = FLOOR_OF.get(stage);
+  if (RUN_ORDER.indexOf(registry) < RUN_ORDER.indexOf(floor)) {
+    return [{ code: 'NOW_AHEAD', message: `NOW stage ${stage} needs registry ${floor}, but the registry is ${registry}` }];
+  }
+  return [];
+}
+
+/** Seconds since the run's registry last moved (its `status` or `register run` commit), null when unknown. */
+function registryAge(control, slug, now) {
+  const log = spawnSync('git', ['-C', control, 'log', '--format=%ct%x09%s', '-F', `--grep=[${slug}] `], { encoding: 'utf8' });
+  if (log.status !== 0) return null;
+  const line = log.stdout.split('\n').find((l) => {
+    const subject = l.slice(l.indexOf('\t') + 1);
+    return subject.startsWith(`[${slug}] status `) || subject.startsWith(`[${slug}] register run`);
+  });
+  return line ? now / 1000 - Number(line.split('\t')[0]) : null;
+}
+
+/**
+ * One run's health, read-only: NOW ahead of the registry, a malformed NOW, or a registry that has not moved for
+ * `staleHours` while the run is still active. Stopped runs are paused on purpose, so they are never stale.
+ */
+export function checkRun(control, slug, { staleHours = 2, now = Date.now() } = {}) {
+  const entry = readRegistry(control).find((r) => r.slug === slug);
+  if (!entry) throw new Error(`no run ${slug} in runs.json`);
+  const ledger = path.join(control, 'runs', slug, 'ledger.md');
+  const problems = stageProblems(control, slug);
+  if (!TERMINAL.has(entry.status) && entry.status !== 'stopped') {
+    const age = registryAge(control, slug, now);
+    if (age !== null && age > staleHours * 3600) {
+      problems.push({ code: 'STALE', message: `registry has been ${entry.status} for ${(age / 3600).toFixed(1)}h (limit ${staleHours}h); is the run still following the pipeline?` });
+    }
+  }
+  return { slug, ok: !problems.length, registry: entry.status, nowStage: fs.existsSync(ledger) ? nowStage(fs.readFileSync(ledger, 'utf8')) : null, problems };
+}
+
+/** Every registered run under every control plane in `root` (plus TO_AUTO_HOME when it is one): one line per problem. */
+export function checkAll(root, opts = {}) {
+  const dirs = fs.existsSync(root) ? fs.readdirSync(root).map((d) => path.join(root, d)) : [];
+  if (process.env.TO_AUTO_HOME) dirs.push(path.resolve(process.env.TO_AUTO_HOME));
+  const lines = [];
+  for (const dir of [...new Set(dirs)].filter(hasMarker).sort()) {
+    let runs;
+    try {
+      runs = readRegistry(dir);
+    } catch (error) {
+      lines.push(`${dir} - RUNS_UNREADABLE ${error.message}`);
+      continue;
+    }
+    for (const run of runs) {
+      for (const p of checkRun(dir, run.slug, opts).problems) lines.push(`${dir} ${run.slug} ${p.code} ${p.message}`);
+    }
+  }
+  return lines;
 }
 
 // ------------------------------------------------------------- tickets
@@ -1417,10 +1509,166 @@ export function land(repo, slug = null) {
   return { items, summary, returned };
 }
 
+// ------------------------------------------------------------ worktrees
+
+/** The treehouse binary: TO_AUTO_TREEHOUSE when set ('' = none), else `treehouse` on PATH, else null. */
+function treehouseBin() {
+  if (process.env.TO_AUTO_TREEHOUSE !== undefined) return process.env.TO_AUTO_TREEHOUSE || null;
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)) {
+    const bin = path.join(dir, 'treehouse');
+    try {
+      fs.accessSync(bin, fs.constants.X_OK);
+      if (fs.statSync(bin).isFile()) return bin;
+    } catch { /* not here */ }
+  }
+  return null;
+}
+
+/** Where runs commit: the clone `prepare` made when the shared git dir is read-only, else the repo. */
+function workspaceOf(repo, control) {
+  const ws = readJson(path.join(control, 'workspace.json')).workspace;
+  return ws && fs.existsSync(ws) ? ws : fs.realpathSync(repo);
+}
+
+/** The run's base: goal/bootstrap if it exists, else --base (or the saved supervisor base), else the default branch head. */
+function runBase(workspace) {
+  const has = (ref) => spawnSync('git', ['-C', workspace, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`]).status === 0;
+  if (has('refs/heads/goal/bootstrap')) return 'goal/bootstrap';
+  if (runtime.base) return runtime.base;
+  if (!runtime.noRemote) {
+    const head = spawnSync('git', ['-C', workspace, 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], { encoding: 'utf8' });
+    if (head.status === 0 && head.stdout.trim()) return head.stdout.trim();
+  }
+  for (const name of ['main', 'master']) if (has(`refs/heads/${name}`)) return name;
+  return 'HEAD';
+}
+
+/** The path a branch is checked out at in `workspace`'s worktrees, or null. */
+function checkedOutAt(workspace, branch) {
+  let wt = null;
+  for (const line of git(workspace, ['worktree', 'list', '--porcelain']).split('\n')) {
+    if (line.startsWith('worktree ')) wt = line.slice(9);
+    if (line === `branch refs/heads/${branch}`) return wt;
+  }
+  return null;
+}
+
+function worktreeKey(id) {
+  if (id === undefined || id === null) return { key: 'run', ticket: null };
+  const nn = ticketId(String(id));
+  if (!nn) throw new UsageError(`ticket number must be digits, got ${id}`);
+  return { key: `t${nn}`, ticket: nn };
+}
+
+function worktreeRecords(control, slug) {
+  if (!fs.existsSync(path.join(control, 'runs', slug))) throw new Error(`no run ${slug}; \`goal.mjs init\` it first`);
+  const rel = path.join('runs', slug, 'worktrees.json');
+  return { rel, file: path.join(control, rel), records: readJson(path.join(control, rel)) };
+}
+
+/**
+ * The run's (no id) or a ticket's worktree, created once and recorded in runs/<slug>/worktrees.json.
+ * treehouse on PATH leases a pooled worktree (deps and build caches kept); otherwise a plain git worktree under
+ * <state>/worktrees. A branch already checked out (supervisor mode's target) is borrowed and never removed.
+ */
+export function worktreeGet(repo, slug, id) {
+  const control = requireControl(repo);
+  const { key, ticket } = worktreeKey(id);
+  return withLock(repo, 'worktrees', () => {
+    const { rel, file, records } = worktreeRecords(control, slug);
+    const prior = records[key];
+    if (prior?.state === 'active' && fs.existsSync(prior.path)) return prior.path;
+    const workspace = workspaceOf(repo, control);
+    const runBranch = runtime.targetBranch || `goal/${slug}`;
+    const branch = ticket ? `goal/${slug}-t${ticket}` : runBranch;
+    const base = ticket ? runBranch : runBase(workspace);
+    if (ticket && spawnSync('git', ['-C', workspace, 'rev-parse', '--verify', '--quiet', `refs/heads/${runBranch}`]).status !== 0) {
+      throw new Refusal(`run branch ${runBranch} does not exist yet; \`goal.mjs worktree get ${slug}\` first`);
+    }
+    const exists = spawnSync('git', ['-C', workspace, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0;
+    const at = exists ? checkedOutAt(workspace, branch) : null;
+    let record;
+    if (at) {
+      record = { backend: 'borrowed', path: at, branch, base: null };
+    } else {
+      const bin = treehouseBin();
+      let wt;
+      if (bin) {
+        const args = ['get', '--lease', '--no-fetch', '--lease-holder', slug];
+        const run = spawnSync(bin, args, { cwd: workspace, encoding: 'utf8' });
+        wt = run.stdout?.trim().split('\n').at(-1);
+        if (run.status !== 0 || !wt || !path.isAbsolute(wt)) throw new Error(`treehouse ${args.join(' ')} failed (exit ${run.status}): ${(run.stderr || run.error?.message || '').trim()}`);
+        git(wt, exists ? ['switch', '--quiet', branch] : ['switch', '--quiet', '-c', branch, base]);
+      } else {
+        wt = path.join(control, 'worktrees', `goal-${slug}${ticket ? `-t${ticket}` : ''}`);
+        git(workspace, exists ? ['worktree', 'add', wt, branch] : ['worktree', 'add', '-b', branch, wt, base]);
+      }
+      record = { backend: bin ? 'treehouse' : 'git', path: fs.realpathSync(wt), branch, base: exists ? null : git(workspace, ['rev-parse', base]) };
+    }
+    records[key] = { ...record, state: 'active' };
+    fs.writeFileSync(file, `${JSON.stringify(records, null, 2)}\n`);
+    commit(repo, `[${slug}] worktree ${key} ${record.backend}`, [rel]);
+    return record.path;
+  });
+}
+
+/** Give a worktree back: treehouse returns it to the pool, git removes it; a dirty worktree is refused, never forced. */
+export function worktreeReturn(repo, slug, id) {
+  const control = requireControl(repo);
+  const { key } = worktreeKey(id);
+  return withLock(repo, 'worktrees', () => {
+    const { rel, file, records } = worktreeRecords(control, slug);
+    const r = records[key];
+    if (!r) throw new Error(`${slug} has no ${key} worktree`);
+    if (r.state === 'returned') return `already returned ${r.path}`;
+    if (r.backend !== 'borrowed' && fs.existsSync(r.path)) {
+      const dirty = git(r.path, ['status', '--porcelain']);
+      if (dirty) throw new Refusal(`${r.path} has uncommitted changes; commit them on ${r.branch} first:\n${dirty}`);
+      if (r.backend === 'treehouse') {
+        // Detach first: a pool slot that still holds the branch would block the next checkout of it anywhere else.
+        git(r.path, ['switch', '--quiet', '--detach']);
+        const run = spawnSync(treehouseBin() ?? 'treehouse', ['return', r.path], { encoding: 'utf8' });
+        if (run.status !== 0) throw new Error(`treehouse return ${r.path} failed (exit ${run.status}): ${(run.stderr || run.error?.message || '').trim()}`);
+      } else {
+        git(workspaceOf(repo, control), ['worktree', 'remove', r.path]);
+      }
+    }
+    records[key] = { ...r, state: 'returned' };
+    fs.writeFileSync(file, `${JSON.stringify(records, null, 2)}\n`);
+    commit(repo, `[${slug}] worktree ${key} returned`, [rel]);
+    return `returned ${r.path}`;
+  });
+}
+
+export function worktreeStatus(repo, slug) {
+  return worktreeRecords(requireControl(repo), slug).records;
+}
+
+/** What `cleanup` would destroy that is not safe elsewhere: active run/ticket worktrees and clone commits the repo lacks. */
+function unsafeToClean(repo, dir) {
+  const items = [];
+  const runs = path.join(dir, 'runs');
+  for (const slug of fs.existsSync(runs) ? fs.readdirSync(runs) : []) {
+    for (const [key, r] of Object.entries(readJson(path.join(runs, slug, 'worktrees.json')))) {
+      if (r.state === 'active') items.push(`${slug} ${key} worktree ${r.path} is active; \`goal.mjs worktree return ${slug}${key === 'run' ? '' : ` ${key.slice(1)}`}\` first`);
+    }
+  }
+  const clone = path.join(dir, 'clone');
+  if (fs.existsSync(path.join(clone, '.git'))) {
+    for (const line of git(clone, ['for-each-ref', '--format=%(objectname) %(refname:short)', 'refs/heads']).split('\n').filter(Boolean)) {
+      const [sha, branch] = line.split(' ');
+      if (spawnSync('git', ['-C', repo, 'cat-file', '-e', `${sha}^{commit}`]).status !== 0) items.push(`clone branch ${branch} at ${sha.slice(0, 12)} is not in ${repo}; \`goal.mjs land\` it first`);
+    }
+  }
+  return items;
+}
+
 export function cleanup(repo) {
   const dir = controlDir(repo);
   assertStateOutside(repo, dir);
   if (!fs.existsSync(dir)) return `absent ${path.resolve(dir)}`;
+  const unsafe = unsafeToClean(repo, dir);
+  if (unsafe.length) throw new Refusal(`cleanup would destroy work:\n${unsafe.map((i) => `- ${i}`).join('\n')}`);
   const resolved = fs.realpathSync(dir);
   let list = '';
   try {
@@ -1472,6 +1720,8 @@ export function compact(repo, slug) {
   if (!fs.existsSync(ledger)) throw new Error(`${slug} has no ledger`);
   const now = fs.readFileSync(ledger, 'utf8').split(/^## /m).find((s) => s.startsWith('NOW'));
   if (!now || !/^- /m.test(now)) throw new Refusal(`${slug} NOW is empty; rewrite it so it stands alone before compacting`);
+  const ahead = stageProblems(control, slug).find((p) => p.code === 'NOW_AHEAD');
+  if (ahead) throw new Refusal(`${slug}: ${ahead.message}; set NOW back to the stage the run really reached, or stop the run, before compacting`);
   const recorded = event(repo, slug, 'compact', 'NOW saved');
   return { ok: true, resume: ledger, event: recorded };
 }
@@ -1623,7 +1873,37 @@ function main(argv) {
   if (command === 'next' && rest.length === 1) {
     const result = next(controlDir(repo), rest[0]);
     print(result);
-    return result.stop || result.malformed ? 1 : 0;
+    return result.stop || result.malformed || result.blocked ? 1 : 0;
+  }
+  if (command === 'worktree' && ['get', 'return'].includes(rest[0]) && (rest.length === 2 || rest.length === 3)) {
+    console.log(rest[0] === 'get' ? worktreeGet(repo, rest[1], rest[2]) : worktreeReturn(repo, rest[1], rest[2]));
+    return 0;
+  }
+  if (command === 'worktree' && rest[0] === 'status' && rest.length === 2) {
+    print(worktreeStatus(repo, rest[1]));
+    return 0;
+  }
+  if (command === 'check' && rest.length >= 1) {
+    const opts = {};
+    let root = path.join(os.homedir(), '.local', 'state', 'to-auto');
+    let all = false;
+    let slug = null;
+    for (let i = 0; i < rest.length; i += 1) {
+      if (rest[i] === '--all') all = true;
+      else if (rest[i] === '--state-root' && rest[i + 1]) root = rest[++i];
+      else if (rest[i] === '--stale-hours' && /^\d+(\.\d+)?$/.test(rest[i + 1] ?? '')) opts.staleHours = Number(rest[++i]);
+      else if (!slug && !rest[i].startsWith('-')) slug = rest[i];
+      else throw new UsageError('check <slug> | check --all [--state-root <dir>] [--stale-hours <n>]');
+    }
+    if (all === Boolean(slug)) throw new UsageError('check takes a slug or --all');
+    if (all) {
+      const lines = checkAll(root, opts);
+      if (lines.length) console.log(lines.join('\n'));
+      return lines.length ? 1 : 0;
+    }
+    const result = checkRun(controlDir(repo), slug, opts);
+    print(result);
+    return result.ok ? 0 : 1;
   }
   if (command === 'frontier' && rest.length === 1) {
     const result = frontier(controlDir(repo), rest[0]);
@@ -1674,7 +1954,7 @@ function main(argv) {
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }
-  console.error('usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] [--worker-model <model>] [--no-helpers] | next <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
+  console.error('usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] [--worker-model <model>] [--no-helpers] | next <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] | worktree get|return <slug> [NN] | worktree status <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
   return 2;
 }
 

@@ -10,6 +10,7 @@ In order:
 2. `node ROOT/scripts/goal.mjs preflight`, then `node ROOT/scripts/goal.mjs prepare`. prepare creates the control plane if missing (CONTROL.md § Rules) and prints the workspace. When this checkout is a linked worktree whose shared git dir is not writable, that workspace is a clone under the state folder; every later git command uses it. Nonzero exit: stop with the printed reason. In supervisor mode, run `goal.mjs supervise` instead: it records `--base`, `--target-branch`, `--status-file`, and `--no-remote`.
 3. `node ROOT/scripts/matt.mjs check`. Nonzero exit: `node ROOT/scripts/goal.mjs stop <slug> "<the printed errors>"` and end.
 4. Read ask-matt (`node ROOT/scripts/matt.mjs resolve ask-matt`): it is the map every later stage follows, and stage 1 routes by it.
+5. **Admission, before `init`.** A backlog is not one run: "fix all N issues", "every open issue", or any open-ended or moving list. Snapshot the issue ids, split them into bounded batches (dependency-aware, each with its own acceptance scope), and start each batch as its own `/to-auto` run with its own objective, or hand the inventory and batching to to-orc. Report the batches and end; this invocation registers nothing. A bounded feature that needs several tickets is not a backlog, and FLOWS.md's ready-source and bug routes stay as they are.
 
 ## 0. Register
 
@@ -31,7 +32,7 @@ The engineering skills need `docs/agents/issue-tracker.md`, `docs/agents/domain.
 
 ## 0c. Isolate
 
-1. Create the run worktree per PIPELINE.md § Isolation (Run row, commands).
+1. `node ROOT/scripts/goal.mjs worktree get <slug>` creates the run worktree (PIPELINE.md § Isolation) and prints its path; write it into NOW.
 2. Record `review_base = $(git rev-parse HEAD)` in the new worktree, in NOW, immediately. It is immutable: every later diff (diagnosis, fast-path fix, glossary, scaffold, tickets, final review) is reviewed against it.
 3. Every later action happens inside the run worktree or the control worktree. Never `cd` back into the user's checkout.
 4. `node ROOT/scripts/goal.mjs registry <slug> planning`; NOW records `base`, `review_base`, `run_branch`.
@@ -51,5 +52,5 @@ The engineering skills need `docs/agents/issue-tracker.md`, `docs/agents/domain.
 ## Kill switch and GC
 
 - **`STOP`**: `runs/<slug>/STOP` in the control plane, written only by `goal.mjs stop <slug> "<reason>"` (which also sets the registry to `stopped`; `/to-auto --stop [slug]` calls it, CONTROL.md § Run registry). The orchestrator checks it before every stage and every dispatch; every implementer checks it before every slice and returns `stopped` after the current slice. `goal.mjs next` then reports `stop`, which ends a loop; `goal.mjs resume <slug>` lifts it.
-- **`--gc`**: report-only by default: scans `<state>/worktrees/goal-*` for runs older than 24 hours whose agent is inactive, auditing whether each is clean and reachable. Deletion needs explicit `--gc --delete-clean` and only collects terminal runs whose `git status --porcelain` is empty and whose commits are all reachable from a retained branch. A worktree with uncommitted changes is never deleted unless a verified backup is saved first; never `git worktree remove --force` a dirty or unbacked-up worktree. Never touches the state folder's private history, active runs, or `goal/bootstrap`. Deleting run state itself is `goal.mjs cleanup`, which removes the state folder and leaves no branch or ignore-file edit in the user repo.
+- **`--gc`**: report-only by default: scans the `active` records in every `runs/*/worktrees.json` for runs older than 24 hours whose agent is inactive, auditing whether each is clean and reachable. Deletion needs explicit `--gc --delete-clean` and only collects terminal runs whose `git status --porcelain` is empty and whose commits are all reachable from a retained branch. A worktree with uncommitted changes is never deleted unless a verified backup is saved first; never `git worktree remove --force` a dirty or unbacked-up worktree; collect through `goal.mjs worktree return`. Never touches the state folder's private history, active runs, or `goal/bootstrap`. Deleting run state itself is `goal.mjs cleanup`, which removes the state folder and leaves no branch or ignore-file edit in the user repo.
 - **`--dry-run <objective>`**: stages 0–0d, then a synthetic 3-ticket graph through the 6b gates (claims intersection, criteria-red-at-base check on the baseline), no implementers; leaves the run registered as `dry-run` and reports every command it ran. Use it on a fixture repo after editing this skill.

@@ -46,7 +46,7 @@ Written at dispatch to `runs/<slug>/tickets/<NN>.goal.md` and committed with `go
 
 ## Current state
 - Ticket: <full tracker path or reference>
-- Worktree / branch: .worktrees/goal-<slug>-t<NN> on goal/<slug>-t<NN>
+- Worktree / branch: <the path `goal.mjs worktree get <slug> <NN>` printed> on goal/<slug>-t<NN>
 - Ticket base: <full sha of the run branch head at dispatch>
 - Evidenced complete: <what already holds at the base, with the command that shows it, or none>
 - Known gaps: <what is red at the base (the 6b gate's observations)>
@@ -110,7 +110,7 @@ The merger runs it first, before the claims check:
 
 ```
 node ROOT/scripts/goal.mjs receipt <state>/runs/<slug>/tickets/<NN>.receipt.md \
-  --worktree .worktrees/goal-<slug>-t<NN> --base <ticket-base> --ticket <ticket file>
+  --worktree <ticket worktree path> --base <ticket-base> --ticket <ticket file>
 ```
 
 On a GitHub tracker the ticket file is the issue body, saved as BUILD.md § Bindings step 5 saves it for the claims check.

@@ -23,21 +23,23 @@ Several agents may run `/to-auto` against one repo at once, so each run owns a b
 |---|---|---|---|---|
 | Control | none in the user repo (private history) | the path `goal.mjs control` prints | none | until `goal.mjs cleanup`; committed after every write; never merged |
 | Bootstrap | `goal/bootstrap` | `<state>/worktrees/bootstrap`, removed after commit | default branch head, or `--base` in supervisor mode | until the user fast-forwards default to it |
-| Run | `goal/<slug>`, or `--target-branch` in supervisor mode | `<state>/worktrees/goal-<slug>/` | `goal/bootstrap` if it exists, else `--base`, else the default branch head (not `origin/HEAD` when `--no-remote` or the repo has no remote) | survives the run; the user merges or deletes. Supervisor mode commits on the target branch and `goal.mjs land` maps items to commits |
-| Ticket | `goal/<slug>-t<NN>` | `<state>/worktrees/goal-<slug>-t<NN>/` | run branch head at dispatch | removed after merge into the run branch |
+| Run | `goal/<slug>`, or `--target-branch` in supervisor mode | the path `goal.mjs worktree get <slug>` prints | `goal/bootstrap` if it exists, else `--base`, else the default branch head (not `origin/HEAD` when `--no-remote` or the repo has no remote) | survives the run; the user merges or deletes. Supervisor mode commits on the target branch and `goal.mjs land` maps items to commits |
+| Ticket | `goal/<slug>-t<NN>` | the path `goal.mjs worktree get <slug> <NN>` prints | run branch head at dispatch | returned after merge into the run branch |
 
-`<state>` is outside the checkout, so these worktrees do not need an exclude-file edit. Commands (skip `git fetch` when `--no-remote` or there is no remote):
+Run and ticket worktrees come only from `goal.mjs worktree`, never from a hand-typed `git worktree add`: it records each one in `runs/<slug>/worktrees.json`, so `goal.mjs cleanup` and the GC know what the run owns. With `treehouse` on PATH it leases a pooled worktree (dependencies and build caches kept between tickets); otherwise it makes a plain git worktree under `<state>/worktrees/`. A branch already checked out (supervisor mode's target branch) is borrowed as-is and never removed. Use the path it prints; never infer a layout. Commands (skip `git fetch` when `--no-remote` or there is no remote):
 
 ```
 git fetch --prune 2>/dev/null || true
-git worktree add -b goal/<slug> <state>/worktrees/goal-<slug> <base>          # <base> per the Run row
-git -C <state>/worktrees/goal-<slug> worktree add -b goal/<slug>-t<NN> <state>/worktrees/goal-<slug>-t<NN> goal/<slug>
-# after a ticket's review (all from inside the run worktree, so "fully merged" is judged against the run branch):
-git -C <state>/worktrees/goal-<slug>-t<NN> rebase goal/<slug>
-git -C <state>/worktrees/goal-<slug> merge --ff-only goal/<slug>-t<NN>
-git -C <state>/worktrees/goal-<slug> worktree remove <state>/worktrees/goal-<slug>-t<NN>
-git -C <state>/worktrees/goal-<slug> branch -d goal/<slug>-t<NN>
+RUN=$(node ROOT/scripts/goal.mjs worktree get <slug>)            # base per the Run row
+WT=$(node ROOT/scripts/goal.mjs worktree get <slug> <NN>)        # cut from the run branch head
+# after a ticket's review (from inside the run worktree, so "fully merged" is judged against the run branch):
+git -C "$WT" rebase goal/<slug>
+git -C "$RUN" merge --ff-only goal/<slug>-t<NN>
+node ROOT/scripts/goal.mjs worktree return <slug> <NN>           # refuses a dirty worktree; never forced
+git -C "$RUN" branch -d goal/<slug>-t<NN>
 ```
+
+`goal.mjs worktree status <slug>` prints every worktree the run owns.
 
 Rules:
 
@@ -99,7 +101,7 @@ A stage is done exactly when its line holds. Phase files point here.
 - **0 Register**: registry entry with `run_id`; no overlapping running objective (or `--force`); `runs/<slug>/` with `ledger.md`, `todo.md`, `log.md`, `bugs.md` committed; `run_id` and the check's pin in NOW.
 - **0a Cache kun**: `kun/<sha>/` in the control plane holds the four root docs and `content/MANIFEST.json`; SHA in NOW.
 - **0b Setup**: `docs/agents/issue-tracker.md`, `docs/agents/domain.md`, `docs/agents/triage-labels.md` and the `## Agent skills` block exist on `goal/bootstrap` (or were already on base).
-- **0c Isolate**: `git worktree list` shows the run worktree on `goal/<slug>`; `base`, `review_base`, `run_branch` in NOW.
+- **0c Isolate**: `goal.mjs worktree status <slug>` shows the run worktree active on `goal/<slug>`; `base`, `review_base`, `run_branch` in NOW.
 - **0d Environment contract**: NOW carries `commands:`, `packages:` (if monorepo), `per-worktree:` (run-scoped), `budgets:`, `baseline:` (per-test set from 3 runs, committed as `runs/<slug>/baseline.txt`), `quarantine:`, `nested:`, `worker:` (`subagent`, or `pi[/<provider>/<model>]`, BUILD.md § Implementer backend), `tiers:` (capability → model map, or `none`).
 - **1 Route**: classification logged (`bug | issue | ready | refactor | upkeep | fog | greenfield | feature`); flow named; adopted-patterns list, each line `pattern, from /<skill>`; research need logged (`none | targeted | up-front`); `findings.md` exists with repo facts, requirements R1…, open questions Q1….
 - **2 On-ramp**: the chosen on-ramp's criteria in FLOWS.md § On-ramp completion criteria, or `skipped: plain feature` / `skipped: ready source <ref>` logged; for route `bug`, the fast-path decision logged with its reason.
@@ -109,7 +111,7 @@ A stage is done exactly when its line holds. Phase files point here.
 - **6/6b Tickets + claims**: one file per ticket; each has a demo path, tier, capability, claims, "Blocked by", and passes CONTRACT.md § Readiness; new-behaviour criteria red at base and preserved invariants green; no cycles; no two unordered open tickets share an `exclusive` claim; `ready-for-agent` stripped from the parent spec; ticket table in `todo.md`.
 - **7 Build**: every ticket `done` (a `completed` receipt that passed `goal.mjs receipt`, merged fast-forward as a recorded range, boxes ticked, ticket closed) or `stuck` with its reason; every dispatched ticket has `tickets/<NN>.goal.md` and `tickets/<NN>.receipt.md`; per-test comparison against baseline passes; the debt grep (BUILD.md § Bugs found in flight) is empty; per ticket a defensive-design evidence state per control, a red test before code per slice (visible `tdd` calls), and typecheck, lint, and suite output captured; only the run worktree remains; (GitHub, push authorized) draft PR open closing spec and tickets.
 - **8 Final review**: ran in a fresh review subagent against `review_base`; cited findings fixed by one fix subagent, independently re-verified against the resulting snapshot, and committed; suite no worse than baseline; `final-verdict.json` written; uncited leads listed.
-- **9 Hand back**: only the user's checkout, the run worktree, and active peer run worktrees remain in `git worktree list` (the state folder is not a worktree of the user repo); an authorized PR is marked ready for review. In supervisor mode, `goal.mjs land` has already put the commits on `--target-branch` and written the item map to `--status-file`.
+- **9 Hand back**: `goal.mjs worktree status <slug>` shows no ticket worktree `active` (idle treehouse pool slots in `git worktree list` are not the run's); an authorized PR is marked ready for review. In supervisor mode, `goal.mjs land` has already put the commits on `--target-branch` and written the item map to `--status-file`.
 - **10 Retro**: `retro.md` written with candidates ordered by severity.
 - **Every stage**: `bugs.md` has no entry without an action (commit, ticket id, or blocker); NOW rewritten, an event appended, `todo.md` box ticked, all committed before the next stage starts.
 

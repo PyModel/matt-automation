@@ -94,6 +94,20 @@ test('the mark is dropped once the run this session registered is done or stoppe
   assert.deepEqual(fs.readdirSync(w.env.TO_AUTO_SESSIONS), []);
 });
 
+test('a run this session finished before it was marked again does not release the new mark', () => {
+  const w = world();
+  w.goal('control');
+  w.goal('init', 'x', 'X', '--agent', 's1');
+  w.goal('stop', 'x', 'old');
+  const runs = path.join(w.env.TO_AUTO_HOME, 'runs.json');
+  const data = JSON.parse(fs.readFileSync(runs, 'utf8'));
+  data[0].started = '2026-01-01T00:00:00.000Z';
+  fs.writeFileSync(runs, JSON.stringify(data));
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto again' });
+  assert.equal(w.bash(INCIDENT), 'deny');
+  assert.equal(fs.readdirSync(w.env.TO_AUTO_SESSIONS).length, 1);
+});
+
 test('bad input and odd session ids are ignored', () => {
   const w = world();
   const r = spawnSync(process.execPath, [GUARD], { env: w.env, input: 'not json', encoding: 'utf8' });

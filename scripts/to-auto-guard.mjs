@@ -37,11 +37,12 @@ function activeRuns(cwd) {
   }
 }
 
-/** True once a run this session registered (`init --agent <session_id>`) is over and no run is active: to-auto mode ends. */
-function finished(cwd, id) {
+/** True once a run this session registered after it was marked (`init --agent <session_id>`) is over and no run is active. */
+function finished(cwd, id, markedAt) {
   let runs;
   try { runs = JSON.parse(fs.readFileSync(path.join(stateDir(cwd), 'runs.json'), 'utf8')); } catch { return false; }
-  return runs.some((r) => r.agent === id && INACTIVE.has(r.status)) && !runs.some((r) => !INACTIVE.has(r.status));
+  const mine = (r) => r.agent === id && Date.parse(r.started) >= markedAt && INACTIVE.has(r.status);
+  return runs.some(mine) && !runs.some((r) => !INACTIVE.has(r.status));
 }
 
 /** Why this tool call breaks the pipeline, or null. */
@@ -78,7 +79,7 @@ function main() {
   }
   const marker = path.join(sessions(), id);
   if (!fs.existsSync(marker)) return;
-  if (finished(input.cwd ?? process.cwd(), id)) {
+  if (finished(input.cwd ?? process.cwd(), id, Date.parse(fs.readFileSync(marker, 'utf8').trim()) - 1000)) {
     fs.rmSync(marker, { force: true });
     return;
   }

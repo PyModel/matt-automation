@@ -40,3 +40,8 @@ test('SKILL.md makes the stage next names binding and forbids repo work before i
   assert.match(skill, /The stage `next` names is the only work this invocation may do\. Until `init` has registered the run, touch nothing in the repo/);
   assert.match(skill, /never worked around/);
 });
+
+test('CONTROL.md documents the harness guard and SKILL.md forbids routing around it', () => {
+  assert.match(doc('CONTROL.md'), /`scripts\/to-auto-guard\.mjs` \(hooks `UserPromptSubmit`, `UserPromptExpansion`, `PreToolUse`/);
+  assert.match(doc('SKILL.md'), /denied by `to-auto-guard` is this rule enforced/);
+});

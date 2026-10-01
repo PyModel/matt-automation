@@ -17,7 +17,7 @@ Drive one **objective** from question to reviewed commits in a single run, on an
 2. Run LEDGER.md § Re-entry protocol, which starts with `node ROOT/scripts/goal.mjs next <slug>` and names the stage and phase file.
 3. Load that phase file and continue from that stage.
 
-The stage `next` names is the only work this invocation may do. Until `init` has registered the run, touch nothing in the repo: no worktree, branch, PR, tracker write or helper agent. Work already in flight in this session or repo (earlier PRs, worktrees, a plan from before this invocation) is not resumed outside the pipeline: it is either part of a registered run that `next` names, or it is reported in the ledger as pre-existing and left alone. An objective that `init` refuses ends the invocation with the refusal reported; it is never worked around.
+The stage `next` names is the only work this invocation may do. Until `init` has registered the run, touch nothing in the repo: no worktree, branch, PR, tracker write or helper agent. Work already in flight in this session or repo (earlier PRs, worktrees, a plan from before this invocation) is not resumed outside the pipeline: it is either part of a registered run that `next` names, or it is reported in the ledger as pre-existing and left alone. An objective that `init` refuses ends the invocation with the refusal reported; it is never worked around. On Claude Code a tool call denied by `to-auto-guard` is this rule enforced: the fix is `init` or `goal.mjs worktree get`, never another route to the same effect.
 
 This file is an index. Read [CORE.md](CORE.md) once; it is the only always-on file besides this one. Load a phase file **only when entering that phase**, and a reference only when that phase file cites it:
 

@@ -420,7 +420,7 @@ export function next(control, slug) {
   }
   const ahead = stageProblems(control, slug).filter((p) => p.code === 'NOW_AHEAD');
   if (ahead.length) return { slug, blocked: true, problems: ahead, reason: `${ahead[0].message}; set NOW back to the stage the run really reached, or stop the run` };
-  if (!fs.existsSync(runDir)) return resumeAt(slug, STAGES[0], 'no run directory yet');
+  if (!fs.existsSync(runDir)) return resumeAt(slug, STAGES[0], 'no run directory yet: start BOOTSTRAP.md at 00 and touch nothing in the repo (no worktree, branch, PR, tracker write or helper agent) until init registers the run');
   const todoFile = path.join(runDir, 'todo.md');
   if (!fs.existsSync(todoFile)) return resumeAt(slug, STAGES[0], 'todo.md missing; stage 00 is idempotent');
   const tickedById = parseTodo(fs.readFileSync(todoFile, 'utf8'));

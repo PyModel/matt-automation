@@ -34,3 +34,9 @@ test('stage 9 moves the registry to done before NOW says done', () => {
   const close = doc('CLOSE.md');
   assert.ok(close.indexOf('registry <slug> done`, rewrite NOW to `stage: done`') > 0);
 });
+
+test('SKILL.md makes the stage next names binding and forbids repo work before init', () => {
+  const skill = doc('SKILL.md');
+  assert.match(skill, /The stage `next` names is the only work this invocation may do\. Until `init` has registered the run, touch nothing in the repo/);
+  assert.match(skill, /never worked around/);
+});

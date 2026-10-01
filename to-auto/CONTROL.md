@@ -9,7 +9,7 @@ Every run on a repo shares one **control plane**: the state folder `goal.mjs con
   tracker/<feature-slug>/issues/NN-<slug>.md
   runs/<slug>/ledger.md  todo.md  log.md  bugs.md  findings.md  spec.md  notes/  tickets/NN.status.md  final-verdict.json  retro.md  models.json
   runs/<slug>/STOP                # kill switch (committed so it survives everything)
-  kun/<sha>/ENTRY.md TOOLS.md OPINIONS.md VOICE.md
+  kun/<sha>/ENTRY.md TOOLS.md OPINIONS.md VOICE.md content/  # pull-kun.mjs cache of kunchenguid/kun at <sha>
   quarantine.json                 # flaky tests at base, per base commit
   workspace.json                  # prepare: checkout, or a clone when the shared git dir is not writable
   supervisor.json                 # --base, --target-branch, --status-file, --no-remote

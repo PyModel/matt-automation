@@ -12,3 +12,4 @@ Behavior that moved. The phase files are the spec; this list is the delta.
 - Git 2.42 is not required. `goal.mjs preflight` checks that git is on PATH and the state folder is writable.
 - Always-on text is SKILL.md plus CORE.md. Before compacting, rewrite NOW and run `goal.mjs compact`.
 - `goal.mjs cleanup` deletes the state folder only.
+- Stage 0a caches kun with upstream `pull-kun.mjs`: `kun/<sha>/` now holds `content/` (kun's own words) beside the four root docs. A cache without `content/MANIFEST.json` is incomplete and is pulled again, seeded from the newest complete cache.

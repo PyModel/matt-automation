@@ -97,7 +97,7 @@ A stage is done exactly when its line holds. Phase files point here.
 
 - **00 Wiring**: `matt.mjs check` exited 0; the control worktree exists; ask-matt read.
 - **0 Register**: registry entry with `run_id`; no overlapping running objective (or `--force`); `runs/<slug>/` with `ledger.md`, `todo.md`, `log.md`, `bugs.md` committed; `run_id` and the check's pin in NOW.
-- **0a Cache kun**: `kun/<sha>/` present in the control plane; SHA in NOW.
+- **0a Cache kun**: `kun/<sha>/` in the control plane holds the four root docs and `content/MANIFEST.json`; SHA in NOW.
 - **0b Setup**: `docs/agents/issue-tracker.md`, `docs/agents/domain.md`, `docs/agents/triage-labels.md` and the `## Agent skills` block exist on `goal/bootstrap` (or were already on base).
 - **0c Isolate**: `git worktree list` shows the run worktree on `goal/<slug>`; `base`, `review_base`, `run_branch` in NOW.
 - **0d Environment contract**: NOW carries `commands:`, `packages:` (if monorepo), `per-worktree:` (run-scoped), `budgets:`, `baseline:` (per-test set from 3 runs, committed as `runs/<slug>/baseline.txt`), `quarantine:`, `nested:`, `worker:` (`subagent`, or `pi[/<provider>/<model>]`, BUILD.md § Implementer backend), `tiers:` (capability → model map, or `none`).

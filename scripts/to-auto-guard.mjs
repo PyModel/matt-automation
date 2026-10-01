@@ -4,7 +4,7 @@
 //   PreToolUse on Bash or Agent in a marked session: deny branch, worktree, push, PR and helper-agent work while the
 //   repo has no active run (registered, not done, dry-run or stopped), and deny a hand-typed `git worktree add` always:
 //   run worktrees come from `goal.mjs worktree get`. Unmarked sessions are never touched, and the mark is dropped once a
-//   run this session registered is done or stopped with no run active.
+//   run this session registered is done (or a dry run) with no run active; a stopped run keeps the session marked.
 // Markers live in `$TO_AUTO_SESSIONS`, else ~/.local/state/to-auto-sessions/<session_id>, outside every state dir.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -37,11 +37,12 @@ function activeRuns(cwd) {
   }
 }
 
-/** True once a run this session registered after it was marked (`init --agent <session_id>`) is over and no run is active. */
+/** True once a run this session registered after it was marked (`init --agent <session_id>`) is done and no run is active. */
 function finished(cwd, id, markedAt) {
   let runs;
   try { runs = JSON.parse(fs.readFileSync(path.join(stateDir(cwd), 'runs.json'), 'utf8')); } catch { return false; }
-  const mine = (r) => r.agent === id && Date.parse(r.started) >= markedAt && INACTIVE.has(r.status);
+  // Only a finished run releases the session: stopping one ("objective does not fit") must not open a way around it.
+  const mine = (r) => r.agent === id && Date.parse(r.started) >= markedAt && (r.status === 'done' || r.status === 'dry-run');
   return runs.some(mine) && !runs.some((r) => !INACTIVE.has(r.status));
 }
 

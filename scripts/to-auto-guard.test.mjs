@@ -80,14 +80,19 @@ test('an active run allows PRs and helpers but never a hand-typed worktree; a st
   assert.equal(w.decision('Agent', { prompt: 'x' }), 'deny');
 });
 
-test('the mark is dropped once the run this session registered is done or stopped and nothing is active', () => {
+test('stopping its own run does not release the session; only a done run with nothing active does', () => {
   const w = world();
   w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto x' });
   w.goal('control');
   w.goal('init', 'x', 'X', '--agent', 's1');
+  w.goal('stop', 'x', 'objective does not fit: lands pre-existing PRs');
+  assert.equal(w.bash('gh pr merge 788 --squash'), 'deny', 'the incident: stop the run, then land PRs by hand');
   assert.equal(w.bash(INCIDENT), 'deny');
+  const runs = path.join(w.env.TO_AUTO_HOME, 'runs.json');
+  const data = JSON.parse(fs.readFileSync(runs, 'utf8'));
+  data[0].status = 'done';
+  fs.writeFileSync(runs, JSON.stringify(data));
   w.goal('init', 'y', 'Y', '--agent', 'someone-else');
-  w.goal('stop', 'x', 'done for now');
   assert.equal(w.bash(INCIDENT), 'deny', 'another run is still active in the repo');
   w.goal('stop', 'y', 'paused');
   assert.equal(w.bash(INCIDENT), 'allow');
@@ -102,6 +107,7 @@ test('a run this session finished before it was marked again does not release th
   const runs = path.join(w.env.TO_AUTO_HOME, 'runs.json');
   const data = JSON.parse(fs.readFileSync(runs, 'utf8'));
   data[0].started = '2026-01-01T00:00:00.000Z';
+  data[0].status = 'done';
   fs.writeFileSync(runs, JSON.stringify(data));
   w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto again' });
   assert.equal(w.bash(INCIDENT), 'deny');

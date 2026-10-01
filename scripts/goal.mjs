@@ -429,17 +429,16 @@ export function nowStage(ledgerText) {
   return block?.match(/^- stage:\s*(\S+)/m)?.[1] ?? null;
 }
 
-/** NOW_AHEAD / NOW_MALFORMED for a registered, non-terminal run; [] for anything else. Read-only. */
+/** NOW_AHEAD / NOW_MALFORMED for a registered run that is neither terminal nor stopped (`resume` brings it back under check); [] otherwise. Read-only. */
 function stageProblems(control, slug) {
   const entry = readRegistry(control).find((r) => r.slug === slug);
-  if (!entry || TERMINAL.has(entry.status)) return [];
+  if (!entry || TERMINAL.has(entry.status) || entry.status === 'stopped') return [];
   const ledger = path.join(control, 'runs', slug, 'ledger.md');
   const stage = fs.existsSync(ledger) ? nowStage(fs.readFileSync(ledger, 'utf8')) : null;
   if (!stage || !FLOOR_OF.has(stage)) return [{ code: 'NOW_MALFORMED', message: `NOW names ${stage ? `unknown stage ${stage}` : 'no stage'}; write \`- stage: <id> <name>\` with a stage id from todo.md` }];
-  const registry = entry.status === 'stopped' ? entry.stoppedFrom ?? 'bootstrapping' : entry.status;
   const floor = FLOOR_OF.get(stage);
-  if (RUN_ORDER.indexOf(registry) < RUN_ORDER.indexOf(floor)) {
-    return [{ code: 'NOW_AHEAD', message: `NOW stage ${stage} needs registry ${floor}, but the registry is ${registry}` }];
+  if (RUN_ORDER.indexOf(entry.status) < RUN_ORDER.indexOf(floor)) {
+    return [{ code: 'NOW_AHEAD', message: `NOW stage ${stage} needs registry ${floor}, but the registry is ${entry.status}` }];
   }
   return [];
 }
@@ -457,7 +456,7 @@ function registryAge(control, slug, now) {
 
 /**
  * One run's health, read-only: NOW ahead of the registry, a malformed NOW, or a registry that has not moved for
- * `staleHours` while the run is still active. Stopped runs are paused on purpose, so they are never stale.
+ * `staleHours` while the run is still active. Stopped runs are parked on purpose, so they report nothing until `resume`.
  */
 export function checkRun(control, slug, { staleHours = 2, now = Date.now() } = {}) {
   const entry = readRegistry(control).find((r) => r.slug === slug);

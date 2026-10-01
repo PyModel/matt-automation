@@ -258,12 +258,15 @@ test('a missing or unknown NOW stage is NOW_MALFORMED; done and dry-run runs are
   }
 });
 
-test('a stopped run is checked against the status it stopped from and is never stale', () => {
+test('a stopped run reports nothing; resume brings its NOW_AHEAD back', () => {
   const ctx = run();
   setNow(ctx, 'x', INCIDENT);
   assert.equal(goal(ctx, ['stop', 'x', 'paused']).status, 0);
-  const result = JSON.parse(goal(ctx, ['check', 'x', '--stale-hours', '0']).stdout);
+  assert.equal(goal(ctx, ['check', 'x', '--stale-hours', '0']).status, 0);
+  assert.equal(goal(ctx, ['resume', 'x']).status, 0);
+  const result = JSON.parse(goal(ctx, ['check', 'x']).stdout);
   assert.deepEqual(result.problems.map((p) => p.code), ['NOW_AHEAD']);
+  assert.equal(goal(ctx, ['next', 'x']).status, 1);
 });
 
 test('STALE when the registry has not moved for longer than --stale-hours, fresh otherwise', () => {

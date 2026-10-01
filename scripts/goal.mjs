@@ -249,6 +249,8 @@ export function setRegistry(repo, slug, status, { restoring = false } = {}) {
     if (!restoring && !['stopped', 'dry-run'].includes(status) && !step) {
       throw new Refusal(`${slug} cannot go from ${entry.status} to ${status}: a run moves one step along ${RUN_ORDER.join(' → ')}`);
     }
+    const missing = !restoring && stepEvidence(control, slug, status);
+    if (missing) throw new Refusal(`${slug} cannot be ${status} yet: ${missing}`);
     // Stage 7 is complete only when every ticket is done or stuck with its reason (PIPELINE.md § Completion criteria).
     const issues = path.join(control, 'tracker', slug, 'issues');
     if (status === 'reviewing' && fs.existsSync(issues)) {
@@ -266,6 +268,29 @@ export function setRegistry(repo, slug, status, { restoring = false } = {}) {
     return commit(repo, `[${slug}] status ${status}`, ['runs.json']);
   });
 }
+
+/**
+ * The artifact each middle registry step stands on (PIPELINE.md § Completion criteria), so the registry cannot be
+ * walked forward with nothing behind it just to silence `check`. Returns what is missing, or null.
+ */
+function stepEvidence(control, slug, status) {
+  const run = path.join(control, 'runs', slug);
+  if (status === 'planning' && readJson(path.join(run, 'worktrees.json'))?.run?.state !== 'active') {
+    return `no active run worktree; \`goal.mjs worktree get ${slug}\` it at stage 0c`;
+  }
+  if (status === 'specced' && !fs.existsSync(path.join(run, 'spec.md'))) return `runs/${slug}/spec.md is missing; stage 5 writes it`;
+  if (status === 'ticketed') {
+    const issues = path.join(control, 'tracker', slug, 'issues');
+    const local = fs.existsSync(issues) && ticketFiles(issues).files.size > 0;
+    const todo = path.join(run, 'todo.md');
+    const table = fs.existsSync(todo) && /^## Tickets[^\n]*\n\s*[|-]/m.test(fs.readFileSync(todo, 'utf8'));
+    if (!local && !table) return `no tickets in tracker/${slug}/issues and no ticket table in todo.md; stage 6 writes them`;
+  }
+  return null;
+}
+
+// An open-ended backlog ("fix all 422 open Linear issues", "every open bug") is batched, never admitted as one run (BOOTSTRAP.md step 5).
+const BACKLOG = /\b(all|every)(\s+(the|open|remaining|outstanding|current|\d+|linear|github|jira|[a-z]+'s))*\s+(issue|ticket|bug|todo|pr|pull request)s?\b|\b\d{2,}\s+(open\s+)?(\w+\s+)?(issues|tickets|bugs|prs)\b/i;
 
 /**
  * A run is done only on a committed stage 8 verdict that reviewed what the target branch holds now
@@ -346,6 +371,7 @@ const resumeAt = (slug, stage, reason) => ({ slug, stage: stage.id, name: stage.
 
 export function init(repo, slug, objective, { agent = null, harness = null, workerModel = null, noHelpers = false } = {}) {
   if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(slug)) throw new Error(`bad slug: ${slug} (kebab-case, at most 40 chars)`);
+  if (BACKLOG.test(objective)) throw new Refusal(`"${objective}" is a backlog, not one run: snapshot the issue ids and split them into bounded batches, each its own /to-auto run, or hand the backlog to to-orc (BOOTSTRAP.md step 5)`);
   const control = requireControl(repo);
   const runDir = path.join(control, 'runs', slug);
   if (fs.existsSync(path.join(runDir, 'STOP'))) throw new Error(`${slug} is stopped; fix the cause, then \`goal.mjs resume ${slug}\``);
@@ -443,19 +469,14 @@ function stageProblems(control, slug) {
   return [];
 }
 
-/** Seconds since the run's registry last moved (its `status` or `register run` commit), null when unknown. */
-function registryAge(control, slug, now) {
-  const log = spawnSync('git', ['-C', control, 'log', '--format=%ct%x09%s', '-F', `--grep=[${slug}] `], { encoding: 'utf8' });
-  if (log.status !== 0) return null;
-  const line = log.stdout.split('\n').find((l) => {
-    const subject = l.slice(l.indexOf('\t') + 1);
-    return subject.startsWith(`[${slug}] status `) || subject.startsWith(`[${slug}] register run`);
-  });
-  return line ? now / 1000 - Number(line.split('\t')[0]) : null;
+/** Seconds since the run's last control-plane commit (`[<slug>] …`: status, event, ticket, receipt), null when unknown. */
+function runAge(control, slug, now) {
+  const log = spawnSync('git', ['-C', control, 'log', '-1', '--format=%ct', '-F', `--grep=[${slug}] `], { encoding: 'utf8' });
+  return log.status === 0 && log.stdout.trim() ? now / 1000 - Number(log.stdout.trim()) : null;
 }
 
 /**
- * One run's health, read-only: NOW ahead of the registry, a malformed NOW, or a registry that has not moved for
+ * One run's health, read-only: NOW ahead of the registry, a malformed NOW, or no goal.mjs commit for
  * `staleHours` while the run is still active. Stopped runs are parked on purpose, so they report nothing until `resume`.
  */
 export function checkRun(control, slug, { staleHours = 2, now = Date.now() } = {}) {
@@ -464,9 +485,9 @@ export function checkRun(control, slug, { staleHours = 2, now = Date.now() } = {
   const ledger = path.join(control, 'runs', slug, 'ledger.md');
   const problems = stageProblems(control, slug);
   if (!TERMINAL.has(entry.status) && entry.status !== 'stopped') {
-    const age = registryAge(control, slug, now);
+    const age = runAge(control, slug, now);
     if (age !== null && age > staleHours * 3600) {
-      problems.push({ code: 'STALE', message: `registry has been ${entry.status} for ${(age / 3600).toFixed(1)}h (limit ${staleHours}h); is the run still following the pipeline?` });
+      problems.push({ code: 'STALE', message: `no goal.mjs commit for ${(age / 3600).toFixed(1)}h while ${entry.status} (limit ${staleHours}h); is the run still following the pipeline?` });
     }
   }
   return { slug, ok: !problems.length, registry: entry.status, nowStage: fs.existsSync(ledger) ? nowStage(fs.readFileSync(ledger, 'utf8')) : null, problems };

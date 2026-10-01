@@ -17,3 +17,4 @@ Behavior that moved. The phase files are the spec; this list is the delta.
 - `goal.mjs cleanup` refuses while a run worktree is active or the clone holds unlanded commits.
 - Backlog objectives are split into bounded batch runs at admission (BOOTSTRAP.md § 00 step 5); repository rules never skip a stage.
 - Stage 0a caches kun with upstream `pull-kun.mjs`: `kun/<sha>/` now holds `content/` (kun's own words) beside the four root docs. A cache without `content/MANIFEST.json` is incomplete and is pulled again, seeded from the newest complete cache.
+- `goal.mjs registry` refuses `planning` without an active run worktree, `specced` without `spec.md`, and `ticketed` without tickets, so the registry cannot be walked forward empty to silence `check`. `init` refuses backlog objectives ("fix all N issues"). `check` STALE counts any `[<slug>]` control-plane commit as activity, and stopped runs report nothing until `resume`.

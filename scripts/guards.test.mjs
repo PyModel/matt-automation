@@ -269,7 +269,7 @@ test('a stopped run reports nothing; resume brings its NOW_AHEAD back', () => {
   assert.equal(goal(ctx, ['next', 'x']).status, 1);
 });
 
-test('STALE when the registry has not moved for longer than --stale-hours, fresh otherwise', () => {
+test('STALE when the run has no goal.mjs commit for longer than --stale-hours; any run commit counts as activity', () => {
   const ctx = { repo: bareRepo(), state: path.join(tmp('guards-state-'), 'state') };
   goal(ctx, ['control']);
   const old = { GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z', GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z' };
@@ -277,9 +277,11 @@ test('STALE when the registry has not moved for longer than --stale-hours, fresh
   assert.equal(goal(ctx, ['init', 'new', 'New']).status, 0);
   const stale = JSON.parse(goal(ctx, ['check', 'old']).stdout);
   assert.deepEqual(stale.problems.map((p) => p.code), ['STALE']);
-  assert.match(stale.problems[0].message, /registry has been bootstrapping for \d+\.\dh \(limit 2h\)/);
+  assert.match(stale.problems[0].message, /no goal\.mjs commit for \d+\.\dh while bootstrapping \(limit 2h\)/);
   assert.equal(goal(ctx, ['check', 'new']).status, 0);
   assert.equal(goal(ctx, ['check', 'new', '--stale-hours', '0']).status, 1);
+  assert.equal(goal(ctx, ['event', 'old', '0', 'still working']).status, 0);
+  assert.equal(goal(ctx, ['check', 'old']).status, 0, 'a fresh event is activity');
 });
 
 test('check --all walks every control plane under the root: one line per problem, silent and exit 0 when clean', () => {

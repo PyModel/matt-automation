@@ -46,8 +46,17 @@ function rawCommit(control, message = 'fixture') {
   git(control, 'commit', '-qm', message);
 }
 
+// The artifacts the middle registry steps stand on: an active run worktree record, spec.md, a ticket table.
+function evidence(control, slug) {
+  const run = path.join(control, 'runs', slug);
+  write(path.join(run, 'worktrees.json'), JSON.stringify({ run: { backend: 'git', state: 'active' } }));
+  write(path.join(run, 'spec.md'), '# spec\n');
+  fs.appendFileSync(path.join(run, 'todo.md'), '| 01 | t |\n');
+}
+
 // Walk a registered run one step at a time to `to`.
 function advance(repo, slug, to) {
+  evidence(controlDir(repo), slug);
   for (const status of RUN_ORDER.slice(1, RUN_ORDER.indexOf(to) + 1)) setRegistry(repo, slug, status);
 }
 
@@ -449,7 +458,7 @@ test('init registers the run with the next run_id; slug is stable and --new skip
   assert.deepEqual(runs.map((r) => [r.slug, r.run_id, r.status]), [['add-login', 1, 'bootstrapping'], ['other', 2, 'bootstrapping']]);
   assert.equal(slugFor(repo, 'Add login'), 'add-login');
   assert.equal(slugFor(repo, 'Add login', { fresh: true }), 'add-login-2');
-  setRegistry(repo, 'add-login', 'planning');
+  advance(repo, 'add-login', 'planning');
   assert.equal(JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'))[0].status, 'planning');
 });
 
@@ -476,6 +485,41 @@ test('registry: a run moves one step at a time, leaves stopped only by resume, a
   assert.throws(() => setRegistry(repo, 'y', 'planning'), /is stopped.*resume/);
   resume(repo, 'y');
   assert.equal(JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'))[1].status, 'bootstrapping');
+});
+
+test('registry: planning, specced and ticketed each need their artifact, so the registry cannot be walked with nothing behind it', () => {
+  const { repo, control } = repoWithControl();
+  init(repo, 'x', 'X');
+  const run = path.join(control, 'runs/x');
+  assert.throws(() => setRegistry(repo, 'x', 'planning'), /no active run worktree; `goal\.mjs worktree get x`/);
+  write(path.join(run, 'worktrees.json'), JSON.stringify({ run: { state: 'returned' } }));
+  assert.throws(() => setRegistry(repo, 'x', 'planning'), /no active run worktree/);
+  write(path.join(run, 'worktrees.json'), JSON.stringify({ run: { state: 'active' } }));
+  setRegistry(repo, 'x', 'planning');
+  assert.throws(() => setRegistry(repo, 'x', 'specced'), /runs\/x\/spec\.md is missing/);
+  write(path.join(run, 'spec.md'), '# spec\n');
+  setRegistry(repo, 'x', 'specced');
+  assert.throws(() => setRegistry(repo, 'x', 'ticketed'), /no tickets in tracker\/x\/issues and no ticket table/);
+  fs.appendFileSync(path.join(run, 'todo.md'), '\n## Notes\nnot a ticket\n');
+  assert.throws(() => setRegistry(repo, 'x', 'ticketed'), /no ticket table/, 'a later section is not a ticket table');
+  write(path.join(control, 'tracker/x/issues/01-a.md'), ticket('ready-for-agent', 'None', 'exclusive: a.ts'));
+  setRegistry(repo, 'x', 'ticketed');
+  init(repo, 'y', 'Y');
+  evidence(control, 'y');
+  fs.rmSync(path.join(control, 'runs/y/worktrees.json'));
+  stop(repo, 'y', 'paused');
+  resume(repo, 'y');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'))[1].status, 'bootstrapping', 'resume restores without evidence checks');
+});
+
+test('init refuses a backlog objective and admits a bounded one', () => {
+  const { repo, control } = repoWithControl();
+  for (const objective of ['fix all 422 open Linear issues', 'Fix every open bug', 'close all the remaining GitHub issues', 'resolve 120 open issues']) {
+    assert.throws(() => init(repo, 'b', objective), /is a backlog, not one run/, objective);
+  }
+  assert.equal(fs.existsSync(path.join(control, 'runs/b')), false);
+  for (const [slug, objective] of [['a', 'Add login with email and password'], ['f', 'Fix issue #42: login loops'], ['t', 'Fix all type errors in the issues page']]) init(repo, slug, objective);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8')).length, 3);
 });
 
 test('stop halts the loop and records why', () => {

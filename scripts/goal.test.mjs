@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, checkContract, claimsSinceDispatch, amendClaims, waive, event, withLock, breakStale, commit, controlDir, configure } from './goal.mjs';
+import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, checkContract, sinceDispatch, amendClaims, waive, event, withLock, breakStale, commit, controlDir, configure, runLogged, dispatch, orcRunDir, RUN_ORDER } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -38,6 +38,17 @@ function todo(ticked) {
 
 function ticket(status, blockedBy, claims) {
   return `# t\n\n**Status:** ${status}\n**Blocked by:** ${blockedBy}\n**Claims:** ${claims}\n`;
+}
+
+// Fixture state committed straight through git, as an older run or another tool left it: goal.mjs commit would refuse it.
+function rawCommit(control, message = 'fixture') {
+  git(control, 'add', '-A');
+  git(control, 'commit', '-qm', message);
+}
+
+// Walk a registered run one step at a time to `to`.
+function advance(repo, slug, to) {
+  for (const status of RUN_ORDER.slice(1, RUN_ORDER.indexOf(to) + 1)) setRegistry(repo, slug, status);
 }
 
 test('controlDir resolves the same control plane from any worktree', () => {
@@ -189,13 +200,12 @@ test('take flips frontier tickets to in-flight once, and status commits the chan
   const issues = path.join(control, 'tracker/f/issues');
   write(path.join(issues, '01-a.md'), ticket('ready-for-agent', 'None', 'exclusive: a.ts'));
   write(path.join(issues, '02-b.md'), ticket('ready-for-agent', 'None', 'exclusive: b.ts'));
-  write(path.join(issues, '03-c.md'), ticket('blocked', '01', 'exclusive: c.ts'));
+  write(path.join(issues, '03-c.md'), ticket('blocked', 'None', 'exclusive: c.ts'));
   git(control, 'add', '-A'); git(control, 'commit', '-qm', 'tickets');
   assert.deepEqual(take(repo, 'f', 1), ['01']);
   assert.deepEqual(take(repo, 'f', 3), ['02']);
   assert.deepEqual(frontier(control, 'f').frontier, []);
-  setStatus(repo, 'f', '01', 'done');
-  assert.deepEqual(frontier(control, 'f').frontier, []);
+  assert.equal(setStatus(repo, 'f', '01', 'in-flight'), 'nothing to commit', 're-marking is a no-op');
   setStatus(repo, 'f', '03', 'ready-for-agent');
   assert.deepEqual(frontier(control, 'f').frontier, ['03']);
   assert.equal(git(control, 'status', '--porcelain'), '');
@@ -217,8 +227,8 @@ test('status and claim refuse a ticket with uncommitted hand edits, so no edit r
 
   const ticked = read(t02).replace('- [ ] a criterion', '- [x] a criterion');
   fs.writeFileSync(path.join(control, t02), ticked);
-  setStatus(repo, 'f', '02', 'done');
-  assert.match(read(t02), /^\*\*Status:\*\* done$/m, 'ticked boxes (BUILD.md step 6) are not a hand edit');
+  setStatus(repo, 'f', '02', 'needs-human', { reason: 'owner decides the copy' });
+  assert.match(read(t02), /^\*\*Status:\*\* needs-human: owner decides the copy$/m, 'ticked boxes (BUILD.md step 6) are not a hand edit');
   assert.match(read(t02), /^- \[x\] a criterion/m);
   assert.equal(git(control, 'status', '--porcelain'), '');
 
@@ -239,25 +249,6 @@ test('status and claim refuse a ticket with uncommitted hand edits, so no edit r
   assert.doesNotMatch(read('tracker/f/issues/01-a.md'), /src\/z\.ts/);
 });
 
-test('status done refuses a dispatched ticket until its committed receipt passes the receipt check', () => {
-  const { repo, control, read } = runWithTickets(undefined, '- [ ] a is exported\n');
-  const t01 = 'tracker/f/issues/01-a.md';
-  assert.throws(() => setStatus(repo, 'f', '01', 'done'), /no receipt/);
-  const rel = 'runs/f/tickets/01.receipt.md';
-  const good = receipt({ ticket_base: 'b', head: 'h', criteria: [{ criterion: 'a is exported', result: 'pass', evidence: 'test exit 0' }] });
-  write(path.join(control, rel), JSON.stringify({ ...good, contract_quality: 'the criteria were off' }));
-  commit(repo, '[f] 01 receipt', [rel]);
-  assert.throws(() => setStatus(repo, 'f', '01', 'done'), /contract_quality/);
-  write(path.join(control, rel), JSON.stringify({ ...good, conclusion: 'partial' }));
-  commit(repo, '[f] 01 receipt partial', [rel]);
-  assert.throws(() => setStatus(repo, 'f', '01', 'done'), /partial/);
-  write(path.join(control, rel), JSON.stringify(good));
-  assert.throws(() => setStatus(repo, 'f', '01', 'done'), /uncommitted edits/);
-  commit(repo, '[f] 01 receipt fixed', [rel]);
-  setStatus(repo, 'f', '01', 'done');
-  assert.match(read(t01), /^\*\*Status:\*\* done$/m);
-});
-
 test('waive records a proven-wrong criterion, and a partial receipt whose only misses are waived counts as completed', () => {
   const { repo, control, read } = runWithTickets(undefined, '- [ ] a is exported\n- [ ] the flag mutant is killed\n');
   const t01 = 'tracker/f/issues/01-a.md';
@@ -269,13 +260,17 @@ test('waive records a proven-wrong criterion, and a partial receipt whose only m
 
   assert.throws(() => waive(repo, 'f', '01', 3, 'x'), /criterion 3/);
   assert.throws(() => waive(repo, 'f', '01', 2, ' '), /reason/);
+  assert.throws(() => waive(repo, 'f', '01', 2, 'equivalent'), /commit ticket 01's receipt/, 'a waiver answers a committed receipt');
+  write(path.join(control, 'runs/f/tickets/01.receipt.md'), partial);
+  commit(repo, '[f] 01 receipt', ['runs/f/tickets/01.receipt.md']);
+  assert.throws(() => waive(repo, 'f', '01', 1, 'x'), /shows "a is exported" as pass/, 'a criterion the receipt passes is not waived');
   waive(repo, 'f', '01', 2, 'equivalent mutant: exit and completion share one actor job');
   assert.match(read(t01), /^\*\*Waived:\*\* the flag mutant is killed — equivalent mutant/m);
   assert.match(git(control, 'log', '-1', '--format=%s'), /\[waive\] 01/);
   assert.match(read('runs/f/ledger.md').trimEnd().split('\n').at(-1), /^- \d\d:\d\d \[waive\] 01 the flag mutant is killed — equivalent mutant/);
   assert.equal(git(control, 'show', '--format=', '--name-only', 'HEAD').split('\n').length, 2, 'ticket and ledger in one commit');
   assert.equal(git(control, 'status', '--porcelain'), '');
-  assert.throws(() => waive(repo, 'f', '01', 1, 'x'), /no criterion left/);
+  assert.throws(() => waive(repo, 'f', '01', 1, 'x'), /already has 1 waiver/, 'one waiver per ticket');
 
   const r = checkReceipt({ text: partial, ticketText: read(t01) });
   assert.deepEqual([r.ok, r.conclusion, r.waived], [true, 'completed', ['the flag mutant is killed']]);
@@ -284,12 +279,20 @@ test('waive records a proven-wrong criterion, and a partial receipt whose only m
   assert.equal(checkReceipt({ text: JSON.stringify(other), ticketText: read(t01) }).conclusion, 'partial', 'an unwaived miss keeps it partial');
   const handWaived = `${read(t01)}**Waived:** a is exported — by hand\n`;
   assert.match(checkReceipt({ text: partial, ticketText: handWaived }).problems.join(' | '), /every ticket criterion is waived/);
+});
 
-  write(path.join(control, 'runs/f/tickets/01.receipt.md'), partial);
+test('waive: only an in-flight ticket, and --carried-to must name an open ticket that holds the criterion verbatim', () => {
+  const { repo, control, read } = runWithTickets(undefined, '- [ ] a is exported\n- [ ] fixtures use satisfies\n');
+  const partial = receipt({ conclusion: 'partial', ticket_base: 'b', head: 'h', blockers: ['fixtures are in 02'],
+    criteria: [{ criterion: 'a is exported', result: 'pass', evidence: 'x' }, { criterion: 'fixtures use satisfies', result: 'not-run' }] });
+  write(path.join(control, 'runs/f/tickets/01.receipt.md'), JSON.stringify(partial));
   commit(repo, '[f] 01 receipt', ['runs/f/tickets/01.receipt.md']);
-  setStatus(repo, 'f', '01', 'done');
-  assert.match(read(t01), /^\*\*Status:\*\* done$/m);
-  assert.match(read(t01), /^- \[ \] the flag mutant is killed$/m, 'a waived box is not ticked');
+  assert.throws(() => waive(repo, 'f', '02', 1, 'x'), /02 has no criterion 1|only an in-flight/);
+  assert.throws(() => waive(repo, 'f', '01', 2, 'lives in 02', { carriedTo: '02' }), /ticket 02 must be another open ticket/);
+  fs.appendFileSync(path.join(control, 'tracker/f/issues/02-b.md'), '- [ ] fixtures use satisfies\n');
+  commit(repo, '[f] 02 carries the fixtures', ['tracker/f/issues/02-b.md']);
+  waive(repo, 'f', '01', 2, 'the files are 02\'s', { carriedTo: '2' });
+  assert.match(read('tracker/f/issues/01-a.md'), /^\*\*Waived:\*\* fixtures use satisfies — the files are 02's \(carried to 02\)$/m);
 });
 
 test('commit refuses a criteria change on an in-flight or done ticket, which never gains criteria', () => {
@@ -309,29 +312,36 @@ test('commit refuses a criteria change on an in-flight or done ticket, which nev
   assert.notEqual(commit(repo, '[f] 01 note', [t01]), 'nothing to commit', 'prose around the criteria is fine');
 });
 
-test('status done ticks every acceptance box itself', () => {
+test('since dispatch: claims and criteria changed by a raw git commit are caught from history, and a re-plan is the new baseline', () => {
   const { repo, control, read } = runWithTickets();
-  const t02 = 'tracker/f/issues/02-b.md';
-  fs.appendFileSync(path.join(control, t02), '- [ ] c1\n  - [ ] c2\n');
-  commit(repo, '[f] 02 criteria', [t02]);
-  setStatus(repo, 'f', '02', 'done');
-  assert.deepEqual(read(t02).match(/- \[.\] c\d/g), ['- [x] c1', '- [x] c2']);
-});
-
-test('claims widened after dispatch other than by goal.mjs claim are refused before re-dispatch', () => {
-  const { repo, control, read } = runWithTickets();
-  const t02 = path.join(control, 'tracker/f/issues/02-b.md');
-  assert.deepEqual(claimsSinceDispatch(t02), [], 'never dispatched: nothing to compare');
+  const rel = 'tracker/f/issues/02-b.md';
+  const t02 = path.join(control, rel);
+  fs.appendFileSync(t02, '- [ ] b works\n');
+  commit(repo, '[f] 02 criterion', [rel]);
+  assert.deepEqual(sinceDispatch(t02), [], 'never dispatched: nothing to compare');
   setStatus(repo, 'f', '02', 'in-flight');
-  assert.deepEqual(claimsSinceDispatch(t02), []);
+  assert.deepEqual(sinceDispatch(t02), []);
   amendClaims(repo, 'f', '02', 'exclusive', ['src/b.fake.ts'], 'conformer');
-  assert.deepEqual(claimsSinceDispatch(t02), [], 'an amendment is accounted for');
-  fs.writeFileSync(t02, read('tracker/f/issues/02-b.md').replace('src/b.fake.ts', 'src/b.fake.ts, src/hand.ts'));
-  commit(repo, '[f] 02 claims by hand', ['tracker/f/issues/02-b.md']);
-  assert.match(claimsSinceDispatch(t02).join(' | '), /src\/hand\.ts.*goal\.mjs claim/);
+  assert.deepEqual(sinceDispatch(t02), [], 'an amendment is accounted for');
+  fs.writeFileSync(t02, `${read(rel).replace('src/b.fake.ts', 'src/b.fake.ts, src/hand.ts')}- [ ] a finding folded in by hand\n`);
+  assert.throws(() => commit(repo, '[f] 02 by hand', [rel]), /02-b\.md/, 'goal.mjs commit refuses it');
+  rawCommit(control, '02 by hand');
+  const problems = sinceDispatch(t02).join(' | ');
+  assert.match(problems, /src\/hand\.ts.*goal\.mjs claim/);
+  assert.match(problems, /criteria changed since dispatch.*\+"a finding folded in by hand"/);
+  assert.throws(() => setStatus(repo, 'f', '02', 'ready-for-agent'), /cannot go from in-flight to ready-for-agent/, 'no bounce back to the frontier');
+  setStatus(repo, 'f', '02', 'stuck', { reason: 'mis-scoped; re-plan' });
   setStatus(repo, 'f', '02', 'ready-for-agent');
   setStatus(repo, 'f', '02', 'in-flight');
-  assert.deepEqual(claimsSinceDispatch(t02), [], 'a fresh dispatch is the new baseline');
+  assert.deepEqual(sinceDispatch(t02), [], 'a dispatch after the re-plan is the new baseline');
+});
+
+test('since dispatch: an in-flight ticket with no dispatch commit was never dispatched by goal.mjs', () => {
+  const { control } = repoWithControl();
+  const file = path.join(control, 'tracker/f/issues/13-x.md');
+  write(file, `${ticket('in-flight', 'None', 'exclusive: DESIGN.md')}- [ ] x\n`);
+  rawCommit(control, 'tickets 13-14');
+  assert.match(sinceDispatch(file).join(' | '), /13 is in-flight but has no "\[f\] ticket 13 → in-flight" commit/);
 });
 
 test('take refuses a tracker that fails the claims gate', () => {
@@ -349,12 +359,15 @@ test('status in-flight runs the same gate as take, so a dispatch never skips it'
   write(path.join(issues, '02-b.md'), ticket('blocked', '01', 'exclusive: src/b.ts'));
   write(path.join(issues, '03-c.md'), ticket('ready-for-agent', '01', 'exclusive: src/b.ts'));
   write(path.join(issues, '04-d.md'), ticket('blocked', '03', 'exclusive: src/d.ts'));
-  commit(repo, '[f] seed', ['01-a.md', '02-b.md', '03-c.md', '04-d.md'].map((f) => `tracker/f/issues/${f}`));
+  rawCommit(control, 'seed');
   assert.throws(() => setStatus(repo, 'f', '03', 'in-flight'), /claims gate/, '02 and 03 claim src/b.ts unordered');
   const b = path.join(issues, '02-b.md');
   fs.writeFileSync(b, fs.readFileSync(b, 'utf8').replace('**Blocked by:** 01', '**Blocked by:** 03'));
   commit(repo, '[f] 02 after 03', ['tracker/f/issues/02-b.md']);
-  assert.throws(() => setStatus(repo, 'f', '04', 'in-flight'), /not on the frontier/, 'a blocked ticket is not dispatchable');
+  assert.throws(() => setStatus(repo, 'f', '04', 'in-flight'), /cannot go from blocked to in-flight/, 'a blocked ticket is not dispatchable');
+  write(path.join(issues, '06-f.md'), ticket('ready-for-agent', '04', 'exclusive: src/f.ts'));
+  commit(repo, '[f] 06 after 04', ['tracker/f/issues/06-f.md']);
+  assert.throws(() => setStatus(repo, 'f', '06', 'in-flight'), /not on the frontier/, 'a ready ticket with an open blocker is not dispatchable');
   setStatus(repo, 'f', '03', 'in-flight');
   assert.match(git(control, 'log', '-1', '--format=%s'), /ticket 03 → in-flight/);
   write(path.join(issues, '05-e.md'), ticket('ready-for-agent', 'None', 'exclusive: src/b.ts'));
@@ -436,8 +449,33 @@ test('init registers the run with the next run_id; slug is stable and --new skip
   assert.deepEqual(runs.map((r) => [r.slug, r.run_id, r.status]), [['add-login', 1, 'bootstrapping'], ['other', 2, 'bootstrapping']]);
   assert.equal(slugFor(repo, 'Add login'), 'add-login');
   assert.equal(slugFor(repo, 'Add login', { fresh: true }), 'add-login-2');
-  setRegistry(repo, 'add-login', 'done');
-  assert.equal(JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'))[0].status, 'done');
+  setRegistry(repo, 'add-login', 'planning');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'))[0].status, 'planning');
+});
+
+test('registry: a run moves one step at a time, leaves stopped only by resume, and is done only on a final verdict for the target\'s tip', () => {
+  const { repo, control } = repoWithControl();
+  init(repo, 'x', 'X');
+  assert.throws(() => setRegistry(repo, 'x', 'building'), /cannot go from bootstrapping to building/);
+  assert.throws(() => setRegistry(repo, 'x', 'shipped'), /unknown run status/);
+  advance(repo, 'x', 'reviewing');
+  assert.throws(() => setRegistry(repo, 'x', 'planning'), /cannot go from reviewing to planning/);
+  assert.throws(() => setRegistry(repo, 'x', 'done'), /final-verdict\.json is missing/);
+  const verdict = path.join(control, 'runs/x/final-verdict.json');
+  const tip = git(repo, 'rev-parse', 'HEAD');
+  write(verdict, JSON.stringify({ verdict: 'ship', target: 'main', review_head: tip }));
+  assert.throws(() => setRegistry(repo, 'x', 'done'), /uncommitted/);
+  commit(repo, '[x] verdict', ['runs/x/final-verdict.json']);
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'landed after the review');
+  assert.throws(() => setRegistry(repo, 'x', 'done'), /main is at .* but the final review saw/, 'code that landed after the review is unreviewed');
+  write(verdict, JSON.stringify({ verdict: 'ship', target: 'main', review_head: git(repo, 'rev-parse', 'HEAD') }));
+  commit(repo, '[x] verdict at the tip', ['runs/x/final-verdict.json']);
+  setRegistry(repo, 'x', 'done');
+  init(repo, 'y', 'Y');
+  stop(repo, 'y', 'budget');
+  assert.throws(() => setRegistry(repo, 'y', 'planning'), /is stopped.*resume/);
+  resume(repo, 'y');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'))[1].status, 'bootstrapping');
 });
 
 test('stop halts the loop and records why', () => {
@@ -526,12 +564,13 @@ test('registry reviewing refuses while a ticket is neither done nor stuck (stage
   const issues = path.join(control, 'tracker/x/issues');
   write(path.join(issues, '01-a.md'), ticket('done', 'None', 'exclusive: a.ts'));
   write(path.join(issues, '02-b.md'), ticket('blocked', '01', 'exclusive: b.ts'));
-  commit(repo, '[x] tickets', ['tracker/x/issues/01-a.md', 'tracker/x/issues/02-b.md']);
+  rawCommit(control, 'tickets');
+  advance(repo, 'x', 'building');
   assert.throws(() => setRegistry(repo, 'x', 'reviewing'), /02 \(blocked\)/);
-  setRegistry(repo, 'x', 'building');
   init(repo, 'y', 'Y');
-  setRegistry(repo, 'y', 'reviewing');
-  setStatus(repo, 'x', '02', 'stuck');
+  advance(repo, 'y', 'reviewing');
+  assert.throws(() => setStatus(repo, 'x', '02', 'stuck'), /stuck needs its reason/);
+  setStatus(repo, 'x', '02', 'stuck', { reason: 'prerequisite gone' });
   setRegistry(repo, 'x', 'reviewing');
   assert.equal(JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'))[0].status, 'reviewing');
 });
@@ -539,7 +578,7 @@ test('registry reviewing refuses while a ticket is neither done nor stuck (stage
 test('resume after init restores the registry status the stop replaced', () => {
   const { repo, control } = repoWithControl();
   init(repo, 'x', 'X');
-  setRegistry(repo, 'x', 'building');
+  advance(repo, 'x', 'building');
   stop(repo, 'x', 'budget: wall-clock');
   resume(repo, 'x');
   assert.equal(JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'))[0].status, 'building');
@@ -575,7 +614,7 @@ test('a claims path after ; says how to fix it', () => {
 test('frontier reports exclusive-claim overlaps with other active runs, ignoring finished ones', () => {
   const { repo, control } = repoWithControl();
   for (const slug of ['a', 'b', 'old']) init(repo, slug, slug);
-  setRegistry(repo, 'old', 'done');
+  setRegistry(repo, 'old', 'dry-run');
   write(path.join(control, 'tracker/a/issues/01-x.md'), ticket('ready-for-agent', 'None', 'exclusive: app/View.swift, lib/'));
   write(path.join(control, 'tracker/b/issues/03-y.md'), ticket('in-flight', 'None', 'exclusive: app/View.swift'));
   write(path.join(control, 'tracker/b/issues/04-z.md'), ticket('done', 'None', 'exclusive: lib/'));
@@ -615,15 +654,17 @@ test('frontier resolves each ticket\'s capability: absent is standard/medium, in
   assert.match(result.malformed[0].problems.join(' '), /capability/);
 });
 
-// A run `f` with ticket 01 in flight (contract written) and ticket 02 open beside it.
+// A run `f` with ticket 01 dispatched by take (contract written) and ticket 02 ready beside it.
 function runWithTickets(second = 'exclusive: src/b.ts', criteria = '') {
   const { repo, control } = repoWithControl();
   init(repo, 'f', 'F');
   const one = 'exclusive: a.ts ; shared-regenerate: gen/ ; guarded: none';
-  write(path.join(control, 'tracker/f/issues/01-a.md'), ticket('in-flight', 'None', one) + criteria);
+  write(path.join(control, 'tracker/f/issues/01-a.md'), ticket('ready-for-agent', 'None', one) + criteria);
   write(path.join(control, 'tracker/f/issues/02-b.md'), ticket('ready-for-agent', 'None', second));
+  commit(repo, '[f] seed', ['tracker/f/issues/01-a.md', 'tracker/f/issues/02-b.md']);
+  assert.deepEqual(take(repo, 'f', 1), ['01']);
   write(path.join(control, 'runs/f/tickets/01.goal.md'), `# 01\n\n- Claims: ${one}; a needed path outside them → stop, return \`claims-breach\`\n`);
-  commit(repo, '[f] seed', ['tracker/f/issues/01-a.md', 'tracker/f/issues/02-b.md', 'runs/f/tickets/01.goal.md']);
+  commit(repo, '[f] contract 01', ['runs/f/tickets/01.goal.md']);
   return { repo, control, read: (rel) => fs.readFileSync(path.join(control, rel), 'utf8') };
 }
 
@@ -710,7 +751,8 @@ function ticketWorktree() {
   const base = git(repo, 'rev-parse', 'HEAD');
   write(path.join(repo, 'src/a.ts'), 'export const a = 1;\n');
   git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'Refs 01');
-  return { repo, base, head: git(repo, 'rev-parse', 'HEAD') };
+  const { log } = runLogged(repo, 'echo 41 passed');
+  return { repo, base, head: git(repo, 'rev-parse', 'HEAD'), validation: [{ command: 'echo 41 passed', exit: 0, summary: '41 passed', log }] };
 }
 
 const TICKET = `${ticket('in-flight', 'None', 'exclusive: src/a.ts')}\n- [ ] a is exported\n- [ ] suite green\n`;
@@ -722,24 +764,24 @@ function receipt(over = {}) {
       { criterion: 'a is exported', result: 'pass', evidence: 'npm test -- a.test.ts exit 0' },
       { criterion: 'suite green', result: 'pass', evidence: 'npm test exit 0 (41 passed)' },
     ],
-    validation: [{ command: 'npm test', exit: 0, summary: '41 passed' }],
+    validation: [{ command: 'echo 41 passed', exit: 0, summary: '41 passed' }],
     review: { cited_fixed: 0, leads: [] }, not_validated: [], blockers: [], external_effects: [], worktree_clean: true,
     ...over,
   };
 }
 
 test('receipt: a completed receipt that matches git and the ticket passes', () => {
-  const { repo, base, head } = ticketWorktree();
-  const r = checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head })), worktree: repo, base, ticketText: TICKET });
+  const { repo, base, head, validation } = ticketWorktree();
+  const r = checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head, validation })), worktree: repo, base, ticketText: TICKET });
   assert.deepEqual(r.problems, []);
   assert.equal(r.ok, true);
 });
 
 test('receipt and contract: a path that is not a worktree root is refused, never read as the enclosing repo', () => {
-  const { repo, base, head } = ticketWorktree();
+  const { repo, base, head, validation } = ticketWorktree();
   const inner = path.join(repo, 'src');
   fs.mkdirSync(inner, { recursive: true });
-  const text = JSON.stringify(receipt({ ticket_base: base, head }));
+  const text = JSON.stringify(receipt({ ticket_base: base, head, validation }));
   for (const wt of [inner, path.join(repo, 'gone')]) {
     const r = checkReceipt({ text, worktree: wt, base, ticketText: TICKET });
     assert.equal(r.ok, false);
@@ -749,14 +791,14 @@ test('receipt and contract: a path that is not a worktree root is refused, never
 });
 
 test('receipt: the last json fence of a final message is the receipt', () => {
-  const { repo, base, head } = ticketWorktree();
-  const text = `Done.\n\n\`\`\`json\n{"ignored": true}\n\`\`\`\n\nRECEIPT\n\`\`\`json\n${JSON.stringify(receipt({ ticket_base: base, head }))}\n\`\`\`\n`;
+  const { repo, base, head, validation } = ticketWorktree();
+  const text = `Done.\n\n\`\`\`json\n{"ignored": true}\n\`\`\`\n\nRECEIPT\n\`\`\`json\n${JSON.stringify(receipt({ ticket_base: base, head, validation }))}\n\`\`\`\n`;
   assert.equal(checkReceipt({ text, worktree: repo, base, ticketText: TICKET }).ok, true);
 });
 
 test('receipt: claims git does not back are refused', () => {
-  const { repo, base, head } = ticketWorktree();
-  const problems = (over) => checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head, ...over })), worktree: repo, base, ticketText: TICKET }).problems.join(' | ');
+  const { repo, base, head, validation } = ticketWorktree();
+  const problems = (over) => checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head, validation, ...over })), worktree: repo, base, ticketText: TICKET }).problems.join(' | ');
   assert.match(problems({ head: base }), /head/);
   assert.match(problems({ ticket_base: head }), /ticket_base/);
   assert.match(problems({ changed_files: ['src/a.ts', 'src/b.ts'] }), /changed_files/);
@@ -765,8 +807,8 @@ test('receipt: claims git does not back are refused', () => {
 });
 
 test('receipt: every ticket criterion needs a passing, evidenced entry before completed', () => {
-  const { repo, base, head } = ticketWorktree();
-  const problems = (over) => checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head, ...over })), worktree: repo, base, ticketText: TICKET }).problems.join(' | ');
+  const { repo, base, head, validation } = ticketWorktree();
+  const problems = (over) => checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head, validation, ...over })), worktree: repo, base, ticketText: TICKET }).problems.join(' | ');
   const [first, second] = receipt().criteria;
   assert.match(problems({ criteria: [first] }), /suite green/);
   assert.match(problems({ criteria: [first, { ...second, result: 'fail' }] }), /suite green/);
@@ -775,14 +817,14 @@ test('receipt: every ticket criterion needs a passing, evidenced entry before co
   assert.match(problems({ criteria: [first, second, { ...second, result: 'fail' }] }), /more than once/);
   assert.match(problems({ blockers: ['needs a key'] }), /blockers/);
   assert.match(problems({ validation: [] }), /validation/);
-  const bare = checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head, criteria: [] })), worktree: repo, base, ticketText: ticket('in-flight', 'None', 'exclusive: src/a.ts') });
+  const bare = checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head, validation, criteria: [] })), worktree: repo, base, ticketText: ticket('in-flight', 'None', 'exclusive: src/a.ts') });
   assert.match(bare.problems.join(' | '), /no acceptance criteria/);
 });
 
 test('receipt: a criterion quoted without its trailing parenthetical note still matches', () => {
-  const { repo, base, head } = ticketWorktree();
+  const { repo, base, head, validation } = ticketWorktree();
   const noted = `${ticket('in-flight', 'None', 'exclusive: src/a.ts')}\n- [ ] a is exported (on disk). (Red at base: a is missing; P2.)\n- [ ] suite green (Invariant, green at base.)\n`;
-  const check = (criteria) => checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head, criteria })), worktree: repo, base, ticketText: noted }).problems;
+  const check = (criteria) => checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head, validation, criteria })), worktree: repo, base, ticketText: noted }).problems;
   const [first, second] = receipt().criteria;
   assert.deepEqual(check([{ ...first, criterion: 'a is exported (on disk).' }, second]), []);
   assert.deepEqual(check([{ ...first, criterion: 'a is exported (on disk). (Red at base: a is missing; P2.)' }, { ...second, criterion: 'suite green (Invariant, green at base.)' }]), []);
@@ -811,4 +853,153 @@ test('receipt: a stuck receipt with its reason is well-formed, and the CLI exits
   assert.equal(cli('bad.json'), 1);
   assert.equal(spawnSync(process.execPath, [GOAL, 'receipt', path.join(dir, 'good.json'), '--worktree', repo]).status, 2);
   assert.equal(spawnSync(process.execPath, [GOAL, 'receipt', path.join(dir, 'good.json'), '--worktree', repo, '--base', base, '--tick', 'x']).status, 2);
+});
+
+test('commit: each ticket field has one writer, so a hand edit cannot move a status or forge an amendment', () => {
+  const { repo, control, read } = runWithTickets(undefined, '- [ ] a works\n');
+  const t01 = 'tracker/f/issues/01-a.md';
+  const t02 = 'tracker/f/issues/02-b.md';
+  const head = git(control, 'rev-parse', 'HEAD');
+  const refused = (rel, text, pattern) => {
+    fs.writeFileSync(path.join(control, rel), text);
+    assert.throws(() => commit(repo, '[f] hand edit', [rel]), pattern);
+    git(control, 'checkout', '--', rel);
+  };
+  refused(t01, read(t01).replace('**Status:** in-flight', '**Status:** done'), /status is written only by goal\.mjs take\/status/);
+  refused(t01, `${read(t01)}**Claims amended:** +b.ts (exclusive): by hand\n`, /amended is written only by goal\.mjs claim/);
+  refused(t01, `${read(t01)}**Waived:** a works — by hand\n`, /waived is written only by goal\.mjs waive/);
+  refused(t01, read(t01).replace('exclusive: a.ts', 'exclusive: a.ts, z.ts'), /claims is written only by goal\.mjs claim once the ticket is dispatched/);
+  refused(t02, `${read(t02)}**From review:** 01\n`, /From review.*nobody after the ticket is created/);
+  refused(t02, read(t02).replace('ready-for-agent', 'ready'), /malformed: unknown status ready/);
+  assert.equal(git(control, 'rev-parse', 'HEAD'), head);
+  fs.writeFileSync(path.join(control, t02), read(t02).replace('exclusive: src/b.ts', 'exclusive: src/b.ts, src/b2.ts'));
+  commit(repo, '[f] 02 widened before dispatch', [t02]);
+  const t03 = 'tracker/f/issues/03-c.md';
+  write(path.join(control, t03), ticket('in-flight', 'None', 'exclusive: c.ts'));
+  assert.throws(() => commit(repo, '[f] 03', [t03]), /03-c\.md is new, so it starts blocked or ready-for-agent/);
+  write(path.join(control, t03), `${ticket('ready-for-agent', 'None', 'exclusive: c.ts')}**From review:** 01\n`);
+  commit(repo, '[f] 03 from 01\'s review', [t03]);
+});
+
+test('status: done is final, and a stuck or needs-human reason is kept on the line', () => {
+  const { repo, read } = runWithTickets();
+  const t01 = 'tracker/f/issues/01-a.md';
+  assert.throws(() => setStatus(repo, 'f', '01', 'blocked'), /cannot go from in-flight to blocked/);
+  setStatus(repo, 'f', '01', 'needs-human', { reason: 'which currency?' });
+  assert.match(read(t01), /^\*\*Status:\*\* needs-human: which currency\?$/m);
+  setStatus(repo, 'f', '01', 'in-flight');
+  assert.match(git(controlDir(repo), 'log', '-1', '--format=%s'), /ticket 01 → in-flight \(resumed\)$/, 'a resume is not a new dispatch baseline');
+  assert.throws(() => setStatus(repo, 'f', '01', 'in-flight', { reason: 'x' }), /carry a reason/);
+  assert.throws(() => setStatus(repo, 'f', '01', 'stuck', { reason: 'x', landed: 'HEAD' }), /--landed goes with done/);
+  assert.throws(() => setStatus(repo, 'f', '01', 'done'), /done needs --landed/);
+});
+
+// Ticket 01 dispatched, implemented on goal/f-t01 and validated through goal.mjs run; its receipt is ready to commit.
+function implementedTicket() {
+  const { repo, control, read } = runWithTickets(undefined, '- [ ] a is exported\n');
+  const base = git(repo, 'rev-parse', 'HEAD');
+  git(repo, 'checkout', '-q', '-b', 'goal/f-t01');
+  write(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+  git(repo, 'add', 'a.ts'); git(repo, 'commit', '-qm', 'Refs 01');
+  const head = git(repo, 'rev-parse', 'HEAD');
+  const { log } = runLogged(repo, 'echo ok');
+  git(repo, 'checkout', '-q', 'main');
+  const r = receipt({ ticket_base: base, head, changed_files: ['a.ts'], criteria: [{ criterion: 'a is exported', result: 'pass', evidence: 'echo ok exit 0' }], validation: [{ command: 'echo ok', exit: 0, summary: 'ok', log }] });
+  const save = (x) => { write(path.join(control, 'runs/f/tickets/01.receipt.md'), JSON.stringify(x)); commit(repo, '[f] 01 receipt', ['runs/f/tickets/01.receipt.md']); };
+  return { repo, control, read, base, head, r, save, log };
+}
+
+test('done: the committed receipt is checked against git at its head, and landed must contain that head', () => {
+  const { repo, control, read, head, r, save } = implementedTicket();
+  assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: head }), /no receipt/);
+  save({ ...r, conclusion: 'partial' });
+  assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: head }), /not completed/);
+  save({ ...r, changed_files: ['a.ts', 'b.ts'] });
+  assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: head }), /changed_files/);
+  save(r);
+  assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: 'main' }), /neither contains receipt head.*patch-id/, 'the ticket has not landed on main');
+  assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: 'f'.repeat(40) }), /not a commit in this repository/);
+  git(repo, 'merge', '-q', '--ff-only', 'goal/f-t01');
+  setStatus(repo, 'f', '01', 'done', { landed: 'main' });
+  assert.match(read('tracker/f/issues/01-a.md'), /^\*\*Status:\*\* done$/m);
+  assert.match(read('tracker/f/issues/01-a.md'), /^- \[x\] a is exported$/m, 'done ticks the boxes');
+  assert.match(git(control, 'log', '-1', '--format=%s'), new RegExp(`ticket 01 → done \\(landed ${head.slice(0, 12)}\\)`));
+  assert.throws(() => setStatus(repo, 'f', '01', 'stuck', { reason: 'x' }), /cannot go from done/);
+  assert.equal(fs.readdirSync(os.tmpdir()).filter((d) => d.startsWith('goal-receipt-') && git(control, 'worktree', 'list').includes(d)).length, 0, 'the check worktree is removed');
+});
+
+test('done: a squash merge of the same change lands by patch-id; a different change does not', () => {
+  const { repo, read, head, r, save } = implementedTicket();
+  save(r);
+  write(path.join(repo, 'a.ts'), 'export const a = 2;\n');
+  git(repo, 'add', 'a.ts'); git(repo, 'commit', '-qm', 'something else');
+  assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: 'main' }), /patch-id/);
+  git(repo, 'reset', '-q', '--hard', 'HEAD~1');
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'main moved on');
+  git(repo, 'merge', '-q', '--squash', 'goal/f-t01'); git(repo, 'commit', '-qm', 'Ticket 01 (#1)');
+  assert.notEqual(git(repo, 'rev-parse', 'HEAD'), head);
+  setStatus(repo, 'f', '01', 'done', { landed: 'main' });
+  assert.match(read('tracker/f/issues/01-a.md'), /^\*\*Status:\*\* done$/m);
+});
+
+test('done: a validation line stands only on its unchanged goal.mjs run log from the receipt head', () => {
+  const { repo, head, r, save, log } = implementedTicket();
+  git(repo, 'merge', '-q', '--ff-only', 'goal/f-t01');
+  save({ ...r, validation: [{ command: 'echo ok', exit: 0, summary: 'ok' }] });
+  assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: head }), /has no log.*goal\.mjs run -- echo ok/);
+  save({ ...r, validation: [{ ...r.validation[0], exit: 1 }] });
+  assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: head }), /claims exit 1 but its log ended 0/);
+  const outside = path.join(os.tmpdir(), `goal-fake-${process.pid}.log`);
+  fs.writeFileSync(outside, fs.readFileSync(log.path));
+  save({ ...r, validation: [{ ...r.validation[0], log: { ...log, path: outside } }] });
+  assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: head }), /not a goal\.mjs run log of this repository/);
+  fs.appendFileSync(log.path, 'edited\n');
+  save(r);
+  assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: head }), /does not match its sha256/);
+});
+
+test('run: the log records command, exit, head and dirtiness; the CLI passes the exit code through', () => {
+  const { repo, head } = ticketWorktree();
+  const { exit, log } = runLogged(repo, 'echo hi; exit 3');
+  assert.equal(exit, 3);
+  const footer = JSON.parse(fs.readFileSync(log.path, 'utf8').trimEnd().split('\n').at(-1).replace('goal.mjs run: ', ''));
+  assert.deepEqual(footer, { command: 'echo hi; exit 3', exit: 3, head, dirty: false });
+  assert.ok(log.path.startsWith(fs.realpathSync(path.join(repo, '.git'))) || log.path.includes('/.git/goal-logs/'));
+  const cli = spawnSync(process.execPath, [GOAL, 'run', '--', 'echo', 'from', 'cli'], { cwd: repo, encoding: 'utf8' });
+  assert.equal(cli.status, 0);
+  assert.match(cli.stdout, /from cli\nlog: \{"path":/);
+});
+
+test('frontier: a fix ticket three reviews deep is malformed, its findings go to NOW leads:', () => {
+  const { control } = repoWithControl();
+  const issues = path.join(control, 'tracker/f/issues');
+  write(path.join(issues, '04-a.md'), ticket('done', 'None', 'exclusive: a.ts'));
+  write(path.join(issues, '11-b.md'), `${ticket('done', 'None', 'exclusive: b.ts')}**From review:** 04\n`);
+  write(path.join(issues, '12-c.md'), `${ticket('ready-for-agent', 'None', 'exclusive: c.ts')}**From review:** 11\n`);
+  assert.deepEqual(frontier(control, 'f').frontier, ['12'], 'a fix ticket of a fix ticket is the last generation');
+  write(path.join(issues, '13-d.md'), `${ticket('ready-for-agent', 'None', 'exclusive: d.ts')}**From review:** 12\n`);
+  let result = frontier(control, 'f');
+  assert.deepEqual(result.frontier, []);
+  assert.match(result.malformed.find((m) => m.id === '13').problems.join(' '), /depth 3.*NOW leads:/);
+  write(path.join(issues, '13-d.md'), `${ticket('ready-for-agent', 'None', 'exclusive: d.ts')}**From review:** 99\n`);
+  result = frontier(control, 'f');
+  assert.match(result.malformed.find((m) => m.id === '13').problems.join(' '), /unknown ticket 99/);
+});
+
+test('dispatch: only an in-flight ticket whose committed contract passes, in the ticket\'s own run directory', () => {
+  const { repo, control } = runWithTickets();
+  const wt = control;
+  assert.throws(() => dispatch(repo, 'f', '02', wt, ['--phase', 'implement']), /02 is ready-for-agent.*take/);
+  assert.throws(() => dispatch(repo, 'f', '01', wt, ['--phase', 'implement']), /01 is not dispatchable: .*Ticket base/);
+  assert.throws(() => dispatch(repo, 'f', '01', wt, ['--run-dir', '/tmp/x']), /sets --run-dir and --repo itself/);
+  assert.equal(orcRunDir(repo, 'f', '1'), path.join(fs.realpathSync(path.join(repo, '.git')), 'to-orc', 'f', 't01'));
+});
+
+test('receipt: a repair round lists review findings beside the ticket criteria, and completed needs every repair passing', () => {
+  const { repo, base, head, validation } = ticketWorktree();
+  const check = (repairs) => checkReceipt({ text: JSON.stringify(receipt({ ticket_base: base, head, validation, repairs })), worktree: repo, base, ticketText: TICKET }).problems.join(' | ');
+  assert.equal(check([{ finding: 'F1 money race', result: 'pass', evidence: 'repro now fails closed' }]), '');
+  assert.match(check([{ finding: 'F1 money race', result: 'fail', evidence: 'still races' }]), /repair "F1 money race" is fail/);
+  assert.match(check([{ finding: 'F1', result: 'pass' }]), /repairs must be/);
+  assert.match(check({ F1: 'pass' }), /repairs must be/);
 });

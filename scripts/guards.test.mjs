@@ -5,14 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, nowStage } from './goal.mjs';
+import { STAGES, nowStage, ignoreAllAncestors } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 const tmp = (prefix) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 
-function bareRepo() {
-  const repo = tmp('guards-repo-');
+function bareRepo(repo = tmp('guards-repo-')) {
+  fs.mkdirSync(repo, { recursive: true });
   git(repo, 'init', '-q', '-b', 'main');
   git(repo, 'config', 'user.email', 't@t');
   git(repo, 'config', 'user.name', 't');
@@ -29,8 +29,8 @@ function goal(ctx, args, { treehouse = '', env = {}, flags = [] } = {}) {
   });
 }
 
-function run(slug = 'x') {
-  const ctx = { repo: bareRepo(), state: path.join(tmp('guards-state-'), 'state') };
+function run(slug = 'x', repo = bareRepo()) {
+  const ctx = { repo, state: path.join(tmp('guards-state-'), 'state') };
   for (const args of [['control'], ['init', slug, 'X']]) {
     const r = goal(ctx, args);
     assert.equal(r.status, 0, r.stderr);
@@ -46,10 +46,14 @@ const setNow = (ctx, slug, stage) => {
 };
 
 // A stand-in for treehouse: logs argv, `get` makes a detached worktree in a pool dir and prints its path.
-function fakeTreehouse({ fail = false } = {}) {
+function fakeTreehouse({ fail = false, blind = false } = {}) {
   const dir = tmp('guards-th-');
   const log = path.join(dir, 'calls.log');
   const bin = path.join(dir, 'treehouse');
+  if (blind) { // the real pool root: treehouse stamps `*` into it
+    fs.mkdirSync(path.join(dir, 'pool'));
+    fs.writeFileSync(path.join(dir, 'pool', '.gitignore'), '*\n');
+  }
   fs.writeFileSync(bin, `#!/bin/sh
 echo "$PWD|$*" >> "${log}"
 ${fail ? 'echo "pool exhausted" >&2; exit 3' : ''}
@@ -125,7 +129,7 @@ test('worktree get uses a treehouse lease when treehouse is installed, and retur
   assert.equal(r.status, 0, r.stderr);
   const wt = r.stdout.trim();
   assert.ok(wt.startsWith(path.dirname(th.bin)), 'the path treehouse printed, not a state-dir path');
-  assert.equal(th.calls()[0], `${ctx.repo}|get --lease --no-fetch --lease-holder x`);
+  assert.equal(th.calls()[0], `${ctx.repo}|get --lease --no-fetch --lease-holder x --worktree-path ${path.join(ctx.state, 'worktrees', 'pool', '{slot}', '{repo}')}`);
   assert.equal(git(wt, 'symbolic-ref', '--short', 'HEAD'), 'goal/x');
   assert.equal(JSON.parse(goal(ctx, ['worktree', 'status', 'x']).stdout).run.backend, 'treehouse');
   const back = goal(ctx, ['worktree', 'return', 'x'], { treehouse: th.bin });
@@ -143,6 +147,62 @@ test('an installed treehouse that fails is an error, never a silent fallback to 
   assert.match(r.stderr, /treehouse get --lease .* failed \(exit 3\): pool exhausted/);
   assert.equal(fs.existsSync(path.join(ctx.state, 'worktrees')), false);
   assert.equal(head(ctx), before, 'nothing recorded');
+});
+
+test('a treehouse slot under an ignore-all .gitignore is returned to the pool and refused, nothing recorded', () => {
+  const ctx = run();
+  const th = fakeTreehouse({ blind: true });
+  const before = head(ctx);
+  const r = goal(ctx, ['worktree', 'get', 'x'], { treehouse: th.bin });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /sits under .*pool\/\.gitignore, which ignores everything below it/);
+  assert.match(r.stderr, /treehouse destroy /);
+  const calls = th.calls();
+  assert.equal(calls.length, 2, calls.join('\n'));
+  assert.match(calls[1], /\|return .*\/pool\//);
+  assert.equal(head(ctx), before, 'nothing recorded');
+  assert.equal(JSON.parse(goal(ctx, ['worktree', 'status', 'x']).stdout).run, undefined);
+});
+
+test('a git worktree is refused before creation when the state dir sits under an ignore-all .gitignore', () => {
+  const ctx = run();
+  fs.writeFileSync(path.join(path.dirname(ctx.state), '.gitignore'), '**\n');
+  const before = head(ctx);
+  const r = goal(ctx, ['worktree', 'get', 'x']);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /ignores everything below it.*Move the control plane/);
+  assert.equal(fs.existsSync(path.join(ctx.state, 'worktrees')), false);
+  assert.equal(git(ctx.repo, 'branch', '--list', 'goal/x'), '', 'no branch either');
+  assert.equal(head(ctx), before);
+});
+
+test('ignoreAllAncestors flags only the patterns that blind an ignore-crate walker from above a root', () => {
+  const root = tmp('guards-ign-');
+  const wt = path.join(root, 'a', 'b', 'repo');
+  fs.mkdirSync(wt, { recursive: true });
+  assert.deepEqual(ignoreAllAncestors(wt), [], 'no ignore files: nothing flagged');
+  // what the control plane and ordinary parents carry: never flagged (verified against rg --no-require-git)
+  fs.writeFileSync(path.join(root, '.gitignore'), 'worktrees/\n/*\nnode_modules\n# *\n!*\n');
+  fs.writeFileSync(path.join(root, 'a', '.ignore'), 'worktrees\n*.log\n');
+  assert.deepEqual(ignoreAllAncestors(wt), []);
+  // what treehouse stamps into its pool root, in any of the three spellings, in .gitignore or .ignore
+  fs.writeFileSync(path.join(root, 'a', 'b', '.gitignore'), '  **/*  \n');
+  fs.writeFileSync(path.join(root, 'a', '.ignore'), '**\n');
+  fs.writeFileSync(path.join(root, '.gitignore'), '# pool\n*\n');
+  assert.deepEqual(ignoreAllAncestors(wt), [path.join(root, 'a', 'b', '.gitignore'), path.join(root, 'a', '.ignore'), path.join(root, '.gitignore')]);
+  assert.deepEqual(ignoreAllAncestors(path.join(root, 'a', 'b', 'not-yet-created')), [path.join(root, 'a', 'b', '.gitignore'), path.join(root, 'a', '.ignore'), path.join(root, '.gitignore')], 'a path that does not exist yet is judged by its parents');
+  assert.deepEqual(ignoreAllAncestors(root), [], 'a directory is not below its own ignore file');
+});
+
+test('a borrowed worktree (supervisor target) under an ignore-all .gitignore is refused, nothing recorded', () => {
+  const parent = tmp('guards-blind-'); // the repo's own parent, never the shared tmpdir
+  const ctx = run('x', bareRepo(path.join(parent, 'repo')));
+  fs.writeFileSync(path.join(parent, '.gitignore'), '*\n');
+  const before = head(ctx);
+  const r = goal(ctx, ['worktree', 'get', 'x'], { flags: ['--target-branch', 'main'] });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /ignores everything below it.*main is checked out there/);
+  assert.equal(head(ctx), before);
 });
 
 test('a branch already checked out (supervisor target) is borrowed, and return never removes it', () => {

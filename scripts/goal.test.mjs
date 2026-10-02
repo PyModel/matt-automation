@@ -1002,6 +1002,17 @@ test('done: a validation line stands only on its unchanged goal.mjs run log from
   assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: head }), /does not match its sha256/);
 });
 
+test('run refuses a worktree under an ignore-all .gitignore: a lint there checks nothing, so its log is not evidence', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-blind-'));
+  fs.writeFileSync(path.join(root, '.gitignore'), '# pool root\n*\n');
+  const repo = path.join(root, 'slot', 'repo');
+  fs.mkdirSync(repo, { recursive: true });
+  git(repo, 'init', '-q', '-b', 'main');
+  git(repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init');
+  assert.throws(() => runLogged(repo, 'echo ok'), /sits under .*\.gitignore, which ignores everything below it/);
+  assert.equal(fs.existsSync(path.join(repo, '.git', 'goal-logs')), false, 'no log written');
+});
+
 test('run: the log records command, exit, head and dirtiness; the CLI passes the exit code through', () => {
   const { repo, head } = ticketWorktree();
   const { exit, log } = runLogged(repo, 'echo hi; exit 3');

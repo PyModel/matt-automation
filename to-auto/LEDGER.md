@@ -36,7 +36,7 @@ The tracker's ticket files stay the source of truth for *what to build*; `ticket
 - base: <base commit>   review_base: <immutable sha>   bootstrap: <sha or none>   run_branch: goal/<slug>
 - kun: <upstream sha> (cached)   matt-pin: <vendor sha from matt.mjs check>   run_id: 3   nested: yes   worker: subagent   dirty-checkout: no
 - quarantine: 2 tests (see quarantine.json)
-- commands: install=`pnpm i` typecheck=`pnpm tsc` lint=`pnpm lint` test1=`pnpm vitest run <file>` suite=`pnpm test`
+- commands: install=`pnpm i` hooks=`pnpm lefthook install` typecheck=`pnpm tsc` lint=`pnpm lint` test1=`pnpm vitest run <file>` suite=`pnpm test`
 - packages: none
 - per-worktree: PORT=3000+100*run_id+NN, DATABASE_URL suffix _<slug>_tNN, copy .env with suffix
 - budgets: concurrent 3 (used 2), agents 40 (used 9), per-ticket 12 slices / 90 min, wall-clock 8h (used 1h07), bug-tickets 3 (used 0)

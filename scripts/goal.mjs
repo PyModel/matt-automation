@@ -10,7 +10,8 @@
 //   node scripts/goal.mjs check <slug> | check --all [--state-root <dir>] [--stale-hours <n>]
 //                                                          read-only: NOW ahead of the registry, malformed NOW, registry stale (exit 1 on any)
 //   node scripts/goal.mjs worktree get|return <slug> [NN] | worktree status <slug>
-//                                                          the run's (or ticket NN's) worktree: treehouse lease when on PATH, else git under <state>/worktrees
+//                                                          the run's (or ticket NN's) worktree: treehouse lease (cut under <state>/worktrees/pool) when on PATH, else git under <state>/worktrees;
+//                                                          refused under any ancestor .gitignore/.ignore with a `*` line (gitignore-aware linters scan nothing there)
 //   node scripts/goal.mjs stop <slug> <reason>            halt the run: write runs/<slug>/STOP and set the registry status
 //   node scripts/goal.mjs resume <slug>                   undo a stop once its cause is fixed
 //   node scripts/goal.mjs event <slug> <stage> <text>     append `- HH:MM [stage] text` (local clock) to the ledger and commit
@@ -1141,6 +1142,7 @@ const logsDir = (cwd) => path.join(git(cwd, ['rev-parse', '--path-format=absolut
  */
 export function runLogged(cwd, command) {
   if (!command.trim()) throw new UsageError('run needs a command after --');
+  refuseBlinded(cwd, 'Commit, `goal.mjs worktree return` this worktree, then `worktree get` it again: treehouse slots are then cut under the control plane.');
   const head = git(cwd, ['rev-parse', 'HEAD']);
   const dirty = git(cwd, ['status', '--porcelain']) !== '';
   const run = spawnSync(command, { cwd, shell: true, encoding: 'utf8', maxBuffer: 1 << 30 });
@@ -1544,6 +1546,35 @@ function treehouseBin() {
   return null;
 }
 
+/**
+ * Ancestor `.gitignore`/`.ignore` files above `dir` that ignore everything below them. treehouse stamps `*` into its pool
+ * root, and gitignore-aware tools (oxlint, anything on the ignore crate) read ancestor ignore files: a lint there scans no
+ * files and exits 0, so nothing run in such a worktree is evidence.
+ */
+export function ignoreAllAncestors(dir) {
+  // ponytail: literal lines only. `*`, `**` and `**/*` blind the ignore crate from above a root; `/*` and `name/` do not
+  // (verified with rg --no-require-git). Add a glob matcher when a real pattern escapes this.
+  const ALL = new Set(['*', '**', '**/*']);
+  const hits = [];
+  let child;
+  try { child = fs.realpathSync(dir); } catch { child = path.resolve(dir); }
+  for (let parent = path.dirname(child); parent !== child; child = parent, parent = path.dirname(parent)) {
+    for (const name of ['.gitignore', '.ignore']) {
+      let lines;
+      try { lines = fs.readFileSync(path.join(parent, name), 'utf8').split('\n').map((l) => l.trim()); } catch { continue; }
+      if (lines.some((l) => ALL.has(l))) hits.push(path.join(parent, name));
+    }
+  }
+  return hits;
+}
+
+/** Refuse a directory that ignoreAllAncestors flags; `remedy` says what to do instead. */
+function refuseBlinded(dir, remedy) {
+  const files = ignoreAllAncestors(dir);
+  if (!files.length) return;
+  throw new Refusal(`${dir} sits under ${files.join(' and ')}, which ignores everything below it: gitignore-aware linters (oxlint, anything on the ignore crate) scan no files there and exit 0, so nothing run in it is evidence. ${remedy}`);
+}
+
 /** Where runs commit: the clone `prepare` made when the shared git dir is read-only, else the repo. */
 function workspaceOf(repo, control) {
   const ws = readJson(path.join(control, 'workspace.json')).workspace;
@@ -1609,18 +1640,29 @@ export function worktreeGet(repo, slug, id) {
     const at = exists ? checkedOutAt(workspace, branch) : null;
     let record;
     if (at) {
+      refuseBlinded(at, `${branch} is checked out there; check it out somewhere else, or drop --target-branch.`);
       record = { backend: 'borrowed', path: at, branch, base: null };
     } else {
       const bin = treehouseBin();
       let wt;
       if (bin) {
-        const args = ['get', '--lease', '--no-fetch', '--lease-holder', slug];
+        // New slots are cut under the control plane: the default pool root carries that `*` .gitignore.
+        const pool = path.join(control, 'worktrees', 'pool');
+        const args = ['get', '--lease', '--no-fetch', '--lease-holder', slug, '--worktree-path', path.join(pool, '{slot}', '{repo}')];
         const run = spawnSync(bin, args, { cwd: workspace, encoding: 'utf8' });
         wt = run.stdout?.trim().split('\n').at(-1);
         if (run.status !== 0 || !wt || !path.isAbsolute(wt)) throw new Error(`treehouse ${args.join(' ')} failed (exit ${run.status}): ${(run.stderr || run.error?.message || '').trim()}`);
+        try {
+          // treehouse re-hands any free slot at its recorded path, so an old slot comes back from under the pool root.
+          refuseBlinded(wt, `The slot was returned. \`treehouse destroy --yes ${wt}\` (and every other slot of this repository that \`treehouse status\` lists under that root), so the next lease is cut under ${pool}; or set TO_AUTO_TREEHOUSE= to use plain git worktrees.`);
+        } catch (error) {
+          spawnSync(bin, ['return', wt], { cwd: workspace });
+          throw error;
+        }
         git(wt, exists ? ['switch', '--quiet', branch] : ['switch', '--quiet', '-c', branch, base]);
       } else {
         wt = path.join(control, 'worktrees', `goal-${slug}${ticket ? `-t${ticket}` : ''}`);
+        refuseBlinded(wt, 'Move the control plane (--state-dir or TO_AUTO_HOME) out from under it.');
         git(workspace, exists ? ['worktree', 'add', wt, branch] : ['worktree', 'add', '-b', branch, wt, base]);
       }
       record = { backend: bin ? 'treehouse' : 'git', path: fs.realpathSync(wt), branch, base: exists ? null : git(workspace, ['rev-parse', base]) };

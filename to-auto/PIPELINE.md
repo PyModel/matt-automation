@@ -49,6 +49,8 @@ Rules:
 - `git stash` is shared across worktrees: never stash; commit WIP on the ticket branch instead.
 - Run state and the tracker live in the control plane (CONTROL.md), never in run worktrees, so run branches carry only code.
 - Dependency installs, build caches, and `.env` files are per worktree: the ticket's implementer runs the project's install step in its own worktree before the first test.
+- A worktree never sits under a directory whose `.gitignore` or `.ignore` has a `*` or `**` line (treehouse stamps `*` into its pool root). Gitignore-aware tools (oxlint, anything on the `ignore` crate) read ancestor ignore files there, lint nothing, and exit 0, so a green gate proves nothing. `goal.mjs worktree get` cuts treehouse slots under `<state>/worktrees/pool/` and refuses any worktree with such an ancestor (a treehouse slot goes back to the pool first; the message names the `treehouse destroy` that retires it), and `goal.mjs run` refuses to log a command run under one. Running the gate in the user's checkout instead is not a workaround: that checkout is never touched.
+- Git hooks are shared: `core.hooksPath` and `<git-common-dir>/hooks` serve every worktree, and a dependency install's `prepare` step (husky, lefthook, simple-git-hooks) can rewrite or redirect them for all of them, the user's checkout included. No gate relies on a hook firing: every check a hook runs is its own `commands:` entry run through `goal.mjs run` (BOOTSTRAP.md § 0d), and the implementer re-runs `commands: hooks` after every install (BUILD.md § The implementer brief, rule 1).
 - Parallel tickets need disjoint claims (PLAN.md 6b); take tickets only with `goal.mjs take` (CONTROL.md § Locks).
 
 ## Setup defaults (stage 0b)

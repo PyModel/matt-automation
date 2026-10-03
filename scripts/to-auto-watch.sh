@@ -20,8 +20,10 @@ case "$1" in
     mkdir -p "$STATE"
     printf '%s %s\n' "$(date '+%F %T')" "$(printf '%s' "$out" | grep -c . || true) problem(s)" >> "$STATE/to-auto-watch.log"
     last="$STATE/to-auto-watch.last"
-    if [ "$out" != "$(cat "$last" 2>/dev/null)" ]; then
-      printf '%s' "$out" > "$last"
+    # The set is <state-dir> <slug> <CODE>; the message carries a STALE age that moves every sweep.
+    key=$(printf '%s\n' "$out" | awk 'NF { print $1, $2, $3 }')
+    if [ "$key" != "$(cat "$last" 2>/dev/null)" ]; then
+      printf '%s' "$key" > "$last"
       if [ -n "$out" ]; then
         n=$(printf '%s\n' "$out" | grep -c .)
         first=$(printf '%s\n' "$out" | head -1 | awk '{ $1 = ""; print substr($0, 2) }' | tr -d '"\\' | cut -c1-180)

@@ -364,6 +364,30 @@ test('check --all walks every control plane under the root: one line per problem
   assert.equal(all(['--stale-hours', '0']).stdout.trim().split('\n').length, 3, 'both runs stale plus b ahead');
 });
 
+test('to-auto-watch.sh notify fires once per problem set: a STALE age that only moves is not a new problem', () => {
+  const home = tmp('guards-home-');
+  const ctx = { repo: bareRepo(), state: path.join(home, '.local', 'state', 'to-auto', 'aaa') };
+  const at = (hour) => ({ GIT_COMMITTER_DATE: `2026-01-01T0${hour}:00:00Z`, GIT_AUTHOR_DATE: `2026-01-01T0${hour}:00:00Z` });
+  assert.equal(goal(ctx, ['control']).status, 0);
+  assert.equal(goal(ctx, ['init', 'old', 'Old'], { env: at(0) }).status, 0);
+  const calls = path.join(home, 'osascript.log');
+  fs.writeFileSync(path.join(home, 'osascript'), `#!/bin/sh\necho "$*" >> "${calls}"\n`, { mode: 0o755 });
+  const env = { ...process.env, HOME: home, XDG_STATE_HOME: '', TO_AUTO_HOME: '', PATH: `${home}${path.delimiter}${process.env.PATH}` };
+  const notify = () => assert.equal(spawnSync('sh', [path.join(path.dirname(GOAL), 'to-auto-watch.sh'), 'notify'], { encoding: 'utf8', env }).status, 0);
+  const fired = () => fs.readFileSync(calls, 'utf8').trim().split('\n');
+  notify();
+  assert.equal(fired().length, 1);
+  assert.match(fired()[0], /STALE no goal\.mjs commit for \d+\.\dh/);
+  assert.equal(goal(ctx, ['event', 'old', '0', 'late'], { env: at(5) }).status, 0);
+  notify();
+  assert.equal(fired().length, 1, 'same run, same code, different age');
+  setNow(ctx, 'old', INCIDENT);
+  notify();
+  assert.equal(fired().length, 2, 'STALE became NOW_AHEAD');
+  notify();
+  assert.equal(fired().length, 2);
+});
+
 test('nowStage reads the first token of the NOW stage line only', () => {
   assert.equal(nowStage('# t\n\n## NOW\n- stage: 4b challenge\n\n## Events\n- stage: 9\n'), '4b');
   assert.equal(nowStage('# t\n\n## NOW\n- next: x\n'), null);

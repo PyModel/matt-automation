@@ -86,7 +86,7 @@ Rules:
 | 05 | … | 02, 03 | blocked | | |
 ```
 
-The Stages section is exactly what `goal.mjs init` writes: one `- [ ] <id> <name>` line per stage, in order. Tick a stage `[x]` when its criterion holds; a skipped stage is ticked with `(skipped: <reason>)`. `goal.mjs next` reads this grammar and reports a todo.md missing any stage line as malformed.
+The Stages section is exactly what `goal.mjs init` writes: one `- [ ] <id> <name>` line per stage, in order. `goal.mjs tick <slug> <id>` ticks a stage `[x]` once its criterion holds, in order; `--skipped <reason>` writes `(skipped: <reason>)`. The same commit sets NOW's `- stage:` line to the next stage and moves the registry when that stage needs a later status, so the three never drift. Never type a tick by hand. `goal.mjs next` reads this grammar and reports a todo.md missing any stage line as malformed.
 
 The Tickets table (written at 6b) mirrors the tracker's statuses (CONTROL.md § Tracker grammar): `blocked` → `ready-for-agent` → `in-flight` → `done`, or `stuck` with its reason (BUILD.md § Stuck detection).
 
@@ -94,7 +94,7 @@ The Tickets table (written at 6b) mirrors the tracker's statuses (CONTROL.md § 
 
 Every invocation runs this, first run or fiftieth loop tick, and so does a subagent that must orient:
 
-1. `node ROOT/scripts/goal.mjs next <slug>`. `stop` → report the reason and end; `done` → reply "done" and end (under a loop, this ends the loop); `malformed` → rewrite `todo.md` from the events, then run it again; `blocked` → NOW names a stage the registry never reached: set NOW back to the stage the run really reached (the registry and the artifacts say which), or `goal.mjs stop` the run. Never advance the registry to silence it. Otherwise it names the stage and the one phase file to load. It trusts the files over the checkboxes: a ticked stage whose artifact is missing comes back as the stage to redo. Stage `00` means a fresh run: go straight to BOOTSTRAP.md.
+1. `node ROOT/scripts/goal.mjs next <slug>`. `stop` → report the reason and end; `done` → reply "done" and end (under a loop, this ends the loop); `malformed` → rewrite `todo.md` from the events, then run it again; `blocked` → NOW names a stage the registry never reached: set NOW back to the stage the run really reached (the registry and the artifacts say which), or `goal.mjs stop` the run; or (`TODO_AHEAD`) todo.md was ticked past a registry move by hand: run the `goal.mjs tick` the reason names, which makes the move on its evidence or says what is missing. Never tick ahead to silence it. When `next` says todo.md is unticked behind the registry, run `goal.mjs tick` for each finished stage it names, in order. Otherwise it names the stage and the one phase file to load. It trusts the files over the checkboxes: a ticked stage whose artifact is missing comes back as the stage to redo. Stage `00` means a fresh run: go straight to BOOTSTRAP.md.
 2. Read `ledger.md` NOW and the last 20 events.
 3. Verify NOW against the world: `goal.mjs check <slug>` (exit 0), `goal.mjs worktree status <slug>`, `git log -1` on the run branch, each `tickets/<NN>.status.md` for in-flight tickets, the tracker's ticket statuses. A ticket NOW calls active is handled per BUILD.md § Stuck detection.
 4. Resume at the stage `next` named, checking its completion criterion (PIPELINE.md). Never redo a stage whose artifacts exist and verify; never trust NOW over the artifacts.

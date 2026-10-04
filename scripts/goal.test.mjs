@@ -40,10 +40,11 @@ function ticket(status, blockedBy, claims) {
   return `# t\n\n**Status:** ${status}\n**Blocked by:** ${blockedBy}\n**Claims:** ${claims}\n`;
 }
 
-// Fixture state committed straight through git, as an older run or another tool left it: goal.mjs commit would refuse it.
+// Fixture state committed straight through git, as an older run or another tool left it: goal.mjs commit would refuse it,
+// and so would the control plane's pre-commit hook, which TO_AUTO_WRITER skips.
 function rawCommit(control, message = 'fixture') {
   git(control, 'add', '-A');
-  git(control, 'commit', '-qm', message);
+  execFileSync('git', ['-C', control, 'commit', '-qm', message], { env: { ...process.env, TO_AUTO_WRITER: '1' } });
 }
 
 // The artifacts the middle registry steps stand on: an active run worktree record, spec.md, a ticket table.
@@ -210,7 +211,7 @@ test('take flips frontier tickets to in-flight once, and status commits the chan
   write(path.join(issues, '01-a.md'), ticket('ready-for-agent', 'None', 'exclusive: a.ts'));
   write(path.join(issues, '02-b.md'), ticket('ready-for-agent', 'None', 'exclusive: b.ts'));
   write(path.join(issues, '03-c.md'), ticket('blocked', 'None', 'exclusive: c.ts'));
-  git(control, 'add', '-A'); git(control, 'commit', '-qm', 'tickets');
+  rawCommit(control, 'tickets');
   assert.deepEqual(take(repo, 'f', 1), ['01']);
   assert.deepEqual(take(repo, 'f', 3), ['02']);
   assert.deepEqual(frontier(control, 'f').frontier, []);

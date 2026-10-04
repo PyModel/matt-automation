@@ -6,16 +6,19 @@
 //   node scripts/goal.mjs slug <objective> [--new]        the run slug; --new picks a free -2, -3 … for a deliberate re-run
 //   node scripts/goal.mjs init <slug> <objective> [--agent <id>] [--harness <name>]
 //                                                          register the run and create runs/<slug>/ that next can parse; commit
-//   node scripts/goal.mjs next <slug>                     where the run resumes (JSON); blocked when NOW is ahead of the registry
+//   node scripts/goal.mjs next <slug>                     where the run resumes (JSON); blocked when NOW or todo.md is ahead of the registry
 //   node scripts/goal.mjs check <slug> | check --all [--state-root <dir>] [--stale-hours <n>]
-//                                                          read-only: NOW ahead of the registry, malformed NOW, registry stale (exit 1 on any)
+//                                                          read-only: NOW ahead of the registry, malformed NOW, todo.md behind or ahead of it, registry stale (exit 1 on any)
 //   node scripts/goal.mjs worktree get|return <slug> [NN] | worktree status <slug>
 //                                                          the run's (or ticket NN's) worktree: treehouse lease (cut under <state>/worktrees/pool) when on PATH, else git under <state>/worktrees;
 //                                                          refused under any ancestor .gitignore/.ignore with a `*` line (gitignore-aware linters scan nothing there)
 //   node scripts/goal.mjs stop <slug> <reason>            halt the run: write runs/<slug>/STOP and set the registry status
 //   node scripts/goal.mjs resume <slug>                   undo a stop once its cause is fixed
 //   node scripts/goal.mjs event <slug> <stage> <text>     append `- HH:MM [stage] text` (local clock) to the ledger and commit
-//   node scripts/goal.mjs registry <slug> <status>        move the run one step along RUN_ORDER (or to stopped / dry-run) and commit
+//   node scripts/goal.mjs tick <slug> <stage> [--skipped <reason>]
+//                                                          finish the first unticked stage: tick todo.md, set NOW's stage line, step the registry
+//                                                          to the status the next stage needs (gated), one commit; the only forward registry move
+//   node scripts/goal.mjs registry <slug> dry-run         label a finished --dry-run run and commit
 //   node scripts/goal.mjs frontier <feature>              ticket grammar, frontier, claim overlaps (JSON)
 //   node scripts/goal.mjs take <feature> <n>              atomically flip up to <n> frontier tickets (n = free slots) to in-flight (JSON ids)
 //   node scripts/goal.mjs status <feature> <id> <status> [--landed <sha>] [-- <reason>]
@@ -191,7 +194,40 @@ function requireControl(repo) {
   } catch (error) {
     if (error.message.includes('must not share') || error.message.includes('not its own')) throw error;
   }
+  installCommitHook(controlCommon);
   return control;
+}
+
+const shq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * The control plane's pre-commit hook runs `guard-staged`, so a raw `git commit` meets the same ticket and stage guards as
+ * `goal.mjs commit`; goal.mjs's own commits set TO_AUTO_WRITER and skip it. Rewritten when goal.mjs moves.
+ */
+function installCommitHook(gitDir) {
+  const hook = path.join(gitDir, 'hooks', 'pre-commit');
+  const goal = shq(fileURLToPath(import.meta.url));
+  const text = `#!/bin/sh\n# to-auto: a raw commit meets the guards goal.mjs commit applies.\n[ -n "$TO_AUTO_WRITER" ] && exit 0\n[ -f ${goal} ] || { echo 'to-auto: '${goal}' is gone; any goal.mjs command reinstalls this hook' >&2; exit 1; }\nexec "$(command -v node || echo ${shq(process.execPath)})" ${goal} guard-staged\n`;
+  try {
+    if (fs.readFileSync(hook, 'utf8') === text) return;
+  } catch { /* not installed yet */ }
+  fs.mkdirSync(path.dirname(hook), { recursive: true });
+  fs.writeFileSync(`${hook}.new`, text, { mode: 0o755 });
+  fs.renameSync(`${hook}.new`, hook);
+}
+
+/** The pre-commit check: every staged control-plane file must pass the guards `goal.mjs commit` applies with no owner. */
+export function guardStaged(repo) {
+  const control = requireControl(repo);
+  const staged = git(control, ['diff', '--cached', '--name-only', '--no-renames']).split('\n').filter(Boolean);
+  if (!staged.length) return;
+  // ponytail: the guards read the working tree, so a file staged in part is refused rather than checked blob by blob.
+  const partial = git(control, ['diff', '--name-only', '--', ...staged]);
+  if (partial) throw new Refusal(`${partial.split('\n').join(', ')} staged in part; stage the whole file or use goal.mjs commit`);
+  for (const f of staged) {
+    ticketGuard(control, f, null);
+    stageGuard(control, f, null);
+  }
 }
 
 function gitIdentity(repo) {
@@ -213,7 +249,7 @@ export function ensureControl(repo) {
     fs.writeFileSync(path.join(control, '.to-auto'), `to-auto control plane\nrepo-id: ${repoId(repo)}\n`);
     git(control, ['add', '--', '.gitignore', '.to-auto']);
     git(control, ['commit', '-q', '-m', 'Init to-auto control plane']);
-    return control;
+    return requireControl(repo);
   });
 }
 
@@ -230,11 +266,22 @@ export function slugFor(repo, objective, { fresh = false } = {}) {
 function readRegistry(control) {
   const file = path.join(control, 'runs.json');
   if (!fs.existsSync(file)) return [];
+  let runs;
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+    runs = JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch {
     throw new Error(`${file} is not valid JSON; repair it from \`git -C ${control} log -p -- runs.json\``);
   }
+  if (!Array.isArray(runs) || !runs.every((r) => typeof r?.slug === 'string' && typeof r.status === 'string')) {
+    throw new Error(`${file} is not a list of runs with a slug and a status; repair it from \`git -C ${control} log -p -- runs.json\``);
+  }
+  return runs;
+}
+
+const SLUG = /^[a-z0-9][a-z0-9-]{0,39}$/;
+/** A slug names a folder under runs/, so it is checked before any path is built from it. */
+function assertSlug(slug) {
+  if (!SLUG.test(slug ?? '')) throw new UsageError(`bad slug: ${slug} (kebab-case, at most 40 chars)`);
 }
 
 export function setRegistry(repo, slug, status, { restoring = false } = {}) {
@@ -245,29 +292,38 @@ export function setRegistry(repo, slug, status, { restoring = false } = {}) {
     const entry = runs.find((r) => r.slug === slug);
     if (!entry) throw new Error(`no run ${slug} in runs.json`);
     if (entry.status === status) return 'nothing to commit';
-    const step = RUN_ORDER.indexOf(status) === RUN_ORDER.indexOf(entry.status) + 1 && RUN_ORDER.includes(entry.status);
+    refuseUncommittedStageEdits(control, ['runs.json']);
     if (entry.status === 'stopped' && !restoring) throw new Refusal(`${slug} is stopped; \`goal.mjs resume ${slug}\` restores the status the stop replaced`);
-    if (!restoring && !['stopped', 'dry-run'].includes(status) && !step) {
-      throw new Refusal(`${slug} cannot go from ${entry.status} to ${status}: a run moves one step along ${RUN_ORDER.join(' → ')}`);
-    }
-    const missing = !restoring && stepEvidence(control, slug, status);
-    if (missing) throw new Refusal(`${slug} cannot be ${status} yet: ${missing}`);
-    // Stage 7 is complete only when every ticket is done or stuck with its reason (PIPELINE.md § Completion criteria).
-    const issues = path.join(control, 'tracker', slug, 'issues');
-    if (status === 'reviewing' && fs.existsSync(issues)) {
-      const open = [...ticketFiles(issues).files].map(([id, file]) => [id, parseTicket(fs.readFileSync(file, 'utf8')).status]).filter(([, s]) => !['done', 'stuck'].includes(s));
-      if (open.length) throw new Refusal(`build is not complete: ${open.map(([id, s]) => `${id} (${s})`).join(', ')}; each ticket is done or marked stuck with its reason first`);
-    }
-    if (status === 'done') {
-      const problems = finalVerdictProblems(repo, control, slug);
-      if (problems.length) throw new Refusal(`${slug} is not done: ${problems.join('; ')}`);
-    }
+    const refused = (!restoring && !['stopped', 'dry-run'].includes(status) && stepRefusal(slug, entry.status, status)) || statusGate(repo, control, slug, status, { restoring });
+    if (refused) throw new Refusal(refused);
     if (status === 'stopped') entry.stoppedFrom = entry.status;
     if (status !== 'stopped') delete entry.stoppedFrom;
     entry.status = status;
-    fs.writeFileSync(path.join(control, 'runs.json'), `${JSON.stringify(runs, null, 2)}\n`);
-    return commit(repo, `[${slug}] status ${status}`, ['runs.json']);
+    return writeAndCommit(repo, control, `[${slug}] status ${status}`, { 'runs.json': `${JSON.stringify(runs, null, 2)}\n` }, { owner: 'registry' });
   });
+}
+
+/** Why `from` → `status` is not one forward RUN_ORDER step, or null. */
+function stepRefusal(slug, from, status) {
+  const step = RUN_ORDER.includes(from) && RUN_ORDER.indexOf(status) === RUN_ORDER.indexOf(from) + 1;
+  return step ? null : `${slug} cannot go from ${from} to ${status}: a run moves one step along ${RUN_ORDER.join(' → ')}`;
+}
+
+/** What `status` stands on that is missing (a resumed run skips the step artifacts, never the build and verdict gates), or null. Read-only. */
+function statusGate(repo, control, slug, status, { restoring = false } = {}) {
+  const missing = !restoring && stepEvidence(control, slug, status);
+  if (missing) return `${slug} cannot be ${status} yet: ${missing}`;
+  // Stage 7 is complete only when every ticket is done or stuck with its reason (PIPELINE.md § Completion criteria).
+  const issues = path.join(control, 'tracker', slug, 'issues');
+  if (status === 'reviewing' && fs.existsSync(issues)) {
+    const open = [...ticketFiles(issues).files].map(([id, file]) => [id, parseTicket(fs.readFileSync(file, 'utf8')).status]).filter(([, s]) => !['done', 'stuck'].includes(s));
+    if (open.length) return `build is not complete: ${open.map(([id, s]) => `${id} (${s})`).join(', ')}; each ticket is done or marked stuck with its reason first`;
+  }
+  if (status === 'done') {
+    const problems = finalVerdictProblems(repo, control, slug);
+    if (problems.length) return `${slug} is not done: ${problems.join('; ')}`;
+  }
+  return null;
 }
 
 /**
@@ -315,19 +371,30 @@ function finalVerdictProblems(repo, control, slug) {
   return problems;
 }
 
+/** Park a run: STOP and the `stopped` status (remembering the one it replaced) land in one commit, or neither does. */
 export function stop(repo, slug, reason) {
+  assertSlug(slug);
   const control = requireControl(repo);
-  const file = path.join(control, 'runs', slug, 'STOP');
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${reason}\n`);
-  commit(repo, `[${slug}] stop: ${reason}`, [path.relative(control, file)]);
-  if (readRegistry(control).some((r) => r.slug === slug)) setRegistry(repo, slug, 'stopped');
-  return `stopped ${slug}`;
+  return withLock(repo, 'registry', () => {
+    refuseUncommittedStageEdits(control, ['runs.json']);
+    const runs = readRegistry(control);
+    const entry = runs.find((r) => r.slug === slug);
+    const writes = { [path.join('runs', slug, 'STOP')]: `${reason}\n` };
+    if (entry && entry.status !== 'stopped') {
+      entry.stoppedFrom = entry.status;
+      entry.status = 'stopped';
+      writes['runs.json'] = `${JSON.stringify(runs, null, 2)}\n`;
+    }
+    fs.mkdirSync(path.join(control, 'runs', slug), { recursive: true });
+    writeAndCommit(repo, control, `[${slug}] stop: ${reason}`, writes, { owner: 'registry' });
+    return `stopped ${slug}`;
+  });
 }
 
 /** Append one Events line stamped with the real local clock, so no agent writes a time it guessed. */
 export function event(repo, slug, stage, text) {
   if (/[\r\n]/.test(stage + text)) throw new Error('an event is one line');
+  assertSlug(slug);
   const control = requireControl(repo);
   const rel = path.join('runs', slug, 'ledger.md');
   if (!fs.existsSync(path.join(control, rel))) throw new Error(`${slug} has no ledger at ${rel}`);
@@ -338,22 +405,39 @@ export function event(repo, slug, stage, text) {
 }
 
 function appendEvent(file, stage, text) {
+  fs.writeFileSync(file, withEvent(fs.readFileSync(file, 'utf8'), stage, text));
+}
+
+/** `body` with one Events line appended, stamped with the real local clock. */
+function withEvent(body, stage, text) {
   const now = new Date();
   const hhmm = [now.getHours(), now.getMinutes()].map((n) => String(n).padStart(2, '0')).join(':');
-  const body = fs.readFileSync(file, 'utf8');
-  fs.writeFileSync(file, `${body}${body.endsWith('\n') ? '' : '\n'}- ${hhmm} [${stage}] ${text}\n`);
+  return `${body}${body.endsWith('\n') ? '' : '\n'}- ${hhmm} [${stage}] ${text}\n`;
 }
 
 /** Undo a stop once its cause is fixed: remove STOP and put back the registry status it replaced. */
 export function resume(repo, slug) {
+  assertSlug(slug);
   const control = requireControl(repo);
-  const rel = path.join('runs', slug, 'STOP');
-  if (!fs.existsSync(path.join(control, rel))) throw new Error(`${slug} is not stopped`);
-  fs.rmSync(path.join(control, rel));
-  commit(repo, `[${slug}] resume`, [rel]);
-  const entry = readRegistry(control).find((r) => r.slug === slug);
-  if (entry?.status === 'stopped') setRegistry(repo, slug, entry.stoppedFrom ?? 'bootstrapping', { restoring: true });
-  return `resumed ${slug}`;
+  return withLock(repo, 'registry', () => {
+    const rel = path.join('runs', slug, 'STOP');
+    if (!fs.existsSync(path.join(control, rel))) throw new Error(`${slug} is not stopped`);
+    refuseUncommittedStageEdits(control, ['runs.json']);
+    const runs = readRegistry(control);
+    const entry = runs.find((r) => r.slug === slug);
+    const writes = { [rel]: null };
+    if (entry?.status === 'stopped') {
+      // Gated before anything is written: a refused resume leaves STOP and the stopped status together.
+      const to = entry.stoppedFrom ?? 'bootstrapping';
+      const refused = statusGate(repo, control, slug, to, { restoring: true });
+      if (refused) throw new Refusal(`${refused}; the run stays stopped`);
+      entry.status = to;
+      delete entry.stoppedFrom;
+      writes['runs.json'] = `${JSON.stringify(runs, null, 2)}\n`;
+    }
+    writeAndCommit(repo, control, `[${slug}] resume`, writes, { owner: 'registry' });
+    return `resumed ${slug}`;
+  });
 }
 
 // ---------------------------------------------------------------- next
@@ -370,21 +454,100 @@ export function parseTodo(text) {
 
 const resumeAt = (slug, stage, reason) => ({ slug, stage: stage.id, name: stage.name, phase: stage.phase, reason });
 
+/** The registry status a run needs once `stage` is ticked: the floor of the stage after it, `done` after the last. */
+const statusAfter = (index) => (STAGES[index + 1] ? FLOOR_OF.get(STAGES[index + 1].id) : 'done');
+
+/** Index of the first stage a registry status leaves open: every stage before it is finished work. */
+const openStage = (status) => STAGES.findIndex((s) => RUN_ORDER.indexOf(FLOOR_OF.get(s.id)) >= RUN_ORDER.indexOf(status));
+
+/** The stage whose tick moves the registry to `status` (planning → 0c, specced → 5b, ticketed and building → 6b, reviewing → 7, done → 10). */
+export function tickingStage(status) {
+  const at = RUN_ORDER.indexOf(status);
+  return STAGES.find((s, i) => RUN_ORDER.indexOf(statusAfter(i)) >= at)?.id ?? null;
+}
+
+/**
+ * Finish one stage: the only writer of todo.md's stage ticks, NOW's `- stage:` line and every forward registry move,
+ * so the three cannot drift apart. The stage must be the first unticked one and its artifact must exist; when the next
+ * stage needs a later registry status, the run steps there one RUN_ORDER status at a time through the same gates
+ * `setRegistry` applies, and a refused gate leaves every file untouched. Re-ticking a ticked stage finishes what a
+ * hand tick left undone (the registry move, and NOW when it is the last ticked stage) and commits nothing when there is
+ * nothing to finish; ticking a stage the registry already passed (a todo.md left behind by hand) moves nothing. One commit.
+ */
+export function tick(repo, slug, id, { skipped = null } = {}) {
+  const index = STAGES.findIndex((s) => s.id === id);
+  if (index === -1) throw new UsageError(`unknown stage ${id} (${STAGES.map((s) => s.id).join(', ')})`);
+  if (skipped !== null && (!skipped.trim() || /[\r\n]/.test(skipped))) throw new UsageError('a skip reason is one non-empty line');
+  const control = requireControl(repo);
+  // registry then control, the order setRegistry takes them: ledger.md is also written by event under control, so it is
+  // read and written under that lock or a concurrent event and this tick lose each other's line.
+  return withLock(repo, 'registry', () => withLock(repo, 'control', () => {
+    const runs = readRegistry(control);
+    const entry = runs.find((r) => r.slug === slug);
+    if (!entry) throw new Error(`no run ${slug} in runs.json`);
+    const runDir = path.join(control, 'runs', slug);
+    if (entry.status === 'stopped' || fs.existsSync(path.join(runDir, 'STOP'))) throw new Refusal(`${slug} is stopped; \`goal.mjs resume ${slug}\` first`);
+    if (entry.status === 'done') throw new Refusal(`${slug} is done`);
+    const todoFile = path.join(runDir, 'todo.md');
+    const ledgerFile = path.join(runDir, 'ledger.md');
+    if (!fs.existsSync(todoFile) || !fs.existsSync(ledgerFile)) throw new Refusal(`runs/${slug} has no todo.md or ledger.md; \`goal.mjs init\` writes them`);
+    refuseUncommittedStageEdits(control, ['runs.json', path.join('runs', slug, 'todo.md'), path.join('runs', slug, 'ledger.md')]);
+    const todoText = fs.readFileSync(todoFile, 'utf8');
+    const ticked = parseTodo(todoText);
+    const missingLines = STAGES.filter((s) => !ticked.has(s.id)).map((s) => s.id);
+    if (missingLines.length) throw new Refusal(`todo.md has no line for stage(s) ${missingLines.join(', ')}; restore the lines \`goal.mjs init\` writes`);
+    const firstIndex = STAGES.findIndex((s) => !ticked.get(s.id));
+    const first = STAGES[firstIndex];
+    if (first && index > firstIndex) throw new Refusal(`stage ${id} is not next: ${first.id} ${first.name} is the first unticked stage, so tick it first (with \`--skipped <reason>\` if it did not run)`);
+    const again = ticked.get(id);
+    if (again && skipped !== null) throw new UsageError(`stage ${id} is already ticked; --skipped records only a first tick`);
+    const { artifact } = STAGES[index];
+    if (artifact && !fs.existsSync(path.join(runDir, artifact))) throw new Refusal(`stage ${id} is not finished: runs/${slug}/${artifact} is missing`);
+    // dry-run is a terminal label set after 6b; its stages tick without moving it.
+    const moves = [];
+    if (RUN_ORDER.includes(entry.status)) {
+      const target = RUN_ORDER.indexOf(statusAfter(index));
+      for (let at = RUN_ORDER.indexOf(entry.status) + 1; at <= target; at += 1) {
+        const refused = statusGate(repo, control, slug, RUN_ORDER[at]);
+        if (refused) throw new Refusal(`stage ${id} cannot be ticked: ${refused}`);
+        moves.push(RUN_ORDER[at]);
+      }
+    }
+    const nextStage = STAGES[index + 1];
+    const latest = !again || index === (first ? firstIndex : STAGES.length) - 1;
+    const ledger = fs.readFileSync(ledgerFile, 'utf8');
+    const parts = ledger.split(/^(?=## )/m);
+    const nowAt = parts.findIndex((p) => p.startsWith('## NOW'));
+    if (nowAt === -1) throw new Refusal(`runs/${slug}/ledger.md has no ## NOW section`);
+    if (latest) {
+      const stageLine = `- stage: ${nextStage ? `${nextStage.id} ${nextStage.name}` : 'done'}`;
+      parts[nowAt] = /^- stage:.*$/m.test(parts[nowAt]) ? parts[nowAt].replace(/^- stage:.*$/m, stageLine) : parts[nowAt].replace(/^## NOW[^\n]*\n?/, (h) => `${h.endsWith('\n') ? h : `${h}\n`}${stageLine}\n`);
+    }
+    const nowChanged = parts.join('') !== ledger;
+    if (again && !moves.length && !nowChanged) return { slug, ticked: id, registry: entry.status, next: first?.id ?? 'done', commit: 'nothing to commit' };
+    const runRel = path.join('runs', slug);
+    const writes = {};
+    if (!again) {
+      writes[path.join(runRel, 'todo.md')] = todoText.replace(new RegExp(`^- \\[ \\] ${id}(?=\\s|$)([^\\n]*)$`, 'm'), (_, rest) => `- [x] ${id}${rest}${skipped ? ` (skipped: ${skipped.trim()})` : ''}`);
+    }
+    if (moves.length) {
+      entry.status = moves.at(-1);
+      writes['runs.json'] = `${JSON.stringify(runs, null, 2)}\n`;
+    }
+    // A tick of a stage the registry already passed only repairs bookkeeping; runAge does not count it as activity.
+    const catchUp = !moves.length && RUN_ORDER.includes(entry.status) && index < openStage(entry.status);
+    const what = `${catchUp ? 'catch-up ' : ''}${again ? 're-ticked' : skipped ? `skipped: ${skipped.trim()}` : 'done'}${moves.length ? `; status ${moves.join(' → ')}` : ''}`;
+    writes[path.join(runRel, 'ledger.md')] = withEvent(parts.join(''), id, what);
+    const sha = writeAndCommit(repo, control, `[${slug}] tick ${id}: ${what}`, writes, { owner: 'registry' });
+    return { slug, ticked: id, registry: entry.status, next: again ? (first?.id ?? 'done') : (nextStage?.id ?? 'done'), commit: sha };
+  }));
+}
+
 export function init(repo, slug, objective, { agent = null, harness = null, workerModel = null, noHelpers = false } = {}) {
-  if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(slug)) throw new Error(`bad slug: ${slug} (kebab-case, at most 40 chars)`);
+  assertSlug(slug);
   if (BACKLOG.test(objective)) throw new Refusal(`"${objective}" is a backlog, not one run: snapshot the issue ids and split them into bounded batches, each its own /to-auto run, or hand the backlog to to-orc (BOOTSTRAP.md step 5)`);
   const control = requireControl(repo);
   const runDir = path.join(control, 'runs', slug);
-  if (fs.existsSync(path.join(runDir, 'STOP'))) throw new Error(`${slug} is stopped; fix the cause, then \`goal.mjs resume ${slug}\``);
-  if (fs.existsSync(path.join(runDir, 'todo.md'))) throw new Error(`runs/${slug}/ already exists; resume it with \`goal.mjs next ${slug}\``);
-  withLock(repo, 'registry', () => {
-    const runs = readRegistry(control);
-    if (runs.some((r) => r.slug === slug)) throw new Error(`${slug} is already registered in runs.json`);
-    const runId = runs.reduce((max, r) => Math.max(max, r.run_id ?? 0), 0) + 1;
-    runs.push({ slug, objective, run_id: runId, started: new Date().toISOString(), status: 'bootstrapping', agent, harness, workerModel: workerModel ?? null, helpers: noHelpers ? 'none' : (workerModel ? 'named' : null) });
-    fs.writeFileSync(path.join(control, 'runs.json'), `${JSON.stringify(runs, null, 2)}\n`);
-    commit(repo, `[${slug}] register run ${runId}`, ['runs.json']);
-  });
   const files = {
     'todo.md': `# to-auto todo: ${objective}\n\n## Stages\n${STAGES.map((s) => `- [ ] ${s.id} ${s.name}`).join('\n')}\n\n## Tickets (stage 7)\n`,
     'ledger.md': `# to-auto: ${objective}\n\n## NOW\n- stage: 0 register\n- next: finish BOOTSTRAP.md stage 0\n\n## Events\n`,
@@ -393,14 +556,31 @@ export function init(repo, slug, objective, { agent = null, harness = null, work
   };
   if (noHelpers) files['models.json'] = `${JSON.stringify({ workerModel: null, helpers: 'none', roles: {} }, null, 2)}\n`;
   else if (workerModel) files['models.json'] = `${JSON.stringify({ workerModel, helpers: 'named', roles: {} }, null, 2)}\n`;
-  fs.mkdirSync(runDir, { recursive: true });
-  for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(runDir, name), text);
-  return commit(repo, `[${slug}] start`, Object.keys(files).map((name) => path.join('runs', slug, name)));
+  // The registration and the run's files land in one commit, so a crash never leaves a registered run with no todo.md.
+  return withLock(repo, 'registry', () => {
+    // Checked under the lock: a concurrent init of the same slug that got here first has written todo.md by now.
+    if (fs.existsSync(path.join(runDir, 'STOP'))) throw new Error(`${slug} is stopped; fix the cause, then \`goal.mjs resume ${slug}\``);
+    if (fs.existsSync(path.join(runDir, 'todo.md'))) throw new Error(`runs/${slug}/ already exists; resume it with \`goal.mjs next ${slug}\``);
+    const runs = readRegistry(control);
+    const prior = runs.find((r) => r.slug === slug);
+    // Registered with no todo.md: an init from before this one commit was cut off between its two; this init finishes it
+    // and owns it, so the entry takes this call's objective, start time, agent and models (run_id is kept).
+    if (prior && prior.status !== 'bootstrapping') throw new Error(`${slug} is already registered in runs.json`);
+    const fresh = { slug, objective, started: new Date().toISOString(), status: 'bootstrapping', agent, harness, workerModel: workerModel ?? null, helpers: noHelpers ? 'none' : (workerModel ? 'named' : null) };
+    const runId = prior?.run_id ?? runs.reduce((max, r) => Math.max(max, r.run_id ?? 0), 0) + 1;
+    if (prior) Object.assign(prior, fresh, { run_id: runId });
+    else runs.push({ slug, objective, run_id: runId, ...fresh });
+    const writes = { 'runs.json': `${JSON.stringify(runs, null, 2)}\n` };
+    const what = prior ? `start run ${runId} (registered earlier)` : `register run ${runId} and start`;
+    for (const [name, text] of Object.entries(files)) writes[path.join('runs', slug, name)] = text;
+    fs.mkdirSync(runDir, { recursive: true });
+    return writeAndCommit(repo, control, `[${slug}] ${what}`, writes);
+  });
 }
 
 /** Record the model a role actually used. The requested model is `workerModel` from init. */
 export function recordModel(repo, slug, role, model) {
-  if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(slug)) throw new Error(`bad slug: ${slug}`);
+  assertSlug(slug);
   if (!/^[a-z][a-z0-9-]{0,40}$/.test(role)) throw new Error(`bad role: ${role}`);
   if (!model || /[\r\n]/.test(model)) throw new Error('model is one line');
   const control = requireControl(repo);
@@ -427,6 +607,9 @@ export function next(control, slug) {
   const tickedById = parseTodo(fs.readFileSync(todoFile, 'utf8'));
   const missingLines = STAGES.filter((s) => !tickedById.has(s.id)).map((s) => s.id);
   if (missingLines.length) return { slug, malformed: true, reason: `todo.md has no line for stage(s) ${missingLines.join(', ')}; restore the lines \`goal.mjs init\` writes` };
+  const drift = todoDrift(control, slug);
+  if (drift?.code === 'TODO_AHEAD') return { slug, blocked: true, problems: [drift], reason: drift.message };
+  if (drift) return resumeAt(slug, drift.at, drift.message);
   for (const s of STAGES) {
     if (!tickedById.get(s.id)) return resumeAt(slug, s, 'first unticked stage');
     if (s.artifact && !fs.existsSync(path.join(runDir, s.artifact))) return resumeAt(slug, s, `ticked, but runs/${slug}/${s.artifact} is missing`);
@@ -436,9 +619,8 @@ export function next(control, slug) {
 
 // --------------------------------------------------------------- check
 
-// The registry status a run must have reached before NOW may name a stage: the NOW line is prose an agent
-// rewrites by hand, the registry only moves through `goal.mjs registry`, so NOW running ahead means the run
-// left the pipeline (the stage-7-at-bootstrapping incident).
+// The registry status a run must have reached before NOW may name a stage. `tick` writes the NOW stage line and the
+// registry together, so NOW running ahead means a hand edit: the run left the pipeline (the stage-7-at-bootstrapping incident).
 const STAGE_FLOOR = {
   bootstrapping: ['00', '0', '0a', '0b', '0c'],
   planning: ['0d', '1', '2', '3', '4', '4b', '5', '5b'],
@@ -449,6 +631,31 @@ const STAGE_FLOOR = {
 };
 const FLOOR_OF = new Map(Object.entries(STAGE_FLOOR).flatMap(([status, ids]) => ids.map((id) => [id, status])));
 const TERMINAL = new Set(['done', 'dry-run']);
+
+/**
+ * todo.md out of step with the registry, read-only; null when in step, or for a terminal, stopped or unknown run.
+ * `behind`: the first unticked stage `from` is before `at`, the first stage the registry status leaves open. A registry
+ * step stands on its evidence, so the missing ticks are a stale todo.md (a hand edit, or a run from before `tick`).
+ * `ahead`: todo.md is ticked through `last`, whose next stage needs registry `needs`: a hand tick that skipped the
+ * registry move and its gate, so `next` must not resume past it.
+ */
+function todoDrift(control, slug) {
+  const status = readRegistry(control).find((r) => r.slug === slug)?.status;
+  const todo = path.join(control, 'runs', slug, 'todo.md');
+  if (!RUN_ORDER.includes(status) || status === 'done' || !fs.existsSync(todo)) return null;
+  const ticked = parseTodo(fs.readFileSync(todo, 'utf8'));
+  const from = STAGES.findIndex((s) => ticked.get(s.id) === false);
+  const at = openStage(status);
+  if (from !== -1 && from < at) {
+    return { code: 'TODO_BEHIND', message: `registry is ${status} but todo.md is unticked from stage ${STAGES[from].id}; \`next\` resumes at ${STAGES[at].id}, so \`goal.mjs tick ${slug} <stage>\` each finished stage in order`, at: STAGES[at] };
+  }
+  const end = from === -1 ? STAGES.length : from;
+  const needs = statusAfter(end - 1);
+  if (end > 0 && RUN_ORDER.indexOf(needs) > RUN_ORDER.indexOf(status)) {
+    return { code: 'TODO_AHEAD', message: `todo.md is ticked through stage ${STAGES[end - 1].id}, which needs registry ${needs}, but the registry is ${status}; \`goal.mjs tick ${slug} ${STAGES[end - 1].id}\` makes the move on its evidence` };
+  }
+  return null;
+}
 
 /** The stage id NOW names (`- stage: 7 build …` → `7`), null when there is no stage line. */
 export function nowStage(ledgerText) {
@@ -470,14 +677,21 @@ function stageProblems(control, slug) {
   return [];
 }
 
-/** Seconds since the run's last control-plane commit (`[<slug>] …`: status, event, ticket, receipt), null when unknown. */
+/**
+ * Seconds since the run's last control-plane commit (`[<slug>] …`: tick, event, ticket, receipt), null when unknown.
+ * A catch-up tick is bookkeeping, not progress, so ticking an abandoned run's finished stages never hides it from STALE.
+ */
 function runAge(control, slug, now) {
-  const log = spawnSync('git', ['-C', control, 'log', '-1', '--format=%ct', '-F', `--grep=[${slug}] `], { encoding: 'utf8' });
-  return log.status === 0 && log.stdout.trim() ? now / 1000 - Number(log.stdout.trim()) : null;
+  // ponytail: looks back 50 commits; a run has at most 19 catch-up ticks in a row.
+  const log = spawnSync('git', ['-C', control, 'log', '-n', '50', '--format=%ct %s', '-F', `--grep=[${slug}] `], { encoding: 'utf8' });
+  if (log.status !== 0) return null;
+  const catchUp = new RegExp(`^\\d+ \\[${slug}\\] tick \\S+: catch-up `); // slugs are [a-z0-9-]
+  const last = log.stdout.split('\n').find((l) => l && !catchUp.test(l));
+  return last ? now / 1000 - Number(last.split(' ')[0]) : null;
 }
 
 /**
- * One run's health, read-only: NOW ahead of the registry, a malformed NOW, or no goal.mjs commit for
+ * One run's health, read-only: NOW ahead of the registry, a malformed NOW, todo.md behind or ahead of the registry, or no goal.mjs commit for
  * `staleHours` while the run is still active. Stopped runs are parked on purpose, so they report nothing until `resume`.
  */
 export function checkRun(control, slug, { staleHours = 2, now = Date.now() } = {}) {
@@ -485,6 +699,8 @@ export function checkRun(control, slug, { staleHours = 2, now = Date.now() } = {
   if (!entry) throw new Error(`no run ${slug} in runs.json`);
   const ledger = path.join(control, 'runs', slug, 'ledger.md');
   const problems = stageProblems(control, slug);
+  const drift = todoDrift(control, slug);
+  if (drift) problems.push({ code: drift.code, message: drift.message });
   if (!TERMINAL.has(entry.status) && entry.status !== 'stopped') {
     const age = runAge(control, slug, now);
     if (age !== null && age > staleHours * 3600) {
@@ -508,7 +724,11 @@ export function checkAll(root, opts = {}) {
       continue;
     }
     for (const run of runs) {
-      for (const p of checkRun(dir, run.slug, opts).problems) lines.push(`${dir} ${run.slug} ${p.code} ${p.message}`);
+      try {
+        for (const p of checkRun(dir, run.slug, opts).problems) lines.push(`${dir} ${run.slug} ${p.code} ${p.message}`);
+      } catch (error) {
+        lines.push(`${dir} ${run.slug} RUN_UNCHECKABLE ${error.message.split('\n')[0]}`);
+      }
     }
   }
   return lines;
@@ -1186,8 +1406,9 @@ const held = new Set((process.env.GOAL_LOCKS_HELD ?? '').split(',').filter(Boole
 export function withLock(repo, name, fn) {
   if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) throw new Error(`bad lock name: ${name}`); // no dots: .new-* and .break are reserved
   if (held.has(name)) return fn();
-  const locks = path.join(controlDir(repo), 'locks');
-  fs.mkdirSync(locks, { recursive: true });
+  const dir = controlDir(repo);
+  const locks = path.join(dir, 'locks');
+  const created = fs.mkdirSync(locks, { recursive: true });
   const lock = path.join(locks, name);
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
@@ -1205,6 +1426,14 @@ export function withLock(repo, name, fn) {
   } finally {
     held.delete(name);
     fs.rmSync(lock, { recursive: true, force: true });
+    // A lock taken for a repo with no control plane (a command that then refused) must not leave an empty state folder.
+    if (created && !hasMarker(dir)) {
+      // Only folders this call created (created is d or above it); rmdir fails on one someone else is using.
+      for (const d of [locks, dir]) {
+        if (path.relative(created, d).startsWith('..')) break;
+        try { fs.rmdirSync(d); } catch { break; }
+      }
+    }
   }
 }
 
@@ -1313,6 +1542,91 @@ function ticketGuard(control, rel, owner) {
   }
 }
 
+/**
+ * Where a run stands lives in three copies (runs.json status, todo.md stage ticks, NOW's `- stage:` line) with one writer:
+ * `tick`, plus `setRegistry` for stop, resume and dry-run. Any other commit that changes a copy is refused, so a hand edit
+ * cannot ride in under goal.mjs commit or an event. NOW's stage line may also be set by hand to the stage todo.md says is
+ * next, which is how a NOW that ran ahead is put back. A raw `git commit` meets it through the pre-commit hook; one that
+ * skips the hook (`TO_AUTO_WRITER`, --no-verify) is caught afterwards by `check`.
+ */
+function stageGuard(control, rel, owner) {
+  if (owner === 'registry') return;
+  const file = path.join(control, rel);
+  const committed = spawnSync('git', ['-C', control, 'show', `HEAD:${rel}`], { encoding: 'utf8' });
+  if (committed.status !== 0 || !fs.existsSync(file)) return;
+  const after = fs.readFileSync(file, 'utf8');
+  if (rel === 'runs.json') {
+    let was;
+    let now;
+    try { was = JSON.parse(committed.stdout); now = JSON.parse(after); } catch { return; } // readRegistry reports bad JSON
+    const before = new Map((Array.isArray(was) ? was : []).map((r) => [r.slug, r]));
+    const moved = (Array.isArray(now) ? now : []).find((r) => before.has(r.slug) && (before.get(r.slug).status !== r.status || before.get(r.slug).stoppedFrom !== r.stoppedFrom));
+    if (moved) throw new Refusal(`runs.json: ${moved.slug}'s status is written only by goal.mjs tick, stop, resume and registry dry-run`);
+    return;
+  }
+  const m = rel.match(/^runs\/([^/]+)\/(todo|ledger)\.md$/);
+  if (!m) return;
+  const [, slug, kind] = m;
+  if (kind === 'todo') {
+    const was = parseTodo(committed.stdout);
+    const changed = [...parseTodo(after)].find(([id, ticked]) => (was.has(id) ? was.get(id) !== ticked : ticked));
+    if (changed) throw new Refusal(`runs/${slug}/todo.md: stage ${changed[0]} is ticked only by \`goal.mjs tick ${slug} ${changed[0]}\``);
+    return;
+  }
+  const stage = nowStage(after);
+  if (stage === nowStage(committed.stdout)) return;
+  const todo = path.join(control, 'runs', slug, 'todo.md');
+  const ticked = fs.existsSync(todo) ? parseTodo(fs.readFileSync(todo, 'utf8')) : new Map();
+  const next = STAGES.find((s) => !ticked.get(s.id))?.id ?? 'done';
+  if (stage !== next) throw new Refusal(`runs/${slug}/ledger.md: NOW's stage line is written by \`goal.mjs tick\`; by hand it may only name ${next}, the first unticked stage`);
+}
+
+/**
+ * Refuses when the stage copies `files` name hold an uncommitted hand edit. The writers commit what they read, so without
+ * this a hand tick or a hand-edited status would ride into their commit as if they had made it.
+ */
+function refuseUncommittedStageEdits(control, files) {
+  for (const rel of files) {
+    try {
+      stageGuard(control, rel, null);
+    } catch (error) {
+      if (!(error instanceof Refusal)) throw error;
+      throw new Refusal(`${error.message}; that edit is uncommitted, so undo it (\`git -C ${control} checkout -- ${rel}\`) and use goal.mjs for the change`);
+    }
+  }
+}
+
+/**
+ * Write control-plane files (null deletes one) and commit them as one step, under the control lock so no other writer
+ * interleaves: when the commit fails, every file and the index go back to their state before. Once the commit exists
+ * (HEAD moved), nothing is rolled back, because the files are then exactly what HEAD holds.
+ */
+function writeAndCommit(repo, control, message, writes, opts) {
+  return withLock(repo, 'control', () => {
+    const headBefore = spawnSync('git', ['-C', control, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const before = Object.keys(writes).map((rel) => [rel, fs.existsSync(path.join(control, rel)) ? fs.readFileSync(path.join(control, rel), 'utf8') : null]);
+    try {
+      for (const [rel, text] of Object.entries(writes)) {
+        if (text === null) fs.rmSync(path.join(control, rel), { force: true });
+        else fs.writeFileSync(path.join(control, rel), text);
+      }
+      // A deleted file git never tracked has nothing to commit (git add would refuse its path); its removal is done.
+      const files = Object.keys(writes).filter((rel) => writes[rel] !== null || spawnSync('git', ['-C', control, 'ls-files', '--error-unmatch', '--', rel]).status === 0);
+      return files.length ? commit(repo, message, files, opts) : 'nothing to commit';
+    } catch (error) {
+      // Our commit exists only if it sits right on headBefore with our subject; a raw commit that moved HEAD is not ours.
+      const top = spawnSync('git', ['-C', control, 'log', '-1', '--format=%P%n%s'], { encoding: 'utf8' }).stdout.split('\n');
+      if (top[0] === headBefore && top[1] === message.split('\n')[0]) throw error;
+      for (const [rel, text] of before) {
+        if (text === null) fs.rmSync(path.join(control, rel), { force: true });
+        else fs.writeFileSync(path.join(control, rel), text);
+      }
+      spawnSync('git', ['-C', control, 'reset', '-q', '--', ...Object.keys(writes)]);
+      throw error;
+    }
+  });
+}
+
 export function commit(repo, message, files, { owner = null } = {}) {
   if (!files.length) throw new Error('commit needs at least one file');
   const control = requireControl(repo);
@@ -1326,11 +1640,14 @@ export function commit(repo, message, files, { owner = null } = {}) {
     return fromCwd;
   });
   return withLock(repo, 'control', () => {
-    for (const f of files) ticketGuard(control, f, owner);
+    for (const f of files) {
+      ticketGuard(control, f, owner);
+      stageGuard(control, f, owner);
+    }
     git(control, ['add', '--', ...files]);
     const staged = git(control, ['diff', '--cached', '--name-only', '--', ...files]);
     if (!staged) return 'nothing to commit';
-    git(control, ['commit', '-q', '-m', message, '--', ...files]);
+    git(control, ['commit', '-q', '-m', message, '--', ...files], { ...process.env, TO_AUTO_WRITER: '1' });
     return git(control, ['rev-parse', '--short', 'HEAD']);
   });
 }
@@ -1357,9 +1674,9 @@ export function remoteGuard(args) {
   throw new Refusal(`--no-remote forbids git ${args.find((a) => !a.startsWith('-'))}`);
 }
 
-function git(cwd, args) {
+function git(cwd, args, env = process.env) {
   remoteGuard(args);
-  return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env }).trim();
 }
 
 export function isLinkedWorktree(repo) {
@@ -1784,6 +2101,8 @@ export function compact(repo, slug) {
   if (!now || !/^- /m.test(now)) throw new Refusal(`${slug} NOW is empty; rewrite it so it stands alone before compacting`);
   const ahead = stageProblems(control, slug).find((p) => p.code === 'NOW_AHEAD');
   if (ahead) throw new Refusal(`${slug}: ${ahead.message}; set NOW back to the stage the run really reached, or stop the run, before compacting`);
+  const drift = todoDrift(control, slug);
+  if (drift?.code === 'TODO_AHEAD') throw new Refusal(`${slug}: ${drift.message}, before compacting`);
   const recorded = event(repo, slug, 'compact', 'NOW saved');
   return { ok: true, resume: ledger, event: recorded };
 }
@@ -1888,7 +2207,14 @@ function main(argv) {
     return 0;
   }
   if (command === 'registry' && rest.length === 2) {
+    // BEHAVIOR CHANGE: forward moves belong to `tick`, so the registry cannot run ahead of todo.md and NOW.
+    if (RUN_ORDER.includes(rest[1])) throw new Refusal(`the registry moves forward only through \`goal.mjs tick ${rest[0]} <stage>\`: ${rest[1]} follows the tick of stage ${tickingStage(rest[1])}`);
+    if (rest[1] === 'stopped') throw new Refusal(`\`goal.mjs stop ${rest[0]} <reason>\` stops a run`);
     console.log(setRegistry(repo, rest[0], rest[1]));
+    return 0;
+  }
+  if (command === 'tick' && (rest.length === 2 || (rest.length === 4 && rest[2] === '--skipped'))) {
+    print(tick(repo, rest[0], rest[1], { skipped: rest[3] ?? null }));
     return 0;
   }
   if (command === 'init' && rest.length >= 2) {
@@ -2011,12 +2337,16 @@ function main(argv) {
       return run.status ?? 1;
     });
   }
+  if (command === 'guard-staged' && rest.length === 0) {
+    guardStaged(repo);
+    return 0;
+  }
   if (command === 'commit' && rest[0] === '-m' && rest.length >= 3) {
     if (!/^\[[a-z0-9][a-z0-9-]*\] \S/.test(rest[1])) throw new UsageError(`commit subject must start with [<slug>] (e.g. "[${'my-run'}] t01 status"), got "${rest[1]}"`);
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }
-  console.error('usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] [--worker-model <model>] [--no-helpers] | next <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] | worktree get|return <slug> [NN] | worktree status <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | registry <slug> <status> | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>...');
+  console.error('usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] [--worker-model <model>] [--no-helpers] | next <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] | worktree get|return <slug> [NN] | worktree status <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged');
   return 2;
 }
 

@@ -92,6 +92,8 @@ test('stopping its own run does not release the session; only a done run with no
   const data = JSON.parse(fs.readFileSync(runs, 'utf8'));
   data[0].status = 'done';
   fs.writeFileSync(runs, JSON.stringify(data));
+  // Committed straight through git, as a finished run leaves it: goal.mjs commits refuse a hand-edited status.
+  execFileSync('git', ['-C', w.env.TO_AUTO_HOME, 'commit', '-qam', '[x] fixture: done'], { env: { ...process.env, TO_AUTO_WRITER: '1' } });
   w.goal('init', 'y', 'Y', '--agent', 'someone-else');
   assert.equal(w.bash(INCIDENT), 'deny', 'another run is still active in the repo');
   w.goal('stop', 'y', 'paused');

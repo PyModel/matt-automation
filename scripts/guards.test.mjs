@@ -38,11 +38,20 @@ function run(slug = 'x', repo = bareRepo()) {
   return ctx;
 }
 
+/** A hand edit committed past the control plane's pre-commit hook, as goal.mjs's writers do, for check to catch. */
+const handCommit = (ctx, msg) => execFileSync('git', ['-C', ctx.state, 'commit', '-q', '-am', msg], { env: { ...process.env, TO_AUTO_WRITER: '1' } });
 const head = (ctx) => git(ctx.state, 'rev-parse', 'HEAD');
 const setNow = (ctx, slug, stage) => {
   const file = path.join(ctx.state, 'runs', slug, 'ledger.md');
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^- stage: .*$/m, `- stage: ${stage}`));
-  git(ctx.state, 'commit', '-q', '-am', `[${slug}] now`);
+  handCommit(ctx, `[${slug}] now`);
+};
+
+/** Tick every todo.md stage before `id`, as a run that reached it would have. */
+const tickBefore = (ctx, slug, id) => {
+  const file = path.join(ctx.state, 'runs', slug, 'todo.md');
+  const done = new Set(STAGES.slice(0, STAGES.findIndex((s) => s.id === id)).map((s) => s.id));
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^- \[ \] (\S+)/gm, (line, stage) => (done.has(stage) ? `- [x] ${stage}` : line)));
 };
 
 // A stand-in for treehouse: logs argv, `get` makes a detached worktree in a pool dir and prints its path.
@@ -294,14 +303,45 @@ test('every stage needs exactly its registry floor: one status below is NOW_AHEA
   };
   for (const [floor, ids] of Object.entries(floors)) {
     for (const id of ids) {
+      tickBefore(ctx, 'x', id);
       setNow(ctx, 'x', `${id} stage`);
       setStatus(floor);
       assert.equal(JSON.parse(goal(ctx, ['check', 'x']).stdout).ok, true, `${id} at ${floor}`);
       const below = order[order.indexOf(floor) - 1];
       if (!below) continue;
       setStatus(below);
-      assert.deepEqual(JSON.parse(goal(ctx, ['check', 'x']).stdout).problems.map((p) => p.code), ['NOW_AHEAD'], `${id} at ${below}`);
+      assert.deepEqual(JSON.parse(goal(ctx, ['check', 'x']).stdout).problems.map((p) => p.code), ['NOW_AHEAD', 'TODO_AHEAD'], `${id} at ${below}`);
     }
+  }
+});
+
+test('todo.md behind the registry is TODO_BEHIND, and next resumes at the stage the registry reached', () => {
+  const ctx = run();
+  const runs = path.join(ctx.state, 'runs.json');
+  const data = JSON.parse(fs.readFileSync(runs, 'utf8'));
+  data[0].status = 'building';
+  fs.writeFileSync(runs, JSON.stringify(data));
+  tickBefore(ctx, 'x', '5b'); // the niblet run: nine tickets built, todo.md still at 5b
+  setNow(ctx, 'x', '5b reconcile');
+  const c = goal(ctx, ['check', 'x']);
+  assert.equal(c.status, 1);
+  assert.deepEqual(JSON.parse(c.stdout).problems.map((p) => p.code), ['TODO_BEHIND']);
+  const n = goal(ctx, ['next', 'x']);
+  assert.equal(n.status, 0, 'a stale todo.md redirects the resume, it does not block it');
+  assert.equal(JSON.parse(n.stdout).stage, '7');
+  assert.match(JSON.parse(n.stdout).reason, /registry is building.*unticked from stage 5b/);
+  tickBefore(ctx, 'x', '7');
+  assert.equal(goal(ctx, ['check', 'x']).status, 0);
+  assert.doesNotMatch(JSON.parse(goal(ctx, ['next', 'x']).stdout).reason, /registry is/, 'todo.md in step: next reads it as before');
+  // Every status resumes at the stage its registry step opens; a status with nothing behind it, or a terminal one, reads todo.md alone.
+  const fresh = run();
+  const expected = { bootstrapping: '00', planning: '0d', specced: '6', ticketed: '7', building: '7', reviewing: '8', done: '00', 'dry-run': '00' };
+  for (const [status, stage] of Object.entries(expected)) {
+    const file = path.join(fresh.state, 'runs.json');
+    const all = JSON.parse(fs.readFileSync(file, 'utf8'));
+    all[0].status = status;
+    fs.writeFileSync(file, JSON.stringify(all));
+    assert.equal(JSON.parse(goal(fresh, ['next', 'x']).stdout).stage, stage, status);
   }
 });
 
@@ -391,4 +431,474 @@ test('to-auto-watch.sh notify fires once per problem set: a STALE age that only 
 test('nowStage reads the first token of the NOW stage line only', () => {
   assert.equal(nowStage('# t\n\n## NOW\n- stage: 4b challenge\n\n## Events\n- stage: 9\n'), '4b');
   assert.equal(nowStage('# t\n\n## NOW\n- next: x\n'), null);
+});
+
+// ------------------------------------------------------------------ tick
+
+const registryOf = (ctx) => JSON.parse(fs.readFileSync(path.join(ctx.state, 'runs.json'), 'utf8'))[0].status;
+const nowOf = (ctx) => nowStage(fs.readFileSync(path.join(ctx.state, 'runs', 'x', 'ledger.md'), 'utf8'));
+const todoOf = (ctx) => fs.readFileSync(path.join(ctx.state, 'runs', 'x', 'todo.md'), 'utf8');
+const forceStatus = (ctx, status) => {
+  const file = path.join(ctx.state, 'runs.json');
+  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  data[0].status = status;
+  fs.writeFileSync(file, JSON.stringify(data));
+};
+const put = (ctx, rel, text) => {
+  fs.mkdirSync(path.dirname(path.join(ctx.state, rel)), { recursive: true });
+  fs.writeFileSync(path.join(ctx.state, rel), text);
+};
+const tick = (ctx, ...args) => goal(ctx, ['tick', 'x', ...args]);
+const ticked = (ctx, ...args) => {
+  const r = tick(ctx, ...args);
+  assert.equal(r.status, 0, `tick ${args.join(' ')}: ${r.stderr}`);
+  return JSON.parse(r.stdout);
+};
+/** A refused tick names `pattern` and writes nothing: no commit, todo.md, NOW and the registry unchanged. */
+const refused = (ctx, pattern, ...args) => {
+  const before = [head(ctx), todoOf(ctx), nowOf(ctx), registryOf(ctx)];
+  const r = tick(ctx, ...args);
+  assert.equal(r.status, 1, `tick ${args.join(' ')} should be refused`);
+  assert.match(r.stderr, pattern);
+  assert.deepEqual([head(ctx), todoOf(ctx), nowOf(ctx), registryOf(ctx)], before, `refused tick ${args.join(' ')} wrote nothing`);
+};
+
+test('tick walks a run end to end: todo.md, NOW and the registry move together, each registry step on its own gate', () => {
+  const ctx = run();
+  for (const id of ['00', '0', '0a', '0b']) assert.equal(ticked(ctx, id).registry, 'bootstrapping');
+  assert.equal(nowOf(ctx), '0c');
+  refused(ctx, /stage 5 is not next: 0c isolate is the first unticked stage/, '5');
+  refused(ctx, /stage 0c cannot be ticked: x cannot be planning yet: no active run worktree/, '0c');
+  put(ctx, 'runs/x/worktrees.json', JSON.stringify({ run: { backend: 'git', state: 'active' } }));
+  const planned = ticked(ctx, '0c');
+  assert.deepEqual([planned.registry, planned.next], ['planning', '0d']);
+  assert.equal(nowOf(ctx), '0d');
+  assert.equal(git(ctx.state, 'log', '-1', '--format=%s'), '[x] tick 0c: done; status planning');
+  ticked(ctx, '0d');
+  refused(ctx, /runs\/x\/findings\.md is missing/, '1');
+  put(ctx, 'runs/x/findings.md', '# f\n');
+  ticked(ctx, '1');
+  for (const id of ['2', '3', '4', '4b']) ticked(ctx, id, '--skipped', 'ready source');
+  assert.match(todoOf(ctx), /^- \[x\] 4b challenge \(skipped: ready source\)$/m);
+  refused(ctx, /runs\/x\/spec\.md is missing/, '5');
+  put(ctx, 'runs/x/spec.md', '# s\n');
+  assert.equal(ticked(ctx, '5').registry, 'planning');
+  assert.equal(ticked(ctx, '5b').registry, 'specced');
+  ticked(ctx, '6');
+  refused(ctx, /no tickets in tracker\/x\/issues/, '6b');
+  const ticket = (status) => put(ctx, 'tracker/x/issues/01-a.md', `# a\n\n**Status:** ${status}\n**Blocked by:** none\n**Claims:** a.txt (exclusive)\n\n- [ ] works\n`);
+  ticket('in-flight');
+  assert.equal(ticked(ctx, '6b').registry, 'building');
+  assert.match(git(ctx.state, 'log', '-1', '--format=%s'), /status ticketed → building$/);
+  assert.equal(goal(ctx, ['check', 'x']).status, 0, 'a ticked run is in step with its registry');
+  refused(ctx, /build is not complete: 01 \(in-flight\)/, '7');
+  ticket('done');
+  assert.equal(ticked(ctx, '7').registry, 'reviewing');
+  put(ctx, 'runs/x/final-verdict.json', JSON.stringify({ verdict: 'ship', target: 'main', review_head: git(ctx.repo, 'rev-parse', 'main') }));
+  git(ctx.state, 'add', '-A');
+  execFileSync('git', ['-C', ctx.state, 'commit', '-qm', '[x] fixtures'], { env: { ...process.env, TO_AUTO_WRITER: '1' } });
+  ticked(ctx, '8');
+  ticked(ctx, '9');
+  refused(ctx, /runs\/x\/retro\.md is missing/, '10');
+  put(ctx, 'runs/x/retro.md', '# r\n');
+  git(ctx.repo, 'commit', '-q', '--allow-empty', '-m', 'landed after the review');
+  refused(ctx, /main is at .* but the final review saw/, '10');
+  git(ctx.repo, 'reset', '-q', '--hard', 'HEAD~1');
+  assert.equal(ticked(ctx, '10').registry, 'done');
+  assert.equal(nowOf(ctx), 'done');
+  assert.equal(JSON.parse(goal(ctx, ['next', 'x']).stdout).done, true);
+  refused(ctx, /x is done/, '10');
+});
+
+test('re-ticking a ticked stage commits nothing; bad input is a usage error', () => {
+  const ctx = run();
+  ticked(ctx, '00');
+  const before = head(ctx);
+  assert.equal(ticked(ctx, '00').commit, 'nothing to commit');
+  assert.equal(head(ctx), before);
+  assert.equal(tick(ctx, '12').status, 2);
+  assert.equal(tick(ctx, '0', '--skipped', ' ').status, 2);
+  assert.equal(tick(ctx, '0', '--bogus', 'x').status, 2);
+});
+
+test('registry moves forward only through tick; stop and dry-run keep their own routes', () => {
+  const ctx = run();
+  const r = goal(ctx, ['registry', 'x', 'planning']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /only through `goal\.mjs tick x <stage>`: planning follows the tick of stage 0c/);
+  for (const [status, stage] of [['specced', '5b'], ['ticketed', '6b'], ['building', '6b'], ['reviewing', '7'], ['done', '10']]) {
+    assert.match(goal(ctx, ['registry', 'x', status]).stderr, new RegExp(`follows the tick of stage ${stage}$`, 'm'), status);
+  }
+  assert.match(goal(ctx, ['registry', 'x', 'stopped']).stderr, /goal\.mjs stop x <reason>/);
+  assert.equal(registryOf(ctx), 'bootstrapping');
+  assert.equal(goal(ctx, ['registry', 'x', 'dry-run']).status, 0);
+  ticked(ctx, '00');
+  assert.equal(registryOf(ctx), 'dry-run', 'a dry-run ticks without leaving dry-run');
+});
+
+test('a stopped run cannot tick until resumed', () => {
+  const ctx = run();
+  assert.equal(goal(ctx, ['stop', 'x', 'why']).status, 0);
+  refused(ctx, /x is stopped; `goal\.mjs resume x` first/, '00');
+  assert.equal(goal(ctx, ['resume', 'x']).status, 0);
+  ticked(ctx, '00');
+});
+
+test('the drifted live runs repair through tick: the registry stays, todo.md and NOW catch up, check goes clean', () => {
+  // niblet workstream-b: building with nine tickets dispatched, todo.md and NOW still at 5b.
+  const ctx = run();
+  forceStatus(ctx, 'building');
+  tickBefore(ctx, 'x', '5b');
+  setNow(ctx, 'x', '5b reconcile');
+  assert.deepEqual(JSON.parse(goal(ctx, ['check', 'x']).stdout).problems.map((p) => p.code), ['TODO_BEHIND']);
+  for (const id of ['5b', '6', '6b']) assert.equal(ticked(ctx, id).registry, 'building');
+  assert.equal(nowOf(ctx), '7');
+  assert.equal(goal(ctx, ['check', 'x']).status, 0);
+  // t8.1 clean renderer: reviewing, stage 7 unticked, NOW still at 6b.
+  const t8 = run();
+  forceStatus(t8, 'reviewing');
+  tickBefore(t8, 'x', '7');
+  setNow(t8, 'x', '6b claims gate');
+  assert.equal(goal(t8, ['check', 'x']).status, 1);
+  assert.equal(ticked(t8, '7').registry, 'reviewing');
+  assert.equal(nowOf(t8), '8');
+  assert.equal(goal(t8, ['check', 'x']).status, 0);
+});
+
+test('a hand tick that skipped the registry move is TODO_AHEAD: next blocks, and re-ticking the stage makes the move on its evidence', () => {
+  // An agent on the old docs ticked 5b by hand, then `registry specced` was refused.
+  const ctx = run();
+  forceStatus(ctx, 'planning');
+  tickBefore(ctx, 'x', '6');
+  setNow(ctx, 'x', '5b reconcile');
+  const c = JSON.parse(goal(ctx, ['check', 'x']).stdout);
+  assert.deepEqual(c.problems.map((p) => p.code), ['TODO_AHEAD']);
+  assert.match(c.problems[0].message, /ticked through stage 5b, which needs registry specced, but the registry is planning; `goal\.mjs tick x 5b`/);
+  const n = goal(ctx, ['next', 'x']);
+  assert.equal(n.status, 1);
+  assert.equal(JSON.parse(n.stdout).blocked, true, 'next never resumes past a registry step that did not happen');
+  refused(ctx, /runs\/x\/spec\.md is missing/, '5b');
+  put(ctx, 'runs/x/spec.md', '# s\n');
+  put(ctx, 'runs/x/findings.md', '# f\n');
+  assert.match(tick(ctx, '5b', '--skipped', 'x').stderr, /stage 5b is already ticked; --skipped records only a first tick/);
+  const r = ticked(ctx, '5b');
+  assert.deepEqual([r.registry, r.next], ['specced', '6']);
+  assert.equal(nowOf(ctx), '6');
+  assert.match(git(ctx.state, 'log', '-1', '--format=%s'), /^\[x\] tick 5b: re-ticked; status specced$/);
+  assert.equal(goal(ctx, ['check', 'x']).status, 0);
+  assert.equal(ticked(ctx, '5b').commit, 'nothing to commit', 'a second re-tick has nothing to finish');
+  assert.equal(ticked(ctx, '0').commit, 'nothing to commit', 'an older ticked stage leaves NOW alone');
+  assert.equal(nowOf(ctx), '6');
+});
+
+test('catch-up ticks on an abandoned run never hide it from STALE; a tick that moves the run forward is activity', () => {
+  const ctx = run();
+  forceStatus(ctx, 'building');
+  tickBefore(ctx, 'x', '5b');
+  setNow(ctx, 'x', '5b reconcile');
+  const old = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
+  const amend = spawnSync('git', ['-C', ctx.state, 'commit', '-q', '--amend', '--no-edit', `--date=${old}`], { env: { ...process.env, GIT_COMMITTER_DATE: old } });
+  assert.equal(amend.status, 0, String(amend.stderr));
+  for (const id of ['5b', '6', '6b']) ticked(ctx, id);
+  assert.match(git(ctx.state, 'log', '-1', '--format=%s'), /^\[x\] tick 6b: catch-up done$/);
+  const codes = () => JSON.parse(goal(ctx, ['check', 'x']).stdout).problems.map((p) => p.code);
+  assert.deepEqual(codes(), ['STALE'], 'todo.md caught up, but nobody has worked on the run for 5h');
+  put(ctx, 'tracker/x/issues/01-a.md', '# a\n\n**Status:** done\n**Blocked by:** none\n**Claims:** a.txt (exclusive)\n\n- [x] works\n');
+  assert.equal(ticked(ctx, '7').registry, 'reviewing');
+  assert.deepEqual(codes(), [], 'finishing stage 7 is real progress');
+});
+
+test('goal.mjs commit and event refuse a hand edit of any stage copy; NOW may be set back to the first unticked stage', () => {
+  const ctx = run();
+  ticked(ctx, '00');
+  const commitCli = (...files) => goal(ctx, ['commit', '-m', '[x] hand edit', ...files]);
+  const todo = path.join(ctx.state, 'runs', 'x', 'todo.md');
+  const ledger = path.join(ctx.state, 'runs', 'x', 'ledger.md');
+  const runsFile = path.join(ctx.state, 'runs.json');
+  const original = fs.readFileSync(todo, 'utf8');
+  fs.writeFileSync(todo, original.replace('- [ ] 0 register', '- [x] 0 register'));
+  let r = commitCli('runs/x/todo.md');
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /stage 0 is ticked only by `goal\.mjs tick x 0`/);
+  fs.writeFileSync(todo, original.replace('- [x] 00 wiring and ask-matt', '- [ ] 00 wiring and ask-matt'));
+  assert.match(commitCli('runs/x/todo.md').stderr, /stage 00 is ticked only by/, 'unticking is a hand edit too');
+  fs.writeFileSync(todo, `${original}| 01 | t |\n`);
+  assert.equal(commitCli('runs/x/todo.md').status, 0, 'the ticket table is not a stage copy');
+  const now = fs.readFileSync(ledger, 'utf8');
+  fs.writeFileSync(ledger, now.replace(/^- stage: .*$/m, '- stage: 7 build'));
+  assert.match(commitCli('runs/x/ledger.md').stderr, /by hand it may only name 0, the first unticked stage/);
+  r = goal(ctx, ['event', 'x', '0', 'note']);
+  assert.equal(r.status, 1, 'an event commit does not carry a hand-edited stage line in');
+  fs.writeFileSync(ledger, now.replace(/^- next: .*$/m, '- next: something else'));
+  assert.equal(commitCli('runs/x/ledger.md').status, 0, 'the rest of NOW stays prose');
+  const data = JSON.parse(fs.readFileSync(runsFile, 'utf8'));
+  data[0].status = 'building';
+  fs.writeFileSync(runsFile, JSON.stringify(data));
+  assert.match(commitCli('runs.json').stderr, /x's status is written only by goal\.mjs tick, stop, resume and registry dry-run/);
+  git(ctx.state, 'checkout', '--', 'runs.json');
+  // NOW_AHEAD put back by hand, as LEDGER.md says: allowed, because it names the stage todo.md says is next.
+  setNow(ctx, 'x', '7 build');
+  assert.deepEqual(JSON.parse(goal(ctx, ['check', 'x']).stdout).problems.map((p) => p.code), ['NOW_AHEAD']);
+  fs.writeFileSync(ledger, fs.readFileSync(ledger, 'utf8').replace(/^- stage: .*$/m, '- stage: 0 register'));
+  assert.equal(commitCli('runs/x/ledger.md').status, 0);
+  assert.equal(goal(ctx, ['check', 'x']).status, 0);
+});
+
+test('a tick whose commit fails leaves every file and the index as they were', () => {
+  const ctx = run();
+  const before = [todoOf(ctx), fs.readFileSync(path.join(ctx.state, 'runs', 'x', 'ledger.md'), 'utf8'), head(ctx)];
+  const hook = path.join(ctx.state, '.git', 'hooks', 'commit-msg'); // runs after staging; goal.mjs's commits skip pre-commit
+  fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const r = tick(ctx, '00');
+  assert.equal(r.status, 3, r.stderr);
+  assert.deepEqual([todoOf(ctx), fs.readFileSync(path.join(ctx.state, 'runs', 'x', 'ledger.md'), 'utf8'), head(ctx)], before);
+  assert.equal(git(ctx.state, 'status', '--porcelain'), '');
+  fs.rmSync(hook);
+  for (const id of ['00', '0', '0a', '0b']) ticked(ctx, id);
+  // A tick that also moves the registry: runs.json is rolled back with the rest.
+  put(ctx, 'runs/x/worktrees.json', JSON.stringify({ run: { backend: 'git', state: 'active' } }));
+  fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const files = () => ['runs.json', 'runs/x/todo.md', 'runs/x/ledger.md'].map((f) => fs.readFileSync(path.join(ctx.state, f), 'utf8'));
+  const beforeMove = [...files(), head(ctx)];
+  assert.equal(tick(ctx, '0c').status, 3);
+  assert.deepEqual([...files(), head(ctx)], beforeMove);
+  assert.equal(registryOf(ctx), 'bootstrapping');
+  assert.equal(git(ctx.state, 'diff', '--cached', '--name-only'), '', 'nothing left staged');
+  fs.rmSync(hook);
+  assert.equal(ticked(ctx, '0c').registry, 'planning');
+});
+
+test('compact refuses while todo.md is ticked past a registry move', () => {
+  const ctx = run();
+  tickBefore(ctx, 'x', '0d');
+  setNow(ctx, 'x', '0c isolate');
+  const r = goal(ctx, ['compact', 'x']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /ticked through stage 0c, which needs registry planning.*before compacting/);
+});
+
+test('tick and status moves refuse to carry an uncommitted hand edit of a stage copy into their own commit', () => {
+  const ctx = run();
+  const todo = path.join(ctx.state, 'runs', 'x', 'todo.md');
+  fs.writeFileSync(todo, todoOf(ctx).replace('- [ ] 0 register', '- [x] 0 register'));
+  refused(ctx, /stage 0 is ticked only by .*that edit is uncommitted, so undo it/, '00');
+  git(ctx.state, 'checkout', '--', 'runs/x/todo.md');
+  forceStatus(ctx, 'building');
+  refused(ctx, /x's status is written only by .*that edit is uncommitted/, '00');
+  assert.match(goal(ctx, ['stop', 'x', 'why']).stderr, /that edit is uncommitted/);
+  assert.equal(fs.existsSync(path.join(ctx.state, 'runs', 'x', 'STOP')), false, 'a refused stop writes no STOP');
+  git(ctx.state, 'checkout', '--', 'runs.json');
+  ticked(ctx, '00');
+  assert.equal(goal(ctx, ['stop', 'x', 'why']).status, 0);
+  forceStatus(ctx, 'stopped');
+  const data = JSON.parse(fs.readFileSync(path.join(ctx.state, 'runs.json'), 'utf8'));
+  data[0].stoppedFrom = 'building';
+  fs.writeFileSync(path.join(ctx.state, 'runs.json'), JSON.stringify(data));
+  assert.match(goal(ctx, ['resume', 'x']).stderr, /that edit is uncommitted/);
+  assert.equal(fs.existsSync(path.join(ctx.state, 'runs', 'x', 'STOP')), true, 'a refused resume leaves the run stopped');
+});
+
+test('a raw git commit in the control plane meets the same guards: the pre-commit hook refuses stage and ticket hand edits', () => {
+  const ctx = run();
+  const hook = path.join(ctx.state, '.git', 'hooks', 'pre-commit');
+  assert.match(fs.readFileSync(hook, 'utf8'), /guard-staged/, 'control installs the hook');
+  const raw = (...files) => spawnSync('git', ['-C', ctx.state, 'commit', '-qm', '[x] raw', '--', ...files], { encoding: 'utf8', env: { ...process.env, TO_AUTO_WRITER: '' } });
+  const todo = path.join(ctx.state, 'runs', 'x', 'todo.md');
+  const original = todoOf(ctx);
+  fs.writeFileSync(todo, original.replace('- [ ] 00 ', '- [x] 00 '));
+  git(ctx.state, 'add', 'runs/x/todo.md');
+  let r = raw('runs/x/todo.md');
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /stage 00 is ticked only by `goal\.mjs tick x 00`/);
+  git(ctx.state, 'reset', '-q');
+  git(ctx.state, 'checkout', '--', 'runs/x/todo.md');
+  forceStatus(ctx, 'building');
+  git(ctx.state, 'add', 'runs.json');
+  assert.match(raw('runs.json').stderr, /x's status is written only by goal\.mjs tick/);
+  git(ctx.state, 'reset', '-q');
+  git(ctx.state, 'checkout', '--', 'runs.json');
+  put(ctx, 'runs/x/notes.md', 'free prose\n');
+  git(ctx.state, 'add', 'runs/x/notes.md');
+  assert.equal(raw('runs/x/notes.md').status, 0, 'files no guard owns commit as before');
+  fs.writeFileSync(path.join(ctx.state, 'runs', 'x', 'notes.md'), 'staged\n');
+  git(ctx.state, 'add', 'runs/x/notes.md');
+  fs.writeFileSync(path.join(ctx.state, 'runs', 'x', 'notes.md'), 'staged, then edited\n');
+  assert.match(spawnSync('git', ['-C', ctx.state, 'commit', '-qm', '[x] raw'], { encoding: 'utf8' }).stderr, /staged in part/);
+  git(ctx.state, 'checkout', '--', 'runs/x/notes.md');
+  git(ctx.state, 'reset', '-q');
+  fs.rmSync(hook);
+  assert.equal(ticked(ctx, '00').ticked, '00', "goal.mjs's own commits pass, and reinstall a removed hook");
+  assert.match(fs.readFileSync(hook, 'utf8'), /guard-staged/);
+});
+
+test('a lock taken where no control plane exists leaves no empty state folder behind', () => {
+  const repo = bareRepo();
+  const state = path.join(tmp('guards-orphan-'), 'state');
+  const r = spawnSync(process.execPath, [GOAL, '--repo', repo, '--state-dir', state, 'with-lock', 'registry', '--', 'true'], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(fs.existsSync(state), false);
+  const ctx = run('x', repo);
+  assert.equal(fs.existsSync(path.join(ctx.state, '.to-auto')), true, 'a real control plane keeps its folder');
+});
+
+/** Fixture state committed past every guard, as an older run or another tool left it. */
+const fixtureCommit = (ctx, msg) => {
+  git(ctx.state, 'add', '-A');
+  execFileSync('git', ['-C', ctx.state, 'commit', '-qm', msg], { env: { ...process.env, TO_AUTO_WRITER: '1' } });
+};
+const ticketText = (status) => `# t\n\n**Status:** ${status}\n**Blocked by:** None\n**Claims:** exclusive: a.ts\n`;
+const statusOf = (ctx, slug = 'x') => JSON.parse(fs.readFileSync(path.join(ctx.state, 'runs.json'), 'utf8')).find((r) => r.slug === slug);
+
+test('stop and resume are one commit each; a resume its gate refuses leaves the run stopped, STOP and all', () => {
+  const ctx = run();
+  forceStatus(ctx, 'reviewing');
+  put(ctx, 'tracker/x/issues/01-a.md', ticketText('done'));
+  fixtureCommit(ctx, '[x] fixture: reviewing');
+  let before = head(ctx);
+  assert.equal(goal(ctx, ['stop', 'x', 'owner paused']).status, 0);
+  assert.equal(git(ctx.state, 'rev-parse', 'HEAD~1'), before, 'one commit');
+  assert.deepEqual([statusOf(ctx).status, statusOf(ctx).stoppedFrom], ['stopped', 'reviewing']);
+  // A review-fix ticket dispatched while parked: restoring reviewing is refused, and nothing is written.
+  put(ctx, 'tracker/x/issues/01-a.md', ticketText('in-flight'));
+  fixtureCommit(ctx, '[x] fixture: review fix in flight');
+  before = head(ctx);
+  const r = goal(ctx, ['resume', 'x']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /build is not complete: 01 \(in-flight\).*the run stays stopped/);
+  assert.equal(head(ctx), before);
+  assert.equal(fs.existsSync(path.join(ctx.state, 'runs', 'x', 'STOP')), true);
+  assert.equal(statusOf(ctx).status, 'stopped');
+  put(ctx, 'tracker/x/issues/01-a.md', ticketText('done'));
+  fixtureCommit(ctx, '[x] fixture: review fix done');
+  before = head(ctx);
+  assert.equal(goal(ctx, ['resume', 'x']).status, 0);
+  assert.equal(git(ctx.state, 'rev-parse', 'HEAD~1'), before, 'one commit');
+  assert.deepEqual([statusOf(ctx).status, statusOf(ctx).stoppedFrom, fs.existsSync(path.join(ctx.state, 'runs', 'x', 'STOP'))], ['reviewing', undefined, false]);
+});
+
+test('init is one commit: a failed commit leaves no registration, and a registration left without todo.md is finished', () => {
+  const ctx = run();
+  const hook = path.join(ctx.state, '.git', 'hooks', 'commit-msg');
+  fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const runsBefore = fs.readFileSync(path.join(ctx.state, 'runs.json'), 'utf8');
+  assert.equal(goal(ctx, ['init', 'y', 'Y']).status, 3);
+  assert.equal(fs.readFileSync(path.join(ctx.state, 'runs.json'), 'utf8'), runsBefore, 'no registration');
+  assert.equal(fs.existsSync(path.join(ctx.state, 'runs', 'y', 'todo.md')), false);
+  fs.rmSync(hook);
+  assert.equal(goal(ctx, ['init', 'y', 'Y']).status, 0, 'the retry succeeds');
+  // The old two-commit init, cut off after registering.
+  const data = JSON.parse(fs.readFileSync(path.join(ctx.state, 'runs.json'), 'utf8'));
+  data.push({ slug: 'z', objective: 'Z', run_id: 9, status: 'bootstrapping' });
+  fs.writeFileSync(path.join(ctx.state, 'runs.json'), JSON.stringify(data));
+  fixtureCommit(ctx, '[z] register run 9');
+  const r = goal(ctx, ['init', 'z', 'Z']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(git(ctx.state, 'log', '-1', '--format=%s'), /\[z\] start run 9 \(registered earlier\)/);
+  assert.equal(statusOf(ctx, 'z').run_id, 9, 'not registered twice');
+  assert.equal(goal(ctx, ['next', 'z']).status, 0);
+});
+
+test('a tick waits for an event that holds the control lock, so neither loses the other\'s ledger write', async () => {
+  const ctx = run();
+  ticked(ctx, '00');
+  const ledger = path.join(ctx.state, 'runs', 'x', 'ledger.md');
+  const dir = tmp('guards-race-');
+  const barrier = path.join(dir, 'holding');
+  // An event that read ledger.md before the tick and writes it back after a pause, all under the control lock.
+  const script = `cp ${ledger} ${dir}/snap; touch ${barrier}; sleep 1; cat ${dir}/snap > ${ledger}; echo '- 00:00 [0] concurrent' >> ${ledger}; ${process.execPath} ${GOAL} --repo ${ctx.repo} --state-dir ${ctx.state} commit -m '[x] concurrent' runs/x/ledger.md`;
+  const { spawn } = await import('node:child_process');
+  const { TO_AUTO_HOME, ...env } = process.env;
+  const child = spawn(process.execPath, [GOAL, '--repo', ctx.repo, '--state-dir', ctx.state, 'with-lock', 'control', '--', 'sh', '-c', script], { env, stdio: 'ignore' });
+  const exited = new Promise((resolve) => child.on('exit', resolve));
+  while (!fs.existsSync(barrier)) await new Promise((r) => setTimeout(r, 20));
+  ticked(ctx, '0');
+  assert.equal(await exited, 0);
+  const text = fs.readFileSync(ledger, 'utf8');
+  assert.match(text, /concurrent/, 'the event line survives');
+  assert.equal(nowStage(text), '0a', 'the tick\'s NOW survives');
+  assert.equal(git(ctx.state, 'status', '--porcelain'), '');
+});
+
+test('stop, resume and event refuse a slug that is not a run folder name before building any path', () => {
+  const ctx = run();
+  const outside = path.join(path.dirname(ctx.state), 'STOP');
+  for (const args of [['stop', '../../x', 'r'], ['resume', '../..'], ['event', '../x', '0', 'e']]) {
+    const r = goal(ctx, args);
+    assert.equal(r.status, 2, args.join(' '));
+    assert.match(r.stderr, /bad slug/);
+  }
+  assert.equal(fs.existsSync(outside), false);
+});
+
+test('the empty-folder cleanup never removes a state folder that existed before the lock', () => {
+  const repo = bareRepo();
+  const state = tmp('guards-given-');
+  assert.equal(spawnSync(process.execPath, [GOAL, '--repo', repo, '--state-dir', state, 'with-lock', 'registry', '--', 'true']).status, 0);
+  assert.equal(fs.existsSync(state), true);
+  assert.deepEqual(fs.readdirSync(state), []);
+});
+
+test('check --all reports a runs.json of the wrong shape and keeps checking the other control planes', () => {
+  const root = tmp('guards-root-');
+  const good = run();
+  const bad = run();
+  fs.renameSync(good.state, path.join(root, 'good'));
+  fs.renameSync(bad.state, path.join(root, 'bad'));
+  fs.writeFileSync(path.join(root, 'bad', 'runs.json'), '{"slug": "x"}');
+  setNow({ state: path.join(root, 'good') }, 'x', '7 build');
+  const { TO_AUTO_HOME, ...env } = process.env;
+  const r = spawnSync(process.execPath, [GOAL, 'check', '--all', '--state-root', root], { encoding: 'utf8', env });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stdout, /bad - RUNS_UNREADABLE .*not a list of runs/);
+  assert.match(r.stdout, /good x NOW_AHEAD/);
+});
+
+test('the pre-commit hook names a goal.mjs that has moved instead of failing obscurely', () => {
+  const copy = path.join(tmp('guards-moved-'), 'goal.mjs');
+  fs.copyFileSync(GOAL, copy);
+  const ctx = { repo: bareRepo(), state: path.join(tmp('guards-state-'), 'state') };
+  const { TO_AUTO_HOME, ...env } = process.env;
+  for (const args of [['control'], ['init', 'x', 'X']]) assert.equal(spawnSync(process.execPath, [copy, '--repo', ctx.repo, '--state-dir', ctx.state, ...args], { env }).status, 0);
+  fs.rmSync(copy);
+  put(ctx, 'notes.md', 'n\n');
+  git(ctx.state, 'add', 'notes.md');
+  const r = spawnSync('git', ['-C', ctx.state, 'commit', '-qm', 'raw'], { encoding: 'utf8', env: { ...env, TO_AUTO_WRITER: '' } });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /goal\.mjs is gone; any goal\.mjs command reinstalls this hook/);
+});
+
+test('two inits of one slug at once: the second is refused under the lock and never overwrites the first run', async () => {
+  const ctx = run();
+  const dir = tmp('guards-init-race-');
+  const barrier = path.join(dir, 'holding');
+  const { spawn } = await import('node:child_process');
+  const { TO_AUTO_HOME, ...env } = process.env;
+  // A holds the registry lock, then inits s inside it (reentrant), after B has passed every check made before the lock.
+  const script = `touch ${barrier}; sleep 1; ${process.execPath} ${GOAL} --repo ${ctx.repo} --state-dir ${ctx.state} init s 'objective A'`;
+  const a = spawn(process.execPath, [GOAL, '--repo', ctx.repo, '--state-dir', ctx.state, 'with-lock', 'registry', '--', 'sh', '-c', script], { env, stdio: 'ignore' });
+  const exited = new Promise((resolve) => a.on('exit', resolve));
+  while (!fs.existsSync(barrier)) await new Promise((r) => setTimeout(r, 20));
+  const b = goal(ctx, ['init', 's', 'objective B']);
+  assert.equal(await exited, 0);
+  assert.notEqual(b.status, 0);
+  assert.match(b.stderr, /already exists/);
+  assert.match(fs.readFileSync(path.join(ctx.state, 'runs', 's', 'ledger.md'), 'utf8'), /objective A/);
+});
+
+test('a resume clears a STOP that git never tracked, and a half-registered run is finished by the session that inits it', () => {
+  const ctx = run();
+  forceStatus(ctx, 'stopped');
+  fixtureCommit(ctx, '[x] fixture: stopped');
+  fs.writeFileSync(path.join(ctx.state, 'runs', 'x', 'STOP'), 'by hand\n');
+  assert.equal(goal(ctx, ['resume', 'x']).status, 0);
+  assert.equal(fs.existsSync(path.join(ctx.state, 'runs', 'x', 'STOP')), false);
+  assert.equal(statusOf(ctx).status, 'bootstrapping');
+  const data = JSON.parse(fs.readFileSync(path.join(ctx.state, 'runs.json'), 'utf8'));
+  data.push({ slug: 'z', objective: 'old', status: 'bootstrapping', agent: 'gone', started: '2020-01-01T00:00:00.000Z' });
+  fs.writeFileSync(path.join(ctx.state, 'runs.json'), JSON.stringify(data));
+  fixtureCommit(ctx, '[z] register run');
+  assert.equal(goal(ctx, ['init', 'z', 'Z', '--agent', 'me']).status, 0);
+  const z = statusOf(ctx, 'z');
+  assert.deepEqual([z.agent, z.objective, z.run_id, z.started > '2020'], ['me', 'Z', 2, true]);
+  assert.match(git(ctx.state, 'log', '-1', '--format=%s'), /\[z\] start run 2 \(registered earlier\)/);
 });

@@ -30,9 +30,14 @@ test('no phase doc tells a run to hand-type a run/ticket worktree or names a .wo
   assert.match(doc('PIPELINE.md'), /goal\.mjs worktree get <slug> <NN>/);
 });
 
-test('stage 9 moves the registry to done before NOW says done', () => {
-  const close = doc('CLOSE.md');
-  assert.ok(close.indexOf('registry <slug> done`, rewrite NOW to `stage: done`') > 0);
+test('stage progress moves only through goal.mjs tick: no phase doc hand-ticks a stage or moves the registry forward', () => {
+  for (const name of PHASE_DOCS) {
+    const text = doc(name);
+    assert.doesNotMatch(text, /goal\.mjs registry <slug> (planning|specced|ticketed|building|reviewing|done)\b/, `${name} moves the registry by hand`);
+    assert.doesNotMatch(text, /\btick `\d/, `${name} hand-ticks a stage`);
+  }
+  assert.match(doc('CLOSE.md'), /goal\.mjs tick <slug> 10`: one commit ticks 10, sets NOW to `stage: done` and moves the registry to `done`/);
+  assert.match(doc('CORE.md'), /a stage is finished only by `goal\.mjs tick <slug> <id>`/);
 });
 
 test('SKILL.md makes the stage next names binding and forbids repo work before init', () => {

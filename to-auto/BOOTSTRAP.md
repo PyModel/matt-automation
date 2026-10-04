@@ -14,7 +14,7 @@ In order:
 
 ## 0. Register
 
-Check `runs.json` for a running objective that overlaps this one by ≥ 80 % of tokens (refuse and report unless `--force`). Then `node ROOT/scripts/goal.mjs init <slug> "<objective>" --agent <this session's id> --harness <harness name> [--worker-model <model>] [--no-helpers]` registers the run with the next `run_id` and creates and commits `runs/<slug>/` with `ledger.md`, `todo.md` (every stage line, unticked), `log.md`, and `bugs.md`. `--worker-model` is the requested helper model; after each helper returns, `goal.mjs model <slug> <role> <model-used>` records the model that role actually used. `--no-helpers` records that none ran, and no helper is spawned. Write `run_id` and the check's `pin:` into NOW; tick `00` and `0`. Then:
+Check `runs.json` for a running objective that overlaps this one by ≥ 80 % of tokens (refuse and report unless `--force`). Then `node ROOT/scripts/goal.mjs init <slug> "<objective>" --agent <this session's id> --harness <harness name> [--worker-model <model>] [--no-helpers]` registers the run with the next `run_id` and creates and commits `runs/<slug>/` with `ledger.md`, `todo.md` (every stage line, unticked), `log.md`, and `bugs.md`. `--worker-model` is the requested helper model; after each helper returns, `goal.mjs model <slug> <role> <model-used>` records the model that role actually used. `--no-helpers` records that none ran, and no helper is spawned. Write `run_id` and the check's `pin:` into NOW; `goal.mjs tick <slug> 00`, then `goal.mjs tick <slug> 0`. Then:
 
 1. If the user's checkout has uncommitted changes (`git status --porcelain` non-empty), write `dirty-checkout: yes (N files)` into NOW: the run builds from the base commit and will not see them; the report repeats it.
 2. `--gc` candidate sweep (report-only by default; § Kill switch and GC below).
@@ -35,7 +35,7 @@ The engineering skills need `docs/agents/issue-tracker.md`, `docs/agents/domain.
 1. `node ROOT/scripts/goal.mjs worktree get <slug>` creates the run worktree (PIPELINE.md § Isolation) and prints its path; write it into NOW.
 2. Record `review_base = $(git rev-parse HEAD)` in the new worktree, in NOW, immediately. It is immutable: every later diff (diagnosis, fast-path fix, glossary, scaffold, tickets, final review) is reviewed against it.
 3. Every later action happens inside the run worktree or the control worktree. Never `cd` back into the user's checkout.
-4. `node ROOT/scripts/goal.mjs registry <slug> planning`; NOW records `base`, `review_base`, `run_branch`.
+4. NOW records `base`, `review_base`, `run_branch`; then `node ROOT/scripts/goal.mjs tick <slug> 0c`, which moves the registry to `planning` and refuses without an active run worktree.
 
 ## 0d. Environment contract, baseline, capability probe
 

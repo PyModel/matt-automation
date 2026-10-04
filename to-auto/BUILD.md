@@ -1,6 +1,6 @@
 # Build: stage 7, the task graph
 
-Load implement-spec by path and run it as the orchestrator with the bindings below. Read PIPELINE.md § Isolation and § Budgets and CONTRACT.md first. `node ROOT/scripts/goal.mjs registry <slug> building`. Record each ticket's starting point `<ticket-base>` on dispatch; the whole deliverable is diffed against `review_base` (BOOTSTRAP.md § 0c). Done per PIPELINE.md § Completion criteria per stage (7).
+Load implement-spec by path and run it as the orchestrator with the bindings below. Read PIPELINE.md § Isolation and § Budgets and CONTRACT.md first. The tick of 6b already moved the registry to `building`; `goal.mjs tick <slug> 7` ends the stage and moves it to `reviewing`, refused while any ticket is neither `done` nor `stuck`. Record each ticket's starting point `<ticket-base>` on dispatch; the whole deliverable is diffed against `review_base` (BOOTSTRAP.md § 0c). Done per PIPELINE.md § Completion criteria per stage (7).
 
 ## Bindings to implement-spec
 

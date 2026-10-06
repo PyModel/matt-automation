@@ -188,7 +188,9 @@ function requireControl(repo) {
   }
   try {
     const userCommon = fs.realpathSync(git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
-    if (userCommon === controlCommon && fs.realpathSync(repo) !== controlReal) {
+    const repoReal = fs.realpathSync(repo);
+    // Running from inside the control plane (a helper in runs/<slug>/) shares its git dir by being part of it.
+    if (userCommon === controlCommon && repoReal !== controlReal && !repoReal.startsWith(controlReal + path.sep)) {
       throw new Error('control plane must not share the user repo\'s git dir');
     }
   } catch (error) {
@@ -335,6 +337,12 @@ function stepEvidence(control, slug, status) {
   if (status === 'planning' && readJson(path.join(run, 'worktrees.json'))?.run?.state !== 'active') {
     return `no active run worktree; \`goal.mjs worktree get ${slug}\` it at stage 0c`;
   }
+  if (status === 'planning') {
+    const ledger = path.join(run, 'ledger.md');
+    const now = fs.existsSync(ledger) ? fs.readFileSync(ledger, 'utf8').split(/^## /m).find((s) => s.startsWith('NOW')) : '';
+    // Stage 8 reviews the whole run against review_base, so 0c cannot finish without it.
+    if (!/review_base:\s*[0-9a-f]{7,40}\b/.test(now ?? '')) return `NOW records no review_base; write \`- review_base: <sha>\` (the run worktree's HEAD) at stage 0c`;
+  }
   if (status === 'specced' && !fs.existsSync(path.join(run, 'spec.md'))) return `runs/${slug}/spec.md is missing; stage 5 writes it`;
   if (status === 'ticketed') {
     const issues = path.join(control, 'tracker', slug, 'issues');
@@ -475,6 +483,7 @@ export function tickingStage(status) {
  * nothing to finish; ticking a stage the registry already passed (a todo.md left behind by hand) moves nothing. One commit.
  */
 export function tick(repo, slug, id, { skipped = null } = {}) {
+  assertSlug(slug);
   const index = STAGES.findIndex((s) => s.id === id);
   if (index === -1) throw new UsageError(`unknown stage ${id} (${STAGES.map((s) => s.id).join(', ')})`);
   if (skipped !== null && (!skipped.trim() || /[\r\n]/.test(skipped))) throw new UsageError('a skip reason is one non-empty line');
@@ -595,6 +604,7 @@ export function recordModel(repo, slug, role, model) {
 }
 
 export function next(control, slug) {
+  assertSlug(slug);
   const runDir = path.join(control, 'runs', slug);
   if (fs.existsSync(path.join(runDir, 'STOP'))) {
     return { slug, stop: true, reason: `runs/${slug}/STOP: ${fs.readFileSync(path.join(runDir, 'STOP'), 'utf8').trim() || 'no reason given'}` };
@@ -847,6 +857,8 @@ export function take(repo, feature, max) {
     if (malformed.length || conflicts.length) throw new Refusal(`tracker ${feature} fails the claims gate; run \`goal.mjs frontier ${feature}\``);
     const taken = ready.slice(0, Math.max(0, max));
     for (const id of taken) setStatus(repo, feature, id, 'in-flight');
+    // BUILD.md writes each taken ticket's contract to runs/<feature>/tickets/<NN>.goal.md.
+    if (taken.length) fs.mkdirSync(path.join(control, 'runs', feature, 'tickets'), { recursive: true });
     return taken;
   });
 }
@@ -1262,6 +1274,16 @@ export function dispatch(repo, feature, id, worktree, orcArgs) {
     const contract = path.join(control, 'runs', feature, 'tickets', `${want}.goal.md`);
     if (!fs.existsSync(contract)) throw new Refusal(`ticket ${want} has no contract at ${path.relative(control, contract)}`);
     requireCommitted(control, contract);
+    // BUILD.md § The implementer brief: the brief is this ticket's contract plus fixed text, so a brief copied
+    // from another ticket (its contract inside) never reaches a worker.
+    const at = orcArgs.indexOf('--brief');
+    const phase = orcArgs.includes('--phase') ? orcArgs[orcArgs.indexOf('--phase') + 1] : null;
+    if (phase === 'implement' && at !== -1 && fs.existsSync(orcArgs[at + 1] ?? '')) {
+      const contractRel = path.relative(control, contract);
+      if (!fs.readFileSync(orcArgs[at + 1], 'utf8').includes(fs.readFileSync(contract, 'utf8').trim())) {
+        throw new Refusal(`brief ${orcArgs[at + 1]} does not carry ${contractRel} verbatim; build the brief from that file (BUILD.md § The implementer brief)`);
+      }
+    }
     const problems = [...checkContract({ text: fs.readFileSync(contract, 'utf8'), ticketText, worktree }).problems, ...sinceDispatch(file)];
     if (problems.length) throw new Refusal(`ticket ${want} is not dispatchable: ${problems.join('; ')}`);
   }
@@ -1384,6 +1406,7 @@ function runLogProblems(worktree, v, head) {
   const inside = path.relative(real(logsDir(worktree)), file);
   if (!inside || inside.startsWith('..') || path.isAbsolute(inside)) return [`${what} cites ${v.log.path}, which is not a goal.mjs run log of this repository`];
   if (!fs.existsSync(file)) return [`${what} cites a log that does not exist: ${v.log.path}`];
+  if (!/^[0-9a-f]{64}$/.test(v.log.sha256)) return [`${what} log sha256 is not a sha256; copy it from the \`log:\` line \`goal.mjs run\` printed first and last, or run the command again`];
   const body = fs.readFileSync(file, 'utf8');
   if (sha256(body) !== v.log.sha256) return [`${what} log ${v.log.path} does not match its sha256; it changed after the run`];
   let footer = null;
@@ -2247,6 +2270,8 @@ function main(argv) {
   }
   if (command === 'run' && rest[0] === '--') {
     const { exit, output, log } = runLogged(process.cwd(), rest.slice(1).join(' '));
+    // First and last: a harness that truncates long tool output keeps one end of it, and a receipt cannot cite a log without this line.
+    console.log(`log: ${JSON.stringify(log)}`);
     process.stdout.write(output);
     console.log(`log: ${JSON.stringify(log)}`);
     return exit;
@@ -2346,15 +2371,17 @@ function main(argv) {
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }
-  console.error('usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] [--worker-model <model>] [--no-helpers] | next <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] | worktree get|return <slug> [NN] | worktree status <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged');
+  console.error(`${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] [--worker-model <model>] [--no-helpers] | next <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] | worktree get|return <slug> [NN] | worktree status <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`);
   return 2;
 }
 
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  // exitCode, never process.exit(): exit drops whatever a pipe has not taken yet, so `goal.mjs run -- <suite> | tail`
+  // lost the log line and `goal.mjs receipt … | <parser>` read truncated JSON.
   try {
-    process.exit(main(process.argv.slice(2)));
+    process.exitCode = main(process.argv.slice(2));
   } catch (error) {
     console.error(`error: ${error.message}`);
-    process.exit(error instanceof UsageError ? 2 : error instanceof Refusal ? 1 : 3);
+    process.exitCode = error instanceof UsageError ? 2 : error instanceof Refusal ? 1 : 3;
   }
 }

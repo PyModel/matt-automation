@@ -13,6 +13,7 @@ Set in NOW `budgets:` at stage 0d and enforced in BUILD.md. Defaults, overridabl
 | per-ticket slices / wall-clock | 12 slices / 90 min | ticket `stuck: too big`; report says to split it |
 | wall-clock | 8 h | finish running slices; write the ledger; `goal.mjs stop <slug> "budget: wall-clock"`; report |
 | re-dispatches per ticket | 1 stuck re-dispatch, plus up to 2 claims-amendment dispatches (BUILD.md § Claims amendment) | ticket `stuck` |
+| reconciliation rounds (stage 5b) | 4 | each item still listed goes to `/kun`, which fixes the spec line or rules it an accepted divergence, logged in `log.md` `(source: kun)`; the gate then closes |
 | bug tickets added to the frontier by this run (pre-existing bugs only; findings in this run's own diff never count) | 3 | further bugs stay ticketed for the next run |
 
 ## Isolation (stage 0c and stage 7)
@@ -109,7 +110,7 @@ A stage is done exactly when its line holds. Phase files point here.
 - **2 On-ramp**: the chosen on-ramp's criteria in FLOWS.md § On-ramp completion criteria, or `skipped: plain feature` / `skipped: ready source <ref>` logged; for route `bug`, the fast-path decision logged with its reason.
 - **3 Research**: every Q in `findings.md` closed with a sourced fact, or `research: skipped (no external unknown)` logged; no "TBD".
 - **4/4b Grill + challenge**: frontier empty; every answer logged `(source: kun)` or `(source: default, contested)`; seams named; `CONTEXT.md` changed on disk (or an evidence-backed no-change log; no manufactured no-op edits); ADRs only where all three gates pass.
-- **5/5b Spec + reconcile**: every to-spec template section filled; user stories scaled to actual decisions; no file paths or code in Implementation Decisions; the reconciliation gate's list is empty; `runs/<slug>/spec.md` present.
+- **5/5b Spec + reconcile**: every to-spec template section filled; user stories scaled to actual decisions; no file paths or code in Implementation Decisions; the reconciliation gate's list is empty, or past the round budget every item left has a `/kun` ruling in `log.md`; `runs/<slug>/spec.md` present.
 - **6/6b Tickets + claims**: one file per ticket; each has a demo path, tier, capability, claims, "Blocked by", and passes CONTRACT.md § Readiness; new-behaviour criteria red at base and preserved invariants green; no cycles; no two unordered open tickets share an `exclusive` claim; `ready-for-agent` stripped from the parent spec; ticket table in `todo.md`.
 - **7 Build**: every ticket `done` (a `completed` receipt that passed `goal.mjs receipt`, merged fast-forward as a recorded range, boxes ticked, ticket closed) or `stuck` with its reason; every dispatched ticket has `tickets/<NN>.goal.md` and `tickets/<NN>.receipt.md`; per-test comparison against baseline passes; the debt grep (BUILD.md § Bugs found in flight) is empty; per ticket a defensive-design evidence state per control, a red test before code per slice (visible `tdd` calls), and typecheck, lint, and suite output captured; only the run worktree remains; (GitHub, push authorized) draft PR open closing spec and tickets.
 - **8 Final review**: ran in a fresh review subagent against `review_base`; cited findings fixed by one fix subagent, independently re-verified against the resulting snapshot, and committed; suite no worse than baseline; `final-verdict.json` written; uncited leads listed.

@@ -2140,6 +2140,8 @@ function sleep(ms) {
 
 const TAKES_VALUE = new Set(['--repo', '--state-dir', '--allow', '--base', '--target-branch', '--status-file', '--worker-model']);
 
+const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] [--worker-model <model>] [--no-helpers] | next <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] | worktree get|return <slug> [NN] | worktree status <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
+
 function main(argv) {
   configure();
   let repo = process.cwd();
@@ -2165,6 +2167,12 @@ function main(argv) {
     break;
   }
   runtime.allow = allow;
+  // `<command> --help` asks for usage; read as an argument it became an objective (`slug --help` printed `help`).
+  const own = args.includes('--') ? args.slice(0, args.indexOf('--')) : args;
+  if (own.some((a) => a === '--help' || a === '-h')) {
+    console.log(USAGE);
+    return 0;
+  }
   if (args[0] === 'root') {
     console.log(ROOT);
     return 0;
@@ -2375,7 +2383,7 @@ function main(argv) {
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }
-  console.error(`${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> [--agent <id>] [--harness <name>] [--worker-model <model>] [--no-helpers] | next <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] | worktree get|return <slug> [NN] | worktree status <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`);
+  console.error(USAGE);
   return 2;
 }
 

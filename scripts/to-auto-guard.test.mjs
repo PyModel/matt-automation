@@ -70,7 +70,7 @@ test('an active run allows PRs and helpers but never a hand-typed worktree; a st
   const w = world();
   w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '  /to-auto x' });
   w.goal('control');
-  w.goal('init', 'x', 'X');
+  w.goal('init', 'x', 'X', '--agent', 's0', '--harness', 'test');
   assert.equal(w.bash('gh pr create --draft --fill'), 'allow');
   assert.equal(w.decision('Agent', { prompt: 'implement ticket 01' }), 'allow');
   assert.equal(w.bash(INCIDENT), 'deny');
@@ -84,7 +84,7 @@ test('stopping its own run does not release the session; only a done run with no
   const w = world();
   w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto x' });
   w.goal('control');
-  w.goal('init', 'x', 'X', '--agent', 's1');
+  w.goal('init', 'x', 'X', '--agent', 's1', '--harness', 'test');
   w.goal('stop', 'x', 'objective does not fit: lands pre-existing PRs');
   assert.equal(w.bash('gh pr merge 788 --squash'), 'deny', 'the incident: stop the run, then land PRs by hand');
   assert.equal(w.bash(INCIDENT), 'deny');
@@ -94,7 +94,7 @@ test('stopping its own run does not release the session; only a done run with no
   fs.writeFileSync(runs, JSON.stringify(data));
   // Committed straight through git, as a finished run leaves it: goal.mjs commits refuse a hand-edited status.
   execFileSync('git', ['-C', w.env.TO_AUTO_HOME, 'commit', '-qam', '[x] fixture: done'], { env: { ...process.env, TO_AUTO_WRITER: '1' } });
-  w.goal('init', 'y', 'Y', '--agent', 'someone-else');
+  w.goal('init', 'y', 'Y', '--agent', 'someone-else', '--harness', 'test');
   assert.equal(w.bash(INCIDENT), 'deny', 'another run is still active in the repo');
   w.goal('stop', 'y', 'paused');
   assert.equal(w.bash(INCIDENT), 'allow');
@@ -104,7 +104,7 @@ test('stopping its own run does not release the session; only a done run with no
 test('a run this session finished before it was marked again does not release the new mark', () => {
   const w = world();
   w.goal('control');
-  w.goal('init', 'x', 'X', '--agent', 's1');
+  w.goal('init', 'x', 'X', '--agent', 's1', '--harness', 'test');
   w.goal('stop', 'x', 'old');
   const runs = path.join(w.env.TO_AUTO_HOME, 'runs.json');
   const data = JSON.parse(fs.readFileSync(runs, 'utf8'));
@@ -128,7 +128,7 @@ test('a hand-touched (empty) mark is released by a done run of this session', ()
   const w = world();
   fs.writeFileSync(path.join(w.env.TO_AUTO_SESSIONS, 's1'), '');
   w.goal('control');
-  w.goal('init', 'x', 'X', '--agent', 's1');
+  w.goal('init', 'x', 'X', '--agent', 's1', '--harness', 'test');
   const runs = path.join(w.env.TO_AUTO_HOME, 'runs.json');
   const data = JSON.parse(fs.readFileSync(runs, 'utf8'));
   data[0].status = 'done';
@@ -142,7 +142,7 @@ test('re-invoking /to-auto or the skill mid-run keeps the first mark time, so th
   const marker = path.join(w.env.TO_AUTO_SESSIONS, 's1');
   fs.writeFileSync(marker, '2026-01-01T00:00:00.000Z\n');
   w.goal('control');
-  w.goal('init', 'x', 'X', '--agent', 's1');
+  w.goal('init', 'x', 'X', '--agent', 's1', '--harness', 'test');
   w.hook({ hook_event_name: 'PreToolUse', tool_name: 'Skill', tool_input: { skill: 'to-auto' } });
   w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto continue' });
   assert.equal(fs.readFileSync(marker, 'utf8'), '2026-01-01T00:00:00.000Z\n');

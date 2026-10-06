@@ -12,6 +12,7 @@ import {
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+const WHO = { agent: 'test-session', harness: 'test' };
 
 function bareRepo() {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-layout-'));
@@ -168,11 +169,11 @@ test('no helper agents are recorded, and a named worker model is logged per role
   const repo = bareRepo();
   const state = useState();
   ensureControl(repo);
-  init(repo, 'solo', 'Solo', { noHelpers: true });
+  init(repo, 'solo', 'Solo', { ...WHO, noHelpers: true });
   const none = JSON.parse(fs.readFileSync(path.join(state, 'runs/solo/models.json'), 'utf8'));
   assert.equal(none.helpers, 'none');
   assert.deepEqual(none.roles, {});
-  init(repo, 'helped', 'Helped', { workerModel: 'provider/model' });
+  init(repo, 'helped', 'Helped', { ...WHO, workerModel: 'provider/model' });
   recordModel(repo, 'helped', 'implementer', 'provider/model-used');
   const used = JSON.parse(fs.readFileSync(path.join(state, 'runs/helped/models.json'), 'utf8'));
   assert.equal(used.workerModel, 'provider/model');
@@ -244,7 +245,7 @@ test('compact saves NOW before memory is compressed and refuses an empty NOW', (
   const repo = bareRepo();
   useState();
   ensureControl(repo);
-  init(repo, 'x', 'X');
+  init(repo, 'x', 'X', WHO);
   const saved = compact(repo, 'x');
   assert.match(saved.resume, /ledger\.md$/);
   assert.match(fs.readFileSync(saved.resume, 'utf8'), /\[compact\] NOW saved/);

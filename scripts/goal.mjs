@@ -554,6 +554,10 @@ export function tick(repo, slug, id, { skipped = null } = {}) {
 
 export function init(repo, slug, objective, { agent = null, harness = null, workerModel = null, noHelpers = false } = {}) {
   assertSlug(slug);
+  // BOOTSTRAP.md stage 0: the guard releases a session by `agent`, and a run with neither names nobody who ran it.
+  for (const [flag, value] of [['--agent', agent], ['--harness', harness]]) {
+    if (typeof value !== 'string' || !value.trim()) throw new UsageError(`init needs ${flag}: \`goal.mjs init <slug> "<objective>" --agent <this session's id> --harness <harness name>\``);
+  }
   if (BACKLOG.test(objective)) throw new Refusal(`"${objective}" is a backlog, not one run: snapshot the issue ids and split them into bounded batches, each its own /to-auto run, or hand the backlog to to-orc (BOOTSTRAP.md step 5)`);
   const control = requireControl(repo);
   const runDir = path.join(control, 'runs', slug);

@@ -1084,6 +1084,9 @@ test('dispatch: only an in-flight ticket whose committed contract passes, in the
   const stale = path.join(control, 'stale-brief.md');
   write(stale, '# Goal: 02 something else\n');
   assert.throws(() => dispatch(repo, 'f', '01', wt, ['--phase', 'implement', '--brief', stale]), /brief .* does not carry runs\/f\/tickets\/01\.goal\.md verbatim/);
+  write(path.join(control, 'runs/f/tickets/02.goal.md'), '# Goal: 02 something else\n\n- [ ] criterion\n');
+  write(stale, `${contract}\n# Goal: 02 something else\n\n- [ ] criterion\n`);
+  assert.throws(() => dispatch(repo, 'f', '01', wt, ['--phase', 'implement', '--brief', stale]), /also carries runs\/f\/tickets\/02\.goal\.md; one brief per ticket/);
   write(stale, `${contract}\n## Rules\n`);
   assert.throws(() => dispatch(repo, 'f', '01', wt, ['--phase', 'implement', '--brief', stale]), /01 is not dispatchable: .*Ticket base/, 'a brief that carries the contract passes to the contract checks');
   assert.equal(orcRunDir(repo, 'f', '1'), path.join(fs.realpathSync(path.join(repo, '.git')), 'to-orc', 'f', 't01'));

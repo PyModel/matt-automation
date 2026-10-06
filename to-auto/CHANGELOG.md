@@ -42,3 +42,4 @@ Behavior that moved. The phase files are the spec; this list is the delta.
 - `goal.mjs <command> --help` (or `-h`) prints usage and exits 0. Before, `slug --help` read `--help` as the objective and printed the slug `help`. After `run --` the flag belongs to the command.
 - The run base is `goal/bootstrap` only while it carries commits the default branch head lacks. A `goal/bootstrap` already merged is skipped (it had cut a run 71 commits behind main), and one that does not contain the head is refused until rebased.
 - `goal.mjs model` refuses a run registered with `--no-helpers` (a helper ran that the run said would not) and a slug with no run.
+- `goal.mjs dispatch --phase implement` also refuses a brief that carries another ticket's contract: one brief merged for several tickets passed the own-contract check for each.

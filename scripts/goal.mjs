@@ -1287,9 +1287,14 @@ export function dispatch(repo, feature, id, worktree, orcArgs) {
     const phase = orcArgs.includes('--phase') ? orcArgs[orcArgs.indexOf('--phase') + 1] : null;
     if (phase === 'implement' && at !== -1 && fs.existsSync(orcArgs[at + 1] ?? '')) {
       const contractRel = path.relative(control, contract);
-      if (!fs.readFileSync(orcArgs[at + 1], 'utf8').includes(fs.readFileSync(contract, 'utf8').trim())) {
+      const brief = fs.readFileSync(orcArgs[at + 1], 'utf8');
+      if (!brief.includes(fs.readFileSync(contract, 'utf8').trim())) {
         throw new Refusal(`brief ${orcArgs[at + 1]} does not carry ${contractRel} verbatim; build the brief from that file (BUILD.md § The implementer brief)`);
       }
+      // One brief merged for several tickets carries each contract, so the check above passes it for all of them.
+      const tickets = path.dirname(contract);
+      const other = fs.readdirSync(tickets).find((f) => /^\d+\.goal\.md$/.test(f) && f !== path.basename(contract) && brief.includes(fs.readFileSync(path.join(tickets, f), 'utf8').trim()));
+      if (other) throw new Refusal(`brief ${orcArgs[at + 1]} also carries ${path.relative(control, path.join(tickets, other))}; one brief per ticket, its own contract only (BUILD.md § The implementer brief)`);
     }
     const problems = [...checkContract({ text: fs.readFileSync(contract, 'utf8'), ticketText, worktree }).problems, ...sinceDispatch(file)];
     if (problems.length) throw new Refusal(`ticket ${want} is not dispatchable: ${problems.join('; ')}`);

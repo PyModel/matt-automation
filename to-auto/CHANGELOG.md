@@ -2,6 +2,7 @@
 
 Behavior that moved. The phase files are the spec; this list is the delta.
 
+- A cited review finding whose fix needs a `guarded` path the objective does not name is a blocker in NOW `blockers:` (BUILD.md step 6, CLOSE.md stage 8), never a lead or a fix ticket. A run parked one as a lead, where the stage 8 fix subagent would then have edited the guarded path unchecked.
 - The stage 8 review subagent must have a shell (CLOSE.md): `code-review` resolves by `matt.mjs` and reads `git diff review_base...HEAD`, which a read-only helper cannot run.
 - `goal.mjs` sets `process.exitCode` instead of calling `process.exit()`, which dropped output a pipe had not yet read: `goal.mjs run -- <suite> | tail` lost the `log:` line and `goal.mjs receipt … | <parser>` read truncated JSON. Its usage lists one command per line, so `--help | grep <command>` finds it.
 - `goal.mjs run` prints its `log:` line before the command's output as well as after, so a harness that truncates long output still shows it. A receipt whose log `sha256` is not a sha256 gets its own message instead of "changed after the run". The merge script gates on the receipt check's exit code (BUILD.md step 5.0), since a pipe hid a refused receipt and its ticket merged.

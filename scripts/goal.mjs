@@ -1155,18 +1155,18 @@ const CONCLUSIONS = new Set(['completed', 'partial', 'blocked', 'stuck', 'claims
 const RESULTS = new Set(['pass', 'fail', 'not-run']);
 const QUALITY = new Set(['accurate', 'criteria-too-vague', 'criteria-wrong', 'missing-constraint', 'over-scoped']);
 
-/** The receipt in a file: the whole file as JSON, else the last ```json fence (a worker's final message). */
+/**
+ * The receipt in a file: the whole file as JSON, else the last ```json fence, else the object that ends the
+ * message from its last column-0 `{` (a worker's final message, saved verbatim, may end in an unfenced receipt).
+ */
 function receiptJson(text) {
-  try {
-    return JSON.parse(text);
-  } catch { /* a final message, not a bare receipt */ }
+  const parse = (s) => { try { return JSON.parse(s); } catch { return null; } };
+  const whole = parse(text);
+  if (whole !== null) return whole;
   const fences = [...text.matchAll(/```json[ \t]*\n([\s\S]*?)\n```/g)];
-  if (!fences.length) return null;
-  try {
-    return JSON.parse(fences.at(-1)[1]);
-  } catch {
-    return null;
-  }
+  if (fences.length) return parse(fences.at(-1)[1]);
+  const start = text.lastIndexOf('\n{');
+  return start === -1 ? null : parse(text.slice(start + 1));
 }
 
 /** The full SHA a revision names, or null when it names no commit. */

@@ -58,7 +58,7 @@ function mark(id) {
   }
   // A second /to-auto, or the skill re-invoked after compaction, keeps the first mark time: the run it registered still releases it.
   try { fs.writeFileSync(path.join(dir, id), `${new Date().toISOString()}\n`, { flag: 'wx' }); } catch (e) { if (e.code !== 'EEXIST') throw e; }
-  return `to-auto session ${id}: pass \`--agent ${id}\` to \`goal.mjs init\`. Work already in this session (earlier PRs, worktrees, plans) is not part of the run; follow the stage \`goal.mjs next\` names. Until \`init\` registers the run, branch, worktree, push, PR, tracker-write and helper-agent calls are denied by this guard.`;
+  return `to-auto session ${id}: pass \`--agent ${id} --harness claude-code\` to \`goal.mjs init\`. Work already in this session (earlier PRs, worktrees, plans) is not part of the run; follow the stage \`goal.mjs next\` names. Until \`init\` registers the run, branch, worktree, push, PR, tracker-write and helper-agent calls are denied by this guard.`;
 }
 
 /** True once a run this session registered after it was marked (`init --agent <session_id>`) is done and no run is active. */

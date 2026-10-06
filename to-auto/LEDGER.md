@@ -13,7 +13,7 @@ All under `<state>/runs/<slug>/` in the control plane (CONTROL.md), created at s
 | `log.md` | Decisions, one line each: `- [stage] Q: <question> → A: <answer> (source: findings \| codebase \| kun \| default)`; ticket completions as `- [implement] <ticket path> done @ <commit>` | orchestrator and subagents | at the moment a decision is made |
 | `findings.md` | Stage 1 repo facts, requirements R1…, open questions Q1…; stage 3 sourced answers | orchestrator / research agent | stages 1 to 3 |
 | `spec.md` | Working copy of the published spec (PLAN.md stage 5) | orchestrator | stage 5 |
-| `baseline.txt` | Stage 0d per-test result set, one `<test id> pass\|fail\|flaky` line each (raw suite output stays in `<state>/logs/<slug>/`, uncommitted) | orchestrator | stage 0d |
+| `baseline.txt` | Stage 0d per-test result set, one `<test id> pass\|fail\|flaky\|skip` line each (raw suite output stays in `<state>/logs/<slug>/`, uncommitted) | orchestrator | stage 0d |
 | `notes/` | Exploration notes for implementers (implement-spec step 2) | exploration subagent | stage 7 |
 | `tickets/<NN>.goal.md` | The ticket's contract (CONTRACT.md § The contract) | orchestrator | at dispatch |
 | `tickets/<NN>.receipt.md` | The implementer's final message, ending in its receipt (CONTRACT.md § The receipt) | orchestrator | when the implementer returns |

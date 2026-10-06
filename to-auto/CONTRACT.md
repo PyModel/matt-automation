@@ -10,6 +10,7 @@ A source is **agent-ready** when every box holds. The orchestrator ticks them fr
 - [ ] Exactly one bounded unit: it fits one fresh context window and pulls in no downstream work.
 - [ ] Unblocked: every blocker is `done`.
 - [ ] Every acceptance criterion is decidable from observable evidence: a command, a test id, a file on disk. No "looks good", "reasonable", or "clean".
+- [ ] Every path a criterion or claim requires a change to can be committed: `git check-ignore <path>` in the run worktree matches none of them (a git-ignored file never reaches the branch, so the criterion could not be met).
 - [ ] Validation commands are known (NOW `commands:`, or the repo's own scripts, CI, and tests).
 - [ ] The starting point is recorded: `<ticket-base>` for a ticket, `review_base` for the run.
 - [ ] Authority is explicit: which paths it may touch (claims) and which external effects the objective grants (SKILL.md § Rules, Autonomous).

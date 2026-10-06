@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, init, next, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, checkContract, sinceDispatch, amendClaims, waive, event, withLock, breakStale, commit, controlDir, configure, runLogged, dispatch, orcRunDir, RUN_ORDER } from './goal.mjs';
+import { STAGES, init, next, tick, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, checkContract, sinceDispatch, amendClaims, waive, event, withLock, breakStale, commit, controlDir, configure, runLogged, dispatch, orcRunDir, RUN_ORDER } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -47,10 +47,16 @@ function rawCommit(control, message = 'fixture') {
   execFileSync('git', ['-C', control, 'commit', '-qm', message], { env: { ...process.env, TO_AUTO_WRITER: '1' } });
 }
 
+function recordReviewBase(run) {
+  const ledger = path.join(run, 'ledger.md');
+  fs.writeFileSync(ledger, fs.readFileSync(ledger, 'utf8').replace('## NOW\n', '## NOW\n- review_base: 1234567\n'));
+}
+
 // The artifacts the middle registry steps stand on: an active run worktree record, spec.md, a ticket table.
 function evidence(control, slug) {
   const run = path.join(control, 'runs', slug);
   write(path.join(run, 'worktrees.json'), JSON.stringify({ run: { backend: 'git', state: 'active' } }));
+  recordReviewBase(run);
   write(path.join(run, 'spec.md'), '# spec\n');
   fs.appendFileSync(path.join(run, 'todo.md'), '| 01 | t |\n');
 }
@@ -214,6 +220,7 @@ test('take flips frontier tickets to in-flight once, and status commits the chan
   rawCommit(control, 'tickets');
   assert.deepEqual(take(repo, 'f', 1), ['01']);
   assert.deepEqual(take(repo, 'f', 3), ['02']);
+  assert.ok(fs.statSync(path.join(control, 'runs/f/tickets')).isDirectory(), 'take makes the folder each ticket contract is written to');
   assert.deepEqual(frontier(control, 'f').frontier, []);
   assert.equal(setStatus(repo, 'f', '01', 'in-flight'), 'nothing to commit', 're-marking is a no-op');
   setStatus(repo, 'f', '03', 'ready-for-agent');
@@ -496,6 +503,8 @@ test('registry: planning, specced and ticketed each need their artifact, so the 
   write(path.join(run, 'worktrees.json'), JSON.stringify({ run: { state: 'returned' } }));
   assert.throws(() => setRegistry(repo, 'x', 'planning'), /no active run worktree/);
   write(path.join(run, 'worktrees.json'), JSON.stringify({ run: { state: 'active' } }));
+  assert.throws(() => setRegistry(repo, 'x', 'planning'), /NOW records no review_base/);
+  recordReviewBase(run);
   setRegistry(repo, 'x', 'planning');
   assert.throws(() => setRegistry(repo, 'x', 'specced'), /runs\/x\/spec\.md is missing/);
   write(path.join(run, 'spec.md'), '# spec\n');
@@ -538,6 +547,10 @@ test('CLI exit codes: 2 for usage, 3 for runtime errors', () => {
   assert.equal(spawnSync(process.execPath, [GOAL, '--repo', repo, 'take', 'f', 'x']).status, 2);
   assert.equal(spawnSync(process.execPath, [GOAL, '--repo', repo, 'nonsense']).status, 2);
   assert.equal(spawnSync(process.execPath, [GOAL, '--repo', repo, 'frontier', 'no-such-feature']).status, 3);
+  // One command per line: an agent greps the usage for a command, and a one-line usage is cut by long-output truncation.
+  const help = spawnSync(process.execPath, [GOAL, '--help'], { encoding: 'utf8' }).stderr;
+  assert.match(help, /^ {2}commit -m <msg> <file>\.\.\.$/m);
+  assert.match(help, /^ {2}run -- <command>$/m);
 });
 
 test('duplicate ticket numbers are malformed and status refuses to guess', () => {
@@ -998,6 +1011,8 @@ test('done: a validation line stands only on its unchanged goal.mjs run log from
   fs.writeFileSync(outside, fs.readFileSync(log.path));
   save({ ...r, validation: [{ ...r.validation[0], log: { ...log, path: outside } }] });
   assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: head }), /not a goal\.mjs run log of this repository/);
+  save({ ...r, validation: [{ ...r.validation[0], log: { ...log, sha256: 'not printed for this run; tail inspected' } }] });
+  assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: head }), /sha256 is not a sha256.*printed first and last/);
   fs.appendFileSync(log.path, 'edited\n');
   save(r);
   assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: head }), /does not match its sha256/);
@@ -1024,6 +1039,11 @@ test('run: the log records command, exit, head and dirtiness; the CLI passes the
   const cli = spawnSync(process.execPath, [GOAL, 'run', '--', 'echo', 'from', 'cli'], { cwd: repo, encoding: 'utf8' });
   assert.equal(cli.status, 0);
   assert.match(cli.stdout, /from cli\nlog: \{"path":/);
+  // A harness that truncates long tool output keeps the head: the log line opens the output too.
+  assert.match(cli.stdout, /^log: \{"path":.*\nfrom cli\n/);
+  // Into a pipe, output larger than one pipe buffer still arrives whole: process.exit() used to drop it unflushed.
+  const big = spawnSync(process.execPath, [GOAL, 'run', '--', 'seq', '1', '30000'], { cwd: repo, encoding: 'utf8' });
+  assert.match(big.stdout, /\n30000\nlog: \{"path":[^\n]*\n$/);
 });
 
 test('frontier: a fix ticket three reviews deep is malformed, its findings go to NOW leads:', () => {
@@ -1048,6 +1068,13 @@ test('dispatch: only an in-flight ticket whose committed contract passes, in the
   assert.throws(() => dispatch(repo, 'f', '02', wt, ['--phase', 'implement']), /02 is ready-for-agent.*take/);
   assert.throws(() => dispatch(repo, 'f', '01', wt, ['--phase', 'implement']), /01 is not dispatchable: .*Ticket base/);
   assert.throws(() => dispatch(repo, 'f', '01', wt, ['--run-dir', '/tmp/x']), /sets --run-dir and --repo itself/);
+  // An implement brief carries its own ticket's contract verbatim (BUILD.md § The implementer brief), never a copy of another's.
+  const contract = fs.readFileSync(path.join(control, 'runs/f/tickets/01.goal.md'), 'utf8');
+  const stale = path.join(control, 'stale-brief.md');
+  write(stale, '# Goal: 02 something else\n');
+  assert.throws(() => dispatch(repo, 'f', '01', wt, ['--phase', 'implement', '--brief', stale]), /brief .* does not carry runs\/f\/tickets\/01\.goal\.md verbatim/);
+  write(stale, `${contract}\n## Rules\n`);
+  assert.throws(() => dispatch(repo, 'f', '01', wt, ['--phase', 'implement', '--brief', stale]), /01 is not dispatchable: .*Ticket base/, 'a brief that carries the contract passes to the contract checks');
   assert.equal(orcRunDir(repo, 'f', '1'), path.join(fs.realpathSync(path.join(repo, '.git')), 'to-orc', 'f', 't01'));
 });
 
@@ -1058,4 +1085,12 @@ test('receipt: a repair round lists review findings beside the ticket criteria, 
   assert.match(check([{ finding: 'F1 money race', result: 'fail', evidence: 'still races' }]), /repair "F1 money race" is fail/);
   assert.match(check([{ finding: 'F1', result: 'pass' }]), /repairs must be/);
   assert.match(check({ F1: 'pass' }), /repairs must be/);
+});
+
+test('next and tick refuse a slug that init would refuse', () => {
+  const { repo, control } = repoWithControl();
+  const long = 'a'.repeat(41);
+  assert.throws(() => next(control, long), /bad slug/);
+  assert.throws(() => next(control, '../x'), /bad slug/);
+  assert.throws(() => tick(repo, long, '00'), /bad slug/);
 });

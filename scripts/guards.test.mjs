@@ -448,6 +448,10 @@ const put = (ctx, rel, text) => {
   fs.mkdirSync(path.dirname(path.join(ctx.state, rel)), { recursive: true });
   fs.writeFileSync(path.join(ctx.state, rel), text);
 };
+const reviewBase = (ctx) => {
+  const ledger = path.join(ctx.state, 'runs/x/ledger.md');
+  fs.writeFileSync(ledger, fs.readFileSync(ledger, 'utf8').replace('## NOW\n', '## NOW\n- review_base: 1234567\n'));
+};
 const tick = (ctx, ...args) => goal(ctx, ['tick', 'x', ...args]);
 const ticked = (ctx, ...args) => {
   const r = tick(ctx, ...args);
@@ -470,6 +474,8 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   refused(ctx, /stage 5 is not next: 0c isolate is the first unticked stage/, '5');
   refused(ctx, /stage 0c cannot be ticked: x cannot be planning yet: no active run worktree/, '0c');
   put(ctx, 'runs/x/worktrees.json', JSON.stringify({ run: { backend: 'git', state: 'active' } }));
+  refused(ctx, /stage 0c cannot be ticked: x cannot be planning yet: NOW records no review_base/, '0c');
+  reviewBase(ctx);
   const planned = ticked(ctx, '0c');
   assert.deepEqual([planned.registry, planned.next], ['planning', '0d']);
   assert.equal(nowOf(ctx), '0d');
@@ -657,6 +663,7 @@ test('a tick whose commit fails leaves every file and the index as they were', (
   for (const id of ['00', '0', '0a', '0b']) ticked(ctx, id);
   // A tick that also moves the registry: runs.json is rolled back with the rest.
   put(ctx, 'runs/x/worktrees.json', JSON.stringify({ run: { backend: 'git', state: 'active' } }));
+  reviewBase(ctx);
   fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   const files = () => ['runs.json', 'runs/x/todo.md', 'runs/x/ledger.md'].map((f) => fs.readFileSync(path.join(ctx.state, f), 'utf8'));
   const beforeMove = [...files(), head(ctx)];
@@ -901,4 +908,16 @@ test('a resume clears a STOP that git never tracked, and a half-registered run i
   const z = statusOf(ctx, 'z');
   assert.deepEqual([z.agent, z.objective, z.run_id, z.started > '2020'], ['me', 'Z', 2, true]);
   assert.match(git(ctx.state, 'log', '-1', '--format=%s'), /\[z\] start run 2 \(registered earlier\)/);
+});
+
+test('a helper inside the control plane commits its ticket status from runs/<slug>, with --state-dir and no --repo', () => {
+  const ctx = run();
+  const dir = path.join(ctx.state, 'runs', 'x');
+  fs.mkdirSync(path.join(dir, 'tickets'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'tickets', '01.status.md'), 'slice 1\n');
+  fs.appendFileSync(path.join(dir, 'log.md'), '- note\n');
+  const { TO_AUTO_HOME, ...env } = process.env;
+  const r = spawnSync(process.execPath, [GOAL, '--state-dir', ctx.state, 'commit', '-m', '[x] t01 status', 'tickets/01.status.md', 'log.md'], { cwd: dir, encoding: 'utf8', env });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(execFileSync('git', ['-C', ctx.state, 'status', '--porcelain'], { encoding: 'utf8' }), '');
 });

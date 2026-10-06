@@ -2,6 +2,7 @@
 
 Behavior that moved. The phase files are the spec; this list is the delta.
 
+- The receipt check reads a final message that ends in an unfenced JSON receipt (from its last column-0 `{`), so the orchestrator saves the message verbatim instead of extracting the JSON by hand.
 - `bugs.md` entries are `## <finder>-<n>` (`t07-1`, `o-3`; LEDGER.md), so an implementer and the orchestrator writing at once never reuse an id. A run had two `BUG-5` entries, and its NOW blocker named one ambiguously.
 - BUILD.md names what a repair dispatch needs: `--session` of the implement session and `accepted/verify.md` first. A run's first repair came back `PRECONDITION_FAILED` without them.
 - The orchestrator saves a receipt verbatim and never edits it (BUILD.md step 5): a refused receipt goes back to the implementer as a repair round, so its evidence stays the implementer's.

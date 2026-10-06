@@ -908,6 +908,14 @@ test('receipt: malformed shapes and unknown conclusions are refused', () => {
   assert.match(checkReceipt({ text: JSON.stringify(receipt({ conclusion: 'stuck', blockers: [] })) }).problems.join(' '), /blockers/);
 });
 
+test('receipt: a final message that ends in an unfenced receipt is read as saved', () => {
+  const bad = receipt({ conclusion: 'done' });
+  for (const body of [JSON.stringify(bad), JSON.stringify(bad, null, 2)]) {
+    assert.match(checkReceipt({ text: `I'll start by reading the ledger.\n\nSlice 1 green.\n${body}\n` }).problems.join(' '), /conclusion/, 'the trailing object is parsed');
+  }
+  assert.match(checkReceipt({ text: 'Done.\n{ not json' }).problems.join(' '), /no receipt/);
+});
+
 test('receipt: a stuck receipt with its reason is well-formed, and the CLI exits 1 on a bad one', () => {
   const { repo, base } = ticketWorktree();
   const stuck = receipt({ conclusion: 'stuck', ticket_base: base, head: git(repo, 'rev-parse', 'HEAD'), blockers: ['same test failed 5 times'],

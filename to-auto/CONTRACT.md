@@ -76,7 +76,7 @@ Written at dispatch to `runs/<slug>/tickets/<NN>.goal.md` and committed with `go
 
 ## The receipt
 
-The implementer's final message ends with exactly one fenced `json` block, the receipt. The orchestrator saves the message (for a pi worker, the `finalMessage` artifact named in `$d/impl/orc-status.json`, normally `$d/impl/final.txt`) to `runs/<slug>/tickets/<NN>.receipt.md` unchanged; `goal.mjs receipt` reads the last `json` fence of a message or a bare JSON file alike.
+The implementer's final message ends with exactly one fenced `json` block, the receipt. The orchestrator saves the message (for a pi worker, the `finalMessage` artifact named in `$d/impl/orc-status.json`, normally `$d/impl/final.txt`) to `runs/<slug>/tickets/<NN>.receipt.md` unchanged; `goal.mjs receipt` reads the last `json` fence of a message, a message that ends in an unfenced receipt (from its last line that opens with `{`), or a bare JSON file alike.
 
 ```json
 {

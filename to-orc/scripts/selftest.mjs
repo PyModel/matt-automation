@@ -367,6 +367,18 @@ check("re-using a task id needs --force", () => {
   eq(dispatch({ phase: "scout", task: "P1", runDir, brief, repo, extra: ["--force"] }).exit, 0, "forced exit");
 });
 
+check("--force never overwrites a dispatch that is still running", () => {
+  const repo = newRepo("r21b"); const { runDir, brief } = newRun("run21b");
+  eq(dispatch({ phase: "scout", task: "P1", runDir, brief, repo }).exit, 0, "first exit");
+  // A live dispatch under this task: RUNNING, its supervisor pid alive (this selftest's own pid).
+  const f = path.join(runDir, "P1", "orc-status.json");
+  const st = JSON.parse(fs.readFileSync(f, "utf8"));
+  fs.writeFileSync(f, JSON.stringify({ ...st, orcStatus: "RUNNING", pid: process.pid }));
+  const r = dispatch({ phase: "scout", task: "P1", runDir, brief, repo, extra: ["--force"] });
+  eq(r.exit, 77, "forced exit over a live dispatch");
+  eq(JSON.parse(fs.readFileSync(f, "utf8")).pid, process.pid, "the live dispatch's status is left alone");
+});
+
 check("the cycle cap stops a second repair", () => {
   const repo = newRepo("r22");
   const { runDir, brief } = newRun("run22", { accept: ["scout", "research", "implement", "verify"] });

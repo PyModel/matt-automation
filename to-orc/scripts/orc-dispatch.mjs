@@ -776,8 +776,14 @@ if (spawnSync("pi", ["--version"], { stdio: "ignore" }).status !== 0) {
 
 // --- existing dispatch under this task id
 const statusFile = path.join(ctx.out, "orc-status.json");
-if (fs.existsSync(statusFile) && !opts.force && !opts.childOfBackground) {
-  finish({ ...ctx, out: null }, "PRECONDITION_FAILED", `${statusFile} already exists — pick a new --task or pass --force to overwrite the evidence`);
+if (fs.existsSync(statusFile) && !opts.childOfBackground) {
+  // --force replaces finished evidence, never a dispatch still at work: two workers in one worktree race on every file.
+  let prior = null;
+  try { prior = JSON.parse(fs.readFileSync(statusFile, "utf8")); } catch { /* unreadable: treat as finished */ }
+  const alive = (pid) => { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
+  const live = prior?.orcStatus === "RUNNING" ? [prior.pid, prior.relayPid].find(alive) : undefined;
+  if (live) finish({ ...ctx, out: null }, "PRECONDITION_FAILED", `the dispatch under this --task is still running (pid ${live}); poll it with --poll, or let it finish, before dispatching again — --force never overwrites a live dispatch`);
+  if (!opts.force) finish({ ...ctx, out: null }, "PRECONDITION_FAILED", `${statusFile} already exists — pick a new --task or pass --force to overwrite the evidence`);
 }
 
 // --- run lock: worker, cycles and budget are fixed by the run's first dispatch

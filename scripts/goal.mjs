@@ -1322,9 +1322,8 @@ export function checkReceipt({ text, worktree = null, base = null, ticketText = 
   if (!Array.isArray(r.validation) || validation.some((v) => typeof v?.command !== 'string' || !Number.isInteger(v?.exit))) problems.push('validation must be an array of { command, exit: <integer>, summary, log: { path, sha256 } }');
   // A repair round answers review findings beside the ticket's own criteria, never instead of them (CONTRACT.md § The receipt).
   const repairs = r.repairs === undefined ? [] : r.repairs;
-  if (!Array.isArray(repairs) || repairs.some((x) => typeof x?.finding !== 'string' || !RESULTS.has(x?.result) || (x.result !== 'not-run' && !(typeof x.evidence === 'string' && x.evidence.trim())))) {
-    problems.push('repairs must be an array of { finding, result: pass | fail | not-run, evidence }');
-  }
+  const repairsOk = Array.isArray(repairs) && repairs.every((x) => typeof x?.finding === 'string' && RESULTS.has(x?.result) && (x.result === 'not-run' || (typeof x.evidence === 'string' && x.evidence.trim())));
+  if (!repairsOk) problems.push('repairs must be an array of { finding, result: pass | fail | not-run, evidence }; it is [] outside a repair round, and a fix from the implementer\'s own review counts in review.cited_fixed');
   const criteria = Array.isArray(r.criteria) ? r.criteria : [];
   if (!Array.isArray(r.criteria)) problems.push('criteria must be an array');
   for (const c of criteria) {
@@ -1341,7 +1340,7 @@ export function checkReceipt({ text, worktree = null, base = null, ticketText = 
     if (!byWaiver && strings(r.blockers) && r.blockers.length) problems.push('a completed receipt cannot carry blockers');
     if (!validation.length) problems.push('a completed receipt needs at least one validation command');
     if (r.worktree_clean === false) problems.push('a completed receipt needs a clean worktree');
-    if (Array.isArray(repairs)) for (const x of repairs) if (x?.result !== 'pass') problems.push(`repair "${x?.finding}" is ${x?.result}, so the receipt cannot be completed`);
+    if (repairsOk) for (const x of repairs) if (x.result !== 'pass') problems.push(`repair "${x.finding}" is ${x.result}, so the receipt cannot be completed`);
   }
 
   if (ticketText !== null) {

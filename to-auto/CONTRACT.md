@@ -87,7 +87,7 @@ The implementer's final message ends with exactly one fenced `json` block, the r
   "changed_files": ["<git diff --name-only ticket_base...HEAD>"],
   "criteria": [{ "criterion": "<ticket checkbox text, verbatim>", "result": "pass", "evidence": "<command, exit code, test id>" }],
   "validation": [{ "command": "<command>", "exit": 0, "summary": "<one line>", "log": { "path": "<from goal.mjs run>", "sha256": "<from goal.mjs run>" } }],
-  "repairs": [{ "finding": "<review finding, verbatim>", "result": "pass", "evidence": "<validation command that shows it>" }],
+  "repairs": [],
   "review": { "cited_fixed": 0, "leads": [] },
   "not_validated": [],
   "blockers": [],
@@ -100,7 +100,8 @@ The implementer's final message ends with exactly one fenced `json` block, the r
 - `conclusion`: `completed` | `partial` | `blocked` | `stuck` | `claims-breach` | `stopped`. `blocked`, `stuck`, and `claims-breach` name their reason in `blockers`.
 - `result`: `pass` | `fail` | `not-run`; `pass` and `fail` carry evidence.
 - `validation`: every command ran through `goal.mjs run -- <command>` on the committed, clean tree, and `log` is the `{ path, sha256 }` it printed. A `completed` receipt's validation stands only on those logs: the check re-reads each one and refuses it when it is missing, outside this repository's `goal-logs/`, edited since (sha256), or shows another command, another exit code, another head, or a dirty tree. A criterion's evidence names the validation command that shows it.
-- `repairs` (a repair round only, BUILD.md § Implementer backend): the review findings the round answers, each with a result and evidence. They sit beside `criteria`, never in place of it: the receipt still lists every ticket criterion verbatim. A `completed` receipt needs every repair `pass`.
+- `repairs` (a repair round only, BUILD.md § Implementer backend; `[]` otherwise): the review findings the round answers, each `{ "finding": "<review finding, verbatim>", "result": "pass", "evidence": "<validation command that shows it>" }`. They sit beside `criteria`, never in place of it: the receipt still lists every ticket criterion verbatim. A `completed` receipt needs every repair `pass`.
+- `review`: the implementer's own `code-review` pass. `cited_fixed` counts the cited findings it fixed before the receipt; `leads` lists the uncited ones. A fix from this review goes here, never in `repairs`.
 - `external_effects`: every push, deploy, tracker edit, real-service call, or message the implementer caused. The orchestrator checks each against the objective's grants; an ungranted one is a blocker.
 - `contract_quality` (optional, never a completion condition): `accurate` | `criteria-too-vague` | `criteria-wrong` | `missing-constraint` | `over-scoped`. The retro reads it.
 - Secrets in any field are `<REDACTED>` (SKILL.md § Rules, Redaction).

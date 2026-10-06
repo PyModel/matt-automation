@@ -43,7 +43,7 @@ test('a /to-auto prompt or the to-auto Skill marks the session and tells it its 
   assert.equal(w.hook({ hook_event_name: 'UserPromptSubmit', prompt: 'please fix the build' }), null);
   assert.equal(w.hook({ hook_event_name: 'UserPromptSubmit', prompt: 'a note: once you type /to-auto in a session the guard blocks git worktree add' }), null, 'quoting the command in prose does not invoke it');
   assert.equal(w.bash(INCIDENT), 'allow');
-  assert.match(w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto complete the master plan' }), /to-auto session s1: pass `--agent s1`/);
+  assert.match(w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto complete the master plan' }), /to-auto session s1: pass `--agent s1 --harness claude-code`/);
   assert.equal(w.bash(INCIDENT), 'deny');
   const v = world();
   const out = v.hook({ hook_event_name: 'PreToolUse', tool_name: 'Skill', tool_input: { skill: 'to-auto', args: 'x' } });

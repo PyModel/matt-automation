@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { STAGES, init, next, tick, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, checkContract, sinceDispatch, amendClaims, waive, event, withLock, breakStale, commit, controlDir, configure, runLogged, dispatch, orcRunDir, RUN_ORDER } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
+const WHO = { agent: 'test-session', harness: 'test' };
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 
 function write(file, text) {
@@ -394,18 +395,28 @@ test('status in-flight runs the same gate as take, so a dispatch never skips it'
 
 test('init writes a run that next can resume, commits it, and refuses to overwrite', () => {
   const { repo, control } = repoWithControl();
-  init(repo, 'add-login', 'Add login');
+  init(repo, 'add-login', 'Add login', WHO);
   const result = next(control, 'add-login');
   assert.equal(result.malformed, undefined);
   assert.equal(result.stage, '00');
   assert.equal(git(control, 'status', '--porcelain'), '');
-  assert.throws(() => init(repo, 'add-login', 'again'), /already exists/);
-  assert.throws(() => init(repo, 'Bad Slug', 'x'), /bad slug/);
+  assert.throws(() => init(repo, 'add-login', 'again', WHO), /already exists/);
+  assert.throws(() => init(repo, 'Bad Slug', 'x', WHO), /bad slug/);
+});
+
+test('init refuses a run that names no agent or harness, before any write', () => {
+  const { repo, control } = repoWithControl();
+  const head = git(control, 'rev-parse', 'HEAD');
+  assert.throws(() => init(repo, 'x', 'X'), /init needs --agent/);
+  assert.throws(() => init(repo, 'x', 'X', { agent: 's1' }), /init needs --harness/);
+  assert.throws(() => init(repo, 'x', 'X', { agent: ' ', harness: 'pi' }), /init needs --agent/);
+  assert.equal(git(control, 'rev-parse', 'HEAD'), head);
+  assert.equal(fs.existsSync(path.join(control, 'runs', 'x')), false);
 });
 
 test('event appends a clock-stamped, stage-tagged line to the ledger and commits it', () => {
   const { repo, control } = repoWithControl();
-  init(repo, 'add-login', 'Add login');
+  init(repo, 'add-login', 'Add login', WHO);
   const before = new Date();
   event(repo, 'add-login', '0c', 'worktree ready');
   const lines = fs.readFileSync(path.join(control, 'runs/add-login/ledger.md'), 'utf8').trimEnd().split('\n');
@@ -452,7 +463,7 @@ test('control-plane writes refuse to run without the control plane', () => {
   configure();
   process.env.TO_AUTO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-state-'));
   const head = git(repo, 'rev-parse', 'HEAD');
-  assert.throws(() => init(repo, 'x', 'X'), /no control plane/);
+  assert.throws(() => init(repo, 'x', 'X', WHO), /no control plane/);
   assert.equal(git(repo, 'rev-parse', 'HEAD'), head);
   assert.equal(git(repo, 'status', '--porcelain'), '');
 });
@@ -460,8 +471,8 @@ test('control-plane writes refuse to run without the control plane', () => {
 test('init registers the run with the next run_id; slug is stable and --new skips used slugs', () => {
   const { repo, control } = repoWithControl();
   assert.equal(slugFor(repo, 'Add login!  Now'), 'add-login-now');
-  init(repo, 'add-login', 'Add login');
-  init(repo, 'other', 'Other');
+  init(repo, 'add-login', 'Add login', WHO);
+  init(repo, 'other', 'Other', WHO);
   const runs = JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8'));
   assert.deepEqual(runs.map((r) => [r.slug, r.run_id, r.status]), [['add-login', 1, 'bootstrapping'], ['other', 2, 'bootstrapping']]);
   assert.equal(slugFor(repo, 'Add login'), 'add-login');
@@ -472,7 +483,7 @@ test('init registers the run with the next run_id; slug is stable and --new skip
 
 test('registry: a run moves one step at a time, leaves stopped only by resume, and is done only on a final verdict for the target\'s tip', () => {
   const { repo, control } = repoWithControl();
-  init(repo, 'x', 'X');
+  init(repo, 'x', 'X', WHO);
   assert.throws(() => setRegistry(repo, 'x', 'building'), /cannot go from bootstrapping to building/);
   assert.throws(() => setRegistry(repo, 'x', 'shipped'), /unknown run status/);
   advance(repo, 'x', 'reviewing');
@@ -488,7 +499,7 @@ test('registry: a run moves one step at a time, leaves stopped only by resume, a
   write(verdict, JSON.stringify({ verdict: 'ship', target: 'main', review_head: git(repo, 'rev-parse', 'HEAD') }));
   commit(repo, '[x] verdict at the tip', ['runs/x/final-verdict.json']);
   setRegistry(repo, 'x', 'done');
-  init(repo, 'y', 'Y');
+  init(repo, 'y', 'Y', WHO);
   stop(repo, 'y', 'budget');
   assert.throws(() => setRegistry(repo, 'y', 'planning'), /is stopped.*resume/);
   resume(repo, 'y');
@@ -497,7 +508,7 @@ test('registry: a run moves one step at a time, leaves stopped only by resume, a
 
 test('registry: planning, specced and ticketed each need their artifact, so the registry cannot be walked with nothing behind it', () => {
   const { repo, control } = repoWithControl();
-  init(repo, 'x', 'X');
+  init(repo, 'x', 'X', WHO);
   const run = path.join(control, 'runs/x');
   assert.throws(() => setRegistry(repo, 'x', 'planning'), /no active run worktree; `goal\.mjs worktree get x`/);
   write(path.join(run, 'worktrees.json'), JSON.stringify({ run: { state: 'returned' } }));
@@ -514,7 +525,7 @@ test('registry: planning, specced and ticketed each need their artifact, so the 
   assert.throws(() => setRegistry(repo, 'x', 'ticketed'), /no ticket table/, 'a later section is not a ticket table');
   write(path.join(control, 'tracker/x/issues/01-a.md'), ticket('ready-for-agent', 'None', 'exclusive: a.ts'));
   setRegistry(repo, 'x', 'ticketed');
-  init(repo, 'y', 'Y');
+  init(repo, 'y', 'Y', WHO);
   evidence(control, 'y');
   fs.rmSync(path.join(control, 'runs/y/worktrees.json'));
   stop(repo, 'y', 'paused');
@@ -525,16 +536,16 @@ test('registry: planning, specced and ticketed each need their artifact, so the 
 test('init refuses a backlog objective and admits a bounded one', () => {
   const { repo, control } = repoWithControl();
   for (const objective of ['fix all 422 open Linear issues', 'Fix every open bug', 'close all the remaining GitHub issues', 'resolve 120 open issues']) {
-    assert.throws(() => init(repo, 'b', objective), /is a backlog, not one run/, objective);
+    assert.throws(() => init(repo, 'b', objective, WHO), /is a backlog, not one run/, objective);
   }
   assert.equal(fs.existsSync(path.join(control, 'runs/b')), false);
-  for (const [slug, objective] of [['a', 'Add login with email and password'], ['f', 'Fix issue #42: login loops'], ['t', 'Fix all type errors in the issues page']]) init(repo, slug, objective);
+  for (const [slug, objective] of [['a', 'Add login with email and password'], ['f', 'Fix issue #42: login loops'], ['t', 'Fix all type errors in the issues page']]) init(repo, slug, objective, WHO);
   assert.equal(JSON.parse(fs.readFileSync(path.join(control, 'runs.json'), 'utf8')).length, 3);
 });
 
 test('stop halts the loop and records why', () => {
   const { repo, control } = repoWithControl();
-  init(repo, 'x', 'X');
+  init(repo, 'x', 'X', WHO);
   stop(repo, 'x', 'kun unreachable');
   assert.equal(next(control, 'x').stop, true);
   assert.match(fs.readFileSync(path.join(control, 'runs/x/STOP'), 'utf8'), /kun unreachable/);
@@ -611,21 +622,21 @@ test('a stop before init can be resumed: resume → init → next starts at 00',
   assert.equal(next(control, 'x').stop, true);
   resume(repo, 'x');
   assert.equal(next(control, 'x').stage, '00');
-  init(repo, 'x', 'X');
+  init(repo, 'x', 'X', WHO);
   assert.equal(next(control, 'x').stage, '00');
   assert.equal(git(control, 'status', '--porcelain'), '');
 });
 
 test('registry reviewing refuses while a ticket is neither done nor stuck (stage 7 completion)', () => {
   const { repo, control } = repoWithControl();
-  init(repo, 'x', 'X');
+  init(repo, 'x', 'X', WHO);
   const issues = path.join(control, 'tracker/x/issues');
   write(path.join(issues, '01-a.md'), ticket('done', 'None', 'exclusive: a.ts'));
   write(path.join(issues, '02-b.md'), ticket('blocked', '01', 'exclusive: b.ts'));
   rawCommit(control, 'tickets');
   advance(repo, 'x', 'building');
   assert.throws(() => setRegistry(repo, 'x', 'reviewing'), /02 \(blocked\)/);
-  init(repo, 'y', 'Y');
+  init(repo, 'y', 'Y', WHO);
   advance(repo, 'y', 'reviewing');
   assert.throws(() => setStatus(repo, 'x', '02', 'stuck'), /stuck needs its reason/);
   setStatus(repo, 'x', '02', 'stuck', { reason: 'prerequisite gone' });
@@ -635,7 +646,7 @@ test('registry reviewing refuses while a ticket is neither done nor stuck (stage
 
 test('resume after init restores the registry status the stop replaced', () => {
   const { repo, control } = repoWithControl();
-  init(repo, 'x', 'X');
+  init(repo, 'x', 'X', WHO);
   advance(repo, 'x', 'building');
   stop(repo, 'x', 'budget: wall-clock');
   resume(repo, 'x');
@@ -671,7 +682,7 @@ test('a claims path after ; says how to fix it', () => {
 
 test('frontier reports exclusive-claim overlaps with other active runs, ignoring finished ones', () => {
   const { repo, control } = repoWithControl();
-  for (const slug of ['a', 'b', 'old']) init(repo, slug, slug);
+  for (const slug of ['a', 'b', 'old']) init(repo, slug, slug, WHO);
   setRegistry(repo, 'old', 'dry-run');
   write(path.join(control, 'tracker/a/issues/01-x.md'), ticket('ready-for-agent', 'None', 'exclusive: app/View.swift, lib/'));
   write(path.join(control, 'tracker/b/issues/03-y.md'), ticket('in-flight', 'None', 'exclusive: app/View.swift'));
@@ -715,7 +726,7 @@ test('frontier resolves each ticket\'s capability: absent is standard/medium, in
 // A run `f` with ticket 01 dispatched by take (contract written) and ticket 02 ready beside it.
 function runWithTickets(second = 'exclusive: src/b.ts', criteria = '') {
   const { repo, control } = repoWithControl();
-  init(repo, 'f', 'F');
+  init(repo, 'f', 'F', WHO);
   const one = 'exclusive: a.ts ; shared-regenerate: gen/ ; guarded: none';
   write(path.join(control, 'tracker/f/issues/01-a.md'), ticket('ready-for-agent', 'None', one) + criteria);
   write(path.join(control, 'tracker/f/issues/02-b.md'), ticket('ready-for-agent', 'None', second));

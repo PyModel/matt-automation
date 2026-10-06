@@ -9,6 +9,7 @@ import { STAGES, nowStage, ignoreAllAncestors } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+const WHO_ARGS = ['--agent', 'test-session', '--harness', 'test'];
 const tmp = (prefix) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 
 function bareRepo(repo = tmp('guards-repo-')) {
@@ -31,7 +32,7 @@ function goal(ctx, args, { treehouse = '', env = {}, flags = [] } = {}) {
 
 function run(slug = 'x', repo = bareRepo()) {
   const ctx = { repo, state: path.join(tmp('guards-state-'), 'state') };
-  for (const args of [['control'], ['init', slug, 'X']]) {
+  for (const args of [['control'], ['init', slug, 'X', ...WHO_ARGS]]) {
     const r = goal(ctx, args);
     assert.equal(r.status, 0, r.stderr);
   }
@@ -373,8 +374,8 @@ test('STALE when the run has no goal.mjs commit for longer than --stale-hours; a
   const ctx = { repo: bareRepo(), state: path.join(tmp('guards-state-'), 'state') };
   goal(ctx, ['control']);
   const old = { GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z', GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z' };
-  assert.equal(goal(ctx, ['init', 'old', 'Old'], { env: old }).status, 0);
-  assert.equal(goal(ctx, ['init', 'new', 'New']).status, 0);
+  assert.equal(goal(ctx, ['init', 'old', 'Old', ...WHO_ARGS], { env: old }).status, 0);
+  assert.equal(goal(ctx, ['init', 'new', 'New', ...WHO_ARGS]).status, 0);
   const stale = JSON.parse(goal(ctx, ['check', 'old']).stdout);
   assert.deepEqual(stale.problems.map((p) => p.code), ['STALE']);
   assert.match(stale.problems[0].message, /no goal\.mjs commit for \d+\.\dh while bootstrapping \(limit 2h\)/);
@@ -390,7 +391,7 @@ test('check --all walks every control plane under the root: one line per problem
   const b = { repo: bareRepo(), state: path.join(root, 'bbb') };
   for (const ctx of [a, b]) {
     goal(ctx, ['control']);
-    goal(ctx, ['init', 'x', 'X']);
+    goal(ctx, ['init', 'x', 'X', ...WHO_ARGS]);
   }
   fs.mkdirSync(path.join(root, 'not-a-control-plane'));
   const all = (args = []) => spawnSync(process.execPath, [GOAL, 'check', '--all', '--state-root', root, ...args], { encoding: 'utf8', env: { ...process.env, TO_AUTO_HOME: '' } });
@@ -409,7 +410,7 @@ test('to-auto-watch.sh notify fires once per problem set: a STALE age that only 
   const ctx = { repo: bareRepo(), state: path.join(home, '.local', 'state', 'to-auto', 'aaa') };
   const at = (hour) => ({ GIT_COMMITTER_DATE: `2026-01-01T0${hour}:00:00Z`, GIT_AUTHOR_DATE: `2026-01-01T0${hour}:00:00Z` });
   assert.equal(goal(ctx, ['control']).status, 0);
-  assert.equal(goal(ctx, ['init', 'old', 'Old'], { env: at(0) }).status, 0);
+  assert.equal(goal(ctx, ['init', 'old', 'Old', ...WHO_ARGS], { env: at(0) }).status, 0);
   const calls = path.join(home, 'osascript.log');
   fs.writeFileSync(path.join(home, 'osascript'), `#!/bin/sh\necho "$*" >> "${calls}"\n`, { mode: 0o755 });
   const env = { ...process.env, HOME: home, XDG_STATE_HOME: '', TO_AUTO_HOME: '', PATH: `${home}${path.delimiter}${process.env.PATH}` };
@@ -788,17 +789,17 @@ test('init is one commit: a failed commit leaves no registration, and a registra
   const hook = path.join(ctx.state, '.git', 'hooks', 'commit-msg');
   fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   const runsBefore = fs.readFileSync(path.join(ctx.state, 'runs.json'), 'utf8');
-  assert.equal(goal(ctx, ['init', 'y', 'Y']).status, 3);
+  assert.equal(goal(ctx, ['init', 'y', 'Y', ...WHO_ARGS]).status, 3);
   assert.equal(fs.readFileSync(path.join(ctx.state, 'runs.json'), 'utf8'), runsBefore, 'no registration');
   assert.equal(fs.existsSync(path.join(ctx.state, 'runs', 'y', 'todo.md')), false);
   fs.rmSync(hook);
-  assert.equal(goal(ctx, ['init', 'y', 'Y']).status, 0, 'the retry succeeds');
+  assert.equal(goal(ctx, ['init', 'y', 'Y', ...WHO_ARGS]).status, 0, 'the retry succeeds');
   // The old two-commit init, cut off after registering.
   const data = JSON.parse(fs.readFileSync(path.join(ctx.state, 'runs.json'), 'utf8'));
   data.push({ slug: 'z', objective: 'Z', run_id: 9, status: 'bootstrapping' });
   fs.writeFileSync(path.join(ctx.state, 'runs.json'), JSON.stringify(data));
   fixtureCommit(ctx, '[z] register run 9');
-  const r = goal(ctx, ['init', 'z', 'Z']);
+  const r = goal(ctx, ['init', 'z', 'Z', ...WHO_ARGS]);
   assert.equal(r.status, 0, r.stderr);
   assert.match(git(ctx.state, 'log', '-1', '--format=%s'), /\[z\] start run 9 \(registered earlier\)/);
   assert.equal(statusOf(ctx, 'z').run_id, 9, 'not registered twice');
@@ -865,7 +866,7 @@ test('the pre-commit hook names a goal.mjs that has moved instead of failing obs
   fs.copyFileSync(GOAL, copy);
   const ctx = { repo: bareRepo(), state: path.join(tmp('guards-state-'), 'state') };
   const { TO_AUTO_HOME, ...env } = process.env;
-  for (const args of [['control'], ['init', 'x', 'X']]) assert.equal(spawnSync(process.execPath, [copy, '--repo', ctx.repo, '--state-dir', ctx.state, ...args], { env }).status, 0);
+  for (const args of [['control'], ['init', 'x', 'X', ...WHO_ARGS]]) assert.equal(spawnSync(process.execPath, [copy, '--repo', ctx.repo, '--state-dir', ctx.state, ...args], { env }).status, 0);
   fs.rmSync(copy);
   put(ctx, 'notes.md', 'n\n');
   git(ctx.state, 'add', 'notes.md');
@@ -881,11 +882,11 @@ test('two inits of one slug at once: the second is refused under the lock and ne
   const { spawn } = await import('node:child_process');
   const { TO_AUTO_HOME, ...env } = process.env;
   // A holds the registry lock, then inits s inside it (reentrant), after B has passed every check made before the lock.
-  const script = `touch ${barrier}; sleep 1; ${process.execPath} ${GOAL} --repo ${ctx.repo} --state-dir ${ctx.state} init s 'objective A'`;
+  const script = `touch ${barrier}; sleep 1; ${process.execPath} ${GOAL} --repo ${ctx.repo} --state-dir ${ctx.state} init s 'objective A' --agent test-session --harness test`;
   const a = spawn(process.execPath, [GOAL, '--repo', ctx.repo, '--state-dir', ctx.state, 'with-lock', 'registry', '--', 'sh', '-c', script], { env, stdio: 'ignore' });
   const exited = new Promise((resolve) => a.on('exit', resolve));
   while (!fs.existsSync(barrier)) await new Promise((r) => setTimeout(r, 20));
-  const b = goal(ctx, ['init', 's', 'objective B']);
+  const b = goal(ctx, ['init', 's', 'objective B', ...WHO_ARGS]);
   assert.equal(await exited, 0);
   assert.notEqual(b.status, 0);
   assert.match(b.stderr, /already exists/);
@@ -904,7 +905,7 @@ test('a resume clears a STOP that git never tracked, and a half-registered run i
   data.push({ slug: 'z', objective: 'old', status: 'bootstrapping', agent: 'gone', started: '2020-01-01T00:00:00.000Z' });
   fs.writeFileSync(path.join(ctx.state, 'runs.json'), JSON.stringify(data));
   fixtureCommit(ctx, '[z] register run');
-  assert.equal(goal(ctx, ['init', 'z', 'Z', '--agent', 'me']).status, 0);
+  assert.equal(goal(ctx, ['init', 'z', 'Z', '--agent', 'me', '--harness', 'test']).status, 0);
   const z = statusOf(ctx, 'z');
   assert.deepEqual([z.agent, z.objective, z.run_id, z.started > '2020'], ['me', 'Z', 2, true]);
   assert.match(git(ctx.state, 'log', '-1', '--format=%s'), /\[z\] start run 2 \(registered earlier\)/);

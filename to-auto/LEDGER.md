@@ -19,7 +19,7 @@ All under `<state>/runs/<slug>/` in the control plane (CONTROL.md), created at s
 | `tickets/<NN>.receipt.md` | The implementer's final message, ending in its receipt (CONTRACT.md § The receipt) | orchestrator | when the implementer returns |
 | `tickets/<NN>.status.md` | Per-ticket flight record: `heartbeat`, `agent: <id/pid>`, `active_cmd`, `slice: n/m`, worktree, branch, merged range, last commit, suite result, same-test-failure count, review findings, evidence states, claims touched, blockers | the ticket's implementer | after every slice and at exit |
 | `STOP` | Kill switch (BOOTSTRAP.md § Kill switch and GC) | `goal.mjs stop`: the user's `--stop` or the run's own halt | any time |
-| `bugs.md` | Every bug noticed in flight: file, symptom, introduced-by-run?, action taken (fixed @ commit / ticket NN / blocker) | whoever noticed it | the moment it is noticed |
+| `bugs.md` | Every bug noticed in flight: file, symptom, introduced-by-run?, action taken (fixed @ commit / ticket NN / blocker), each under `## <finder>-<n> <title>` where the finder is `t<NN>` for an implementer and `o` for the orchestrator, so parallel writers never reuse an id | whoever noticed it | the moment it is noticed |
 | `final-verdict.json` | Stage 8 review verdict | orchestrator | stage 8 |
 | `retro.md` | Stage 10 output | orchestrator | stage 10 |
 

@@ -600,7 +600,10 @@ export function recordModel(repo, slug, role, model) {
   const rel = path.join('runs', slug, 'models.json');
   const file = path.join(control, rel);
   const entry = readRegistry(control).find((r) => r.slug === slug);
-  const data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { workerModel: entry?.workerModel ?? null, helpers: entry?.helpers ?? 'named', roles: {} };
+  if (!entry) throw new Refusal(`no run ${slug} in runs.json`);
+  const data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { workerModel: entry.workerModel ?? null, helpers: entry.helpers ?? 'named', roles: {} };
+  // BOOTSTRAP.md: `--no-helpers` records that none ran; a helper's model recorded here means one did.
+  if (data.helpers === 'none') throw new Refusal(`${slug} was registered with --no-helpers, so no ${role} helper may run; do the work in this session`);
   data.roles[role] = model;
   fs.writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`);
   commit(repo, `[${slug}] model ${role}`, [rel]);

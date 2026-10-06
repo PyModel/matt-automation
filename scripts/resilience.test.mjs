@@ -173,6 +173,9 @@ test('no helper agents are recorded, and a named worker model is logged per role
   const none = JSON.parse(fs.readFileSync(path.join(state, 'runs/solo/models.json'), 'utf8'));
   assert.equal(none.helpers, 'none');
   assert.deepEqual(none.roles, {});
+  assert.throws(() => recordModel(repo, 'solo', 'implementer', 'provider/model'), /registered with --no-helpers/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(state, 'runs/solo/models.json'), 'utf8')).roles, {});
+  assert.throws(() => recordModel(repo, 'nope', 'implementer', 'provider/model'), /no run nope/);
   init(repo, 'helped', 'Helped', { ...WHO, workerModel: 'provider/model' });
   recordModel(repo, 'helped', 'implementer', 'provider/model-used');
   const used = JSON.parse(fs.readFileSync(path.join(state, 'runs/helped/models.json'), 'utf8'));

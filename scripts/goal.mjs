@@ -1925,10 +1925,21 @@ function workspaceOf(repo, control) {
   return ws && fs.existsSync(ws) ? ws : fs.realpathSync(repo);
 }
 
-/** The run's base: goal/bootstrap if it exists, else --base (or the saved supervisor base), else the default branch head. */
+/**
+ * The run's base: goal/bootstrap while it carries setup the default branch lacks, else --base (or the saved supervisor
+ * base), else the default branch head. A goal/bootstrap already merged is history: preferring it cut a run 71 commits
+ * behind main. One that does not contain the head is refused, so a run never builds on an outdated base.
+ */
 function runBase(workspace) {
   const has = (ref) => spawnSync('git', ['-C', workspace, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`]).status === 0;
-  if (has('refs/heads/goal/bootstrap')) return 'goal/bootstrap';
+  const ancestor = (a, b) => spawnSync('git', ['-C', workspace, 'merge-base', '--is-ancestor', a, b]).status === 0;
+  const head = defaultHead(workspace, has);
+  if (!has('refs/heads/goal/bootstrap') || ancestor('goal/bootstrap', head)) return head;
+  if (!ancestor(head, 'goal/bootstrap')) throw new Refusal(`goal/bootstrap does not contain ${head}; rebase it onto ${head} (BOOTSTRAP.md stage 0b), or delete it if its setup is no longer wanted, then \`worktree get\` again`);
+  return 'goal/bootstrap';
+}
+
+function defaultHead(workspace, has) {
   if (runtime.base) return runtime.base;
   if (!runtime.noRemote) {
     const head = spawnSync('git', ['-C', workspace, 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], { encoding: 'utf8' });

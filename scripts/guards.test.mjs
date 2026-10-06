@@ -102,6 +102,30 @@ test('worktree get without treehouse makes git worktrees under the state dir, ru
   assert.match(fs.readFileSync(path.join(ctx.state, '.gitignore'), 'utf8'), /^worktrees\/$/m);
 });
 
+test('the run base is goal/bootstrap only while it carries setup main lacks; merged it is skipped, diverged it is refused', () => {
+  const cut = (setup) => {
+    const repo = bareRepo();
+    setup(repo);
+    const ctx = run('x', repo);
+    return { repo, r: goal(ctx, ['worktree', 'get', 'x']) };
+  };
+  // Merged and left behind: main moved on, so the run starts at main, not the stale branch.
+  let { repo, r } = cut((repo) => { git(repo, 'branch', 'goal/bootstrap'); git(repo, 'commit', '-q', '--allow-empty', '-m', 'later on main'); });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(git(r.stdout.trim(), 'rev-parse', 'HEAD'), git(repo, 'rev-parse', 'main'));
+  // Setup on top of main: the run starts there.
+  ({ repo, r } = cut((repo) => { git(repo, 'switch', '-q', '-c', 'goal/bootstrap'); git(repo, 'commit', '-q', '--allow-empty', '-m', 'setup'); git(repo, 'switch', '-q', 'main'); }));
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(git(r.stdout.trim(), 'rev-parse', 'HEAD'), git(repo, 'rev-parse', 'goal/bootstrap'));
+  // Setup on an outdated main: refused until rebased.
+  ({ repo, r } = cut((repo) => {
+    git(repo, 'switch', '-q', '-c', 'goal/bootstrap'); git(repo, 'commit', '-q', '--allow-empty', '-m', 'setup');
+    git(repo, 'switch', '-q', 'main'); git(repo, 'commit', '-q', '--allow-empty', '-m', 'later on main');
+  }));
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /goal\/bootstrap does not contain main; rebase it onto main/);
+});
+
 test('worktree get is idempotent: a second get prints the same path and commits nothing', () => {
   const ctx = run();
   goal(ctx, ['worktree', 'get', 'x']);

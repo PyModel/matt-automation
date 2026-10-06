@@ -1099,6 +1099,7 @@ test('receipt: a repair round lists review findings beside the ticket criteria, 
   assert.match(check([{ finding: 'F1 money race', result: 'fail', evidence: 'still races' }]), /repair "F1 money race" is fail/);
   assert.match(check([{ finding: 'F1', result: 'pass' }]), /repairs must be/);
   assert.match(check({ F1: 'pass' }), /repairs must be/);
+  assert.equal(check(['review: restored the lazy generator']), 'repairs must be an array of { finding, result: pass | fail | not-run, evidence }; it is [] outside a repair round, and a fix from the implementer\'s own review counts in review.cited_fixed', 'a string entry gets the shape message only');
 });
 
 test('next and tick refuse a slug that init would refuse', () => {

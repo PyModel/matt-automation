@@ -559,7 +559,7 @@ test('CLI exit codes: 2 for usage, 3 for runtime errors', () => {
   assert.equal(spawnSync(process.execPath, [GOAL, '--repo', repo, 'nonsense']).status, 2);
   assert.equal(spawnSync(process.execPath, [GOAL, '--repo', repo, 'frontier', 'no-such-feature']).status, 3);
   // One command per line: an agent greps the usage for a command, and a one-line usage is cut by long-output truncation.
-  const help = spawnSync(process.execPath, [GOAL, '--help'], { encoding: 'utf8' }).stderr;
+  const help = spawnSync(process.execPath, [GOAL, '--help'], { encoding: 'utf8' }).stdout;
   assert.match(help, /^ {2}commit -m <msg> <file>\.\.\.$/m);
   assert.match(help, /^ {2}run -- <command>$/m);
 });

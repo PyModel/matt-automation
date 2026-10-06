@@ -922,3 +922,14 @@ test('a helper inside the control plane commits its ticket status from runs/<slu
   assert.equal(r.status, 0, r.stderr);
   assert.equal(execFileSync('git', ['-C', ctx.state, 'status', '--porcelain'], { encoding: 'utf8' }), '');
 });
+
+test('--help after any command prints usage and exits 0; after `run --` it belongs to the command', () => {
+  for (const args of [['slug', '--help'], ['init', 'x', '-h'], ['--help']]) {
+    const r = spawnSync(process.execPath, [GOAL, ...args], { encoding: 'utf8' });
+    assert.equal(r.status, 0, args.join(' '));
+    assert.match(r.stdout, /^usage: goal\.mjs/, args.join(' '));
+  }
+  const ctx = { repo: bareRepo(), state: path.join(tmp('guards-state-'), 'state') };
+  const r = spawnSync(process.execPath, [GOAL, 'run', '--', 'echo', '--help'], { cwd: ctx.repo, encoding: 'utf8' });
+  assert.doesNotMatch(r.stdout, /usage: goal\.mjs/);
+});

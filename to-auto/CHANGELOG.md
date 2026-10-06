@@ -39,3 +39,4 @@ Behavior that moved. The phase files are the spec; this list is the delta.
 - `goal.mjs dispatch --phase implement` refuses a `--brief` that does not carry the ticket's committed contract verbatim: a brief copied from another ticket, or one built before a claims amendment, never reaches a worker.
 - `orc-dispatch --force` refuses while the dispatch under that `--task` is still running: it replaced finished evidence, and also started a second worker beside a live one.
 - `goal.mjs init` refuses a run without `--agent` and `--harness` (exit 2). A pi run was registered with both null, so nothing recorded which session ran it and the Claude Code guard could never release that session.
+- `goal.mjs <command> --help` (or `-h`) prints usage and exits 0. Before, `slug --help` read `--help` as the objective and printed the slug `help`. After `run --` the flag belongs to the command.

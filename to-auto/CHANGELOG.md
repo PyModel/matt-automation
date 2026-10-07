@@ -2,6 +2,8 @@
 
 Behavior that moved. The phase files are the spec; this list is the delta.
 
+- `goal.mjs tick` refuses while a `bugs.md` entry names no action (fixed @ commit, ticket, blocker, or not a bug). PIPELINE.md already required it at every stage, with nothing checking it: 14 of 28 recorded runs have such entries ("not fixed", "left", "known baseline failure"), one of them live with three failing base tests.
+- PLAN.md stage 6 says when a top-level file such as `CHANGELOG.md` or `README.md` can join a run: claimed at stage 6, or by the objective's grant. `goal.mjs` refused every late top-level path while PLAN.md named only top-level config as guarded, so one run treated three top-level docs three ways.
 - A criterion `pass` means it holds as written (CONTRACT.md § The receipt); a substituted check is `fail` or `not-run` and goes through `goal.mjs waive`. A brief had authorised a ticket to pass a criterion on a different test, which `waive` never saw because the receipt said `pass`.
 - The receipt check reads a final message that ends in an unfenced JSON receipt (from its last column-0 `{`), so the orchestrator saves the message verbatim instead of extracting the JSON by hand.
 - `bugs.md` entries are `## <finder>-<n>` (`t07-1`, `o-3`; LEDGER.md), so an implementer and the orchestrator writing at once never reuse an id. A run had two `BUG-5` entries, and its NOW blocker named one ambiguously. The subagent contract states the format, since implementers never see LEDGER.md's file table.

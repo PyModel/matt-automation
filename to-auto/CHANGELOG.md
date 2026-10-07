@@ -2,6 +2,7 @@
 
 Behavior that moved. The phase files are the spec; this list is the delta.
 
+- Claude Code's keep-going Stop hook holds only a marked session, so removing the session's mark (the guard's documented way out of to-auto mode) also ends the nudges. A session whose owner ended to-auto mode mid-run was still held because runs.json named it as the run's agent.
 - BUILD.md step 5: an implementer that ended without a receipt (stopped, killed, crashed) gets a finish dispatch; the orchestrator never writes the receipt. A live run receipted a stopped builder's ticket itself ("orchestrator-verified").
 - `goal.mjs adopt <slug> --agent <id> --harness <name>` hands a run to a new session (LEDGER.md re-entry step 2). The keep-going hook and the guard follow runs.json `agent`, which only `init` set, so a session restarted to load the hook was never nudged.
 - A to-auto session no longer stalls when its model ends a turn mid-run. `goal.mjs keep-going --agent <id>` decides; Claude Code's Stop hook (to-auto-guard.mjs) and a pi `agent_before_settle` extension (`scripts/pi-keep-going.ts`) continue the turn while the session's run is active and its control plane moved since the last nudge. Two live runs stopped mid-pipeline for 15 hours each after a progress report, and an earlier run for 31 hours, because nothing re-invoked them (PIPELINE.md § Under a loop).

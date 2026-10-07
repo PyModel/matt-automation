@@ -957,3 +957,18 @@ test('--help after any command prints usage and exits 0; after `run --` it belon
   const r = spawnSync(process.execPath, [GOAL, 'run', '--', 'echo', '--help'], { cwd: ctx.repo, encoding: 'utf8' });
   assert.doesNotMatch(r.stdout, /usage: goal\.mjs/);
 });
+
+test('tick refuses while a bugs.md entry names no action, and passes once it is ticketed', () => {
+  const ctx = run('b');
+  const bugs = path.join(ctx.state, 'runs', 'b', 'bugs.md');
+  fs.appendFileSync(bugs, '## o-1 a test fails at base\n- pre-existing; leave as a known baseline failure\n\n## t01-1 typo\n- fixed @ 1234567\n');
+  handCommit(ctx, '[b] bug');
+  const refused = goal(ctx, ['tick', 'b', '00']);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /bugs\.md has entries with no action.*## o-1 a test fails at base/);
+  assert.doesNotMatch(refused.stderr, /t01-1/);
+  fs.writeFileSync(bugs, fs.readFileSync(bugs, 'utf8').replace('known baseline failure', 'known baseline failure → ticket 07'));
+  handCommit(ctx, '[b] ticket');
+  const ok = goal(ctx, ['tick', 'b', '00']);
+  assert.equal(ok.status, 0, ok.stderr);
+});

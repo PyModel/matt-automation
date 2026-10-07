@@ -469,6 +469,15 @@ const statusAfter = (index) => (STAGES[index + 1] ? FLOOR_OF.get(STAGES[index + 
 const openStage = (status) => STAGES.findIndex((s) => RUN_ORDER.indexOf(FLOOR_OF.get(s.id)) >= RUN_ORDER.indexOf(status));
 
 /** The stage whose tick moves the registry to `status` (planning → 0c, specced → 5b, ticketed and building → 6b, reviewing → 7, done → 10). */
+/** The first line of each bugs.md entry (a `## ` heading or a top-level `- [` item) that names no action. */
+// ponytail: keyword match on free text, so "fixed" anywhere passes; a structured Action: field if runs game it.
+export function unresolvedBugs(text) {
+  return text.split(/^(?=## |- \[)/m)
+    .filter((e) => /^(## |- \[)/.test(e))
+    .filter((e) => !/\b(fixed|resolved)\b|\bticket\s+#?\d+|\bblocker\b|\bnot a (product )?bug\b/i.test(e.replace(/\bnot (yet )?fixed\b/gi, '')))
+    .map((e) => e.split('\n')[0].trim().slice(0, 120));
+}
+
 export function tickingStage(status) {
   const at = RUN_ORDER.indexOf(status);
   return STAGES.find((s, i) => RUN_ORDER.indexOf(statusAfter(i)) >= at)?.id ?? null;
@@ -512,6 +521,9 @@ export function tick(repo, slug, id, { skipped = null } = {}) {
     if (again && skipped !== null) throw new UsageError(`stage ${id} is already ticked; --skipped records only a first tick`);
     const { artifact } = STAGES[index];
     if (artifact && !fs.existsSync(path.join(runDir, artifact))) throw new Refusal(`stage ${id} is not finished: runs/${slug}/${artifact} is missing`);
+    const bugsFile = path.join(runDir, 'bugs.md');
+    const open = fs.existsSync(bugsFile) ? unresolvedBugs(fs.readFileSync(bugsFile, 'utf8')) : [];
+    if (open.length) throw new Refusal(`stage ${id} cannot be ticked: runs/${slug}/bugs.md has entries with no action (fixed @ <sha>, ticket <NN>, blocker, or not a bug): ${open.join('; ')}. A pre-existing bug gets a ticket now (BUILD.md § Bugs found in flight, rule 3), never a known issue`);
     // dry-run is a terminal label set after 6b; its stages tick without moving it.
     const moves = [];
     if (RUN_ORDER.includes(entry.status)) {
@@ -987,7 +999,9 @@ function patchId(cwd, from, to) {
 const CLAIMS_LINE = /^\*\*Claims:\*\* (.+)$/m;
 const AMENDED = /^\*\*Claims amended:\*\* /gm;
 export const MAX_AMENDMENTS = 2;
-// PLAN.md stage 6's guarded classes, which no amendment may add undeclared: CI workflows, migrations, top-level files.
+// Paths a ticket may gain only through the objective's grant, never an amendment: CI workflows, migrations and any
+// top-level file. Broader than PLAN.md stage 6's planned `guarded` claims (top-level config): a top-level file a ticket
+// claimed at stage 6 is planned scope; one added later, or needed by a review fix, is a blocker.
 const GUARDED_CLASS = /^(?:\.github\/|\.gitlab-ci|\.circleci\/|[^/]+$)|(?:^|\/)migrations\//;
 
 /**

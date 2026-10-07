@@ -98,7 +98,7 @@ The implementer's final message ends with exactly one fenced `json` block, the r
 ```
 
 - `conclusion`: `completed` | `partial` | `blocked` | `stuck` | `claims-breach` | `stopped`. `blocked`, `stuck`, and `claims-breach` name their reason in `blockers`.
-- `result`: `pass` | `fail` | `not-run`; `pass` and `fail` carry evidence.
+- `result`: `pass` | `fail` | `not-run`; `pass` and `fail` carry evidence. `pass` means the criterion holds as written: evidence for a different check, however reasonable, is `fail` or `not-run` with the reason, and the orchestrator waives the criterion if it is proven wrong (`goal.mjs waive`). No brief can authorise otherwise.
 - `validation`: every command ran through `goal.mjs run -- <command>` on the committed, clean tree, and `log` is the `{ path, sha256 }` it printed. A `completed` receipt's validation stands only on those logs: the check re-reads each one and refuses it when it is missing, outside this repository's `goal-logs/`, edited since (sha256), or shows another command, another exit code, another head, or a dirty tree. A criterion's evidence names the validation command that shows it.
 - `repairs` (a repair round only, BUILD.md § Implementer backend; `[]` otherwise): the review findings the round answers, each `{ "finding": "<review finding, verbatim>", "result": "pass", "evidence": "<validation command that shows it>" }`. They sit beside `criteria`, never in place of it: the receipt still lists every ticket criterion verbatim. A `completed` receipt needs every repair `pass`.
 - `review`: the implementer's own `code-review` pass. `cited_fixed` counts the cited findings it fixed before the receipt; `leads` lists the uncited ones. A fix from this review goes here, never in `repairs`.

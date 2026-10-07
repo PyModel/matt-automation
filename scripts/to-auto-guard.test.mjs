@@ -203,9 +203,14 @@ test('Stop blocks the end of a turn while the session\'s run is active and movin
   w.goal('control');
   w.goal('init', 'r', 'Add login', '--agent', 's1', '--harness', 'test');
   const stop = (session_id = 's1') => w.hook({ hook_event_name: 'Stop', session_id });
+  assert.equal(stop(), null, 'an unmarked session is never held');
+  w.hook({ hook_event_name: 'UserPromptSubmit', session_id: 's1', prompt: '/to-auto resume r' });
   const first = stop();
   assert.equal(first?.decision, 'block');
   assert.match(first.reason, /to-auto run r is .*goal\.mjs next r/);
   assert.equal(stop(), null, 'no commit since the last block: the turn ends');
   assert.equal(stop('s2'), null, 'another session is never held');
+  w.goal('event', 'r', '0', 'progress');
+  fs.rmSync(path.join(w.env.TO_AUTO_SESSIONS, 's1'));
+  assert.equal(stop(), null, 'removing the mark ends to-auto mode, nudges included');
 });

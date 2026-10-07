@@ -972,3 +972,24 @@ test('tick refuses while a bugs.md entry names no action, and passes once it is 
   const ok = goal(ctx, ['tick', 'b', '00']);
   assert.equal(ok.status, 0, ok.stderr);
 });
+
+test('keep-going continues an active run only while its control plane moves, and never a stopped or foreign one', () => {
+  const ctx = run('k');
+  const home = tmp('guards-home-');
+  const keep = (agent) => {
+    const r = goal(ctx, ['keep-going', '--agent', agent], { env: { HOME: home, TO_AUTO_HOME: ctx.state, TO_AUTO_SESSIONS: path.join(home, 'sessions') } });
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout);
+  };
+  const first = keep('test-session');
+  assert.equal(first.continue, true);
+  assert.match(first.reason, /to-auto run k is .*goal\.mjs next k/);
+  assert.equal(keep('test-session').continue, false, 'no commit since the nudge lets the turn end');
+  fs.appendFileSync(path.join(ctx.state, 'runs', 'k', 'log.md'), '- progress\n');
+  handCommit(ctx, '[k] progress');
+  assert.equal(keep('test-session').continue, true, 'a new control-plane commit earns another nudge');
+  assert.equal(keep('someone-else').continue, false);
+  assert.equal(keep('../etc').continue, false);
+  assert.equal(goal(ctx, ['stop', 'k', 'done here']).status, 0);
+  assert.equal(keep('test-session').continue, false, 'a stopped run lets the session end');
+});

@@ -95,10 +95,11 @@ The Tickets table (written at 6b) mirrors the tracker's statuses (CONTROL.md § 
 Every invocation runs this, first run or fiftieth loop tick, and so does a subagent that must orient:
 
 1. `node ROOT/scripts/goal.mjs next <slug>`. `stop` → report the reason and end; `done` → reply "done" and end (under a loop, this ends the loop); `malformed` → rewrite `todo.md` from the events, then run it again; `blocked` → NOW names a stage the registry never reached: set NOW back to the stage the run really reached (the registry and the artifacts say which), or `goal.mjs stop` the run; or (`TODO_AHEAD`) todo.md was ticked past a registry move by hand: run the `goal.mjs tick` the reason names, which makes the move on its evidence or says what is missing. Never tick ahead to silence it. When `next` says todo.md is unticked behind the registry, run `goal.mjs tick` for each finished stage it names, in order. Otherwise it names the stage and the one phase file to load. It trusts the files over the checkboxes: a ticked stage whose artifact is missing comes back as the stage to redo. Stage `00` means a fresh run: go straight to BOOTSTRAP.md.
-2. Read `ledger.md` NOW and the last 20 events.
-3. Verify NOW against the world: `goal.mjs check <slug>` (exit 0), `goal.mjs worktree status <slug>`, `git log -1` on the run branch, each `tickets/<NN>.status.md` for in-flight tickets, the tracker's ticket statuses. A ticket NOW calls active is handled per BUILD.md § Stuck detection.
-4. Resume at the stage `next` named, checking its completion criterion (PIPELINE.md). Never redo a stage whose artifacts exist and verify; never trust NOW over the artifacts.
-5. Append a `[re-entry]` event saying what was verified and where the run resumed.
+2. If runs.json names another session as the run's `agent` (a fresh session, or one restarted after a crash or a hook install), `goal.mjs adopt <slug> --agent <this session's id> --harness <name>` before any other write: the keep-going hook nudges, and the guard releases, only the session `agent` names.
+3. Read `ledger.md` NOW and the last 20 events.
+4. Verify NOW against the world: `goal.mjs check <slug>` (exit 0), `goal.mjs worktree status <slug>`, `git log -1` on the run branch, each `tickets/<NN>.status.md` for in-flight tickets, the tracker's ticket statuses. A ticket NOW calls active is handled per BUILD.md § Stuck detection.
+5. Resume at the stage `next` named, checking its completion criterion (PIPELINE.md). Never redo a stage whose artifacts exist and verify; never trust NOW over the artifacts.
+6. Append a `[re-entry]` event saying what was verified and where the run resumed.
 
 ## Compaction and context pressure
 

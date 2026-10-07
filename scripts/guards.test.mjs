@@ -997,6 +997,11 @@ test('keep-going continues an active run only while its control plane moves, and
   assert.equal(keep('test-session').continue, true, 'a new control-plane commit earns another nudge');
   assert.equal(keep('someone-else').continue, false);
   assert.equal(keep('../etc').continue, false);
+  assert.equal(goal(ctx, ['adopt', 'k', '--agent', 'someone-else']).status, 2, 'adopt needs --harness too');
+  const adopted = goal(ctx, ['adopt', 'k', '--agent', 'someone-else', '--harness', 'pi']);
+  assert.equal(adopted.status, 0, adopted.stderr);
+  assert.equal(keep('someone-else').continue, true, 'a session that adopts the run is nudged');
+  assert.equal(keep('test-session').continue, false, 'and the session it replaced is not');
   assert.equal(goal(ctx, ['stop', 'k', 'done here']).status, 0);
   assert.equal(keep('test-session').continue, false, 'a stopped run lets the session end');
 });

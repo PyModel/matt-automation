@@ -196,3 +196,16 @@ test('marking sweeps marks older than 30 days and keeps younger ones', () => {
   w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto x' });
   assert.deepEqual(fs.readdirSync(w.env.TO_AUTO_SESSIONS).sort(), ['s1', 'young']);
 });
+
+test('Stop blocks the end of a turn while the session\'s run is active and moving, then lets it go', () => {
+  const w = world();
+  w.env.HOME = tmp('guard-home-');
+  w.goal('control');
+  w.goal('init', 'r', 'Add login', '--agent', 's1', '--harness', 'test');
+  const stop = (session_id = 's1') => w.hook({ hook_event_name: 'Stop', session_id });
+  const first = stop();
+  assert.equal(first?.decision, 'block');
+  assert.match(first.reason, /to-auto run r is .*goal\.mjs next r/);
+  assert.equal(stop(), null, 'no commit since the last block: the turn ends');
+  assert.equal(stop('s2'), null, 'another session is never held');
+});

@@ -2,6 +2,7 @@
 
 Behavior that moved. The phase files are the spec; this list is the delta.
 
+- A to-auto session no longer stalls when its model ends a turn mid-run. `goal.mjs keep-going --agent <id>` decides; Claude Code's Stop hook (to-auto-guard.mjs) and a pi `agent_before_settle` extension (`scripts/pi-keep-going.ts`) continue the turn while the session's run is active and its control plane moved since the last nudge. Two live runs stopped mid-pipeline for 15 hours each after a progress report, and an earlier run for 31 hours, because nothing re-invoked them (PIPELINE.md § Under a loop).
 - `goal.mjs tick` refuses while a `bugs.md` entry names no action (fixed @ commit, ticket, blocker, or not a bug). PIPELINE.md already required it at every stage, with nothing checking it: 14 of 28 recorded runs have such entries ("not fixed", "left", "known baseline failure"), one of them live with three failing base tests.
 - PLAN.md stage 6 says when a top-level file such as `CHANGELOG.md` or `README.md` can join a run: claimed at stage 6, or by the objective's grant. `goal.mjs` refused every late top-level path while PLAN.md named only top-level config as guarded, so one run treated three top-level docs three ways.
 - A criterion `pass` means it holds as written (CONTRACT.md § The receipt); a substituted check is `fail` or `not-run` and goes through `goal.mjs waive`. A brief had authorised a ticket to pass a criterion on a different test, which `waive` never saw because the receipt said `pass`.

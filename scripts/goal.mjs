@@ -8,6 +8,7 @@
 //                                                          register the run and create runs/<slug>/ that next can parse; commit
 //   node scripts/goal.mjs next <slug>                     where the run resumes (JSON); blocked when NOW or todo.md is ahead of the registry
 //   node scripts/goal.mjs check <slug> | check --all [--state-root <dir>] [--stale-hours <n>]
+//   node scripts/goal.mjs keep-going --agent <id>   (Stop hook / pi extension: must this session continue its run?)
 //                                                          read-only: NOW ahead of the registry, malformed NOW, todo.md behind or ahead of it, registry stale (exit 1 on any)
 //   node scripts/goal.mjs worktree get|return <slug> [NN] | worktree status <slug>
 //                                                          the run's (or ticket NN's) worktree: treehouse lease (cut under <state>/worktrees/pool) when on PATH, else git under <state>/worktrees;
@@ -761,6 +762,39 @@ export function checkAll(root, opts = {}) {
     }
   }
   return lines;
+}
+
+/**
+ * Whether the agent session `agent` must keep going instead of ending its turn: it registered a run (runs.json `agent`)
+ * that is not done, a dry run or stopped, and that run's control plane moved since the last nudge. The nudge record in
+ * `sessions` is the loop breaker: an agent that ends two turns with no commit between them is let go.
+ */
+// ponytail: progress is the control plane's HEAD, so an orchestrator idling on one long worker past a nudge stops once;
+// `check --all` STALE is the backstop. Upgrade: also count an in-flight ticket's live worker pid as progress.
+export function keepGoing(root, agent, sessions) {
+  const stop = (reason) => ({ continue: false, reason });
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(agent ?? '')) return stop('no agent id');
+  const dirs = fs.existsSync(root) ? fs.readdirSync(root).map((d) => path.join(root, d)) : [];
+  if (process.env.TO_AUTO_HOME) dirs.push(path.resolve(process.env.TO_AUTO_HOME));
+  for (const dir of [...new Set(dirs)].filter(hasMarker).sort()) {
+    let runs;
+    try { runs = readRegistry(dir); } catch { continue; }
+    const run = runs.find((r) => r.agent === agent && !['done', 'dry-run', 'stopped'].includes(r.status));
+    if (!run || fs.existsSync(path.join(dir, 'runs', run.slug, 'STOP'))) continue;
+    const head = git(dir, ['rev-parse', 'HEAD']).trim();
+    const record = path.join(sessions, `${agent}.nudge`);
+    const last = fs.existsSync(record) ? fs.readFileSync(record, 'utf8').trim() : null;
+    if (last === head) return stop(`${run.slug}: no control-plane commit since the last nudge`);
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(record, `${head}\n`);
+    const at = next(dir, run.slug);
+    return {
+      continue: true,
+      slug: run.slug,
+      reason: `to-auto run ${run.slug} is ${run.status} (next: ${at.stage ? `stage ${at.stage} ${at.name ?? ''}` : at.reason}). Never end a turn while it is active: re-enter per LEDGER.md (\`goal.mjs next ${run.slug}\`) and continue the pipeline. A real stop is \`goal.mjs stop ${run.slug}\`; a blocker goes in NOW \`blockers:\` and work continues.`,
+    };
+  }
+  return stop('no active run for this agent');
 }
 
 // ------------------------------------------------------------- tickets
@@ -2172,7 +2206,7 @@ function sleep(ms) {
 
 const TAKES_VALUE = new Set(['--repo', '--state-dir', '--allow', '--base', '--target-branch', '--status-file', '--worker-model']);
 
-const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--worker-model <model>] [--no-helpers] | next <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] | worktree get|return <slug> [NN] | worktree status <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
+const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--worker-model <model>] [--no-helpers] | next <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] | keep-going --agent <id> | worktree get|return <slug> [NN] | worktree status <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
 
 function main(argv) {
   configure();
@@ -2361,6 +2395,12 @@ function main(argv) {
     const result = checkRun(controlDir(repo), slug, opts);
     print(result);
     return result.ok ? 0 : 1;
+  }
+  if (command === 'keep-going' && rest.length === 2 && rest[0] === '--agent') {
+    const root = path.join(os.homedir(), '.local', 'state', 'to-auto');
+    const sessions = process.env.TO_AUTO_SESSIONS || path.join(os.homedir(), '.local', 'state', 'to-auto-sessions');
+    print(keepGoing(root, rest[1], sessions));
+    return 0;
   }
   if (command === 'frontier' && rest.length === 1) {
     const result = frontier(controlDir(repo), rest[0]);

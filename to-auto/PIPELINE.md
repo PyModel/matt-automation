@@ -120,4 +120,6 @@ A stage is done exactly when its line holds. Phase files point here.
 
 ## Under a loop
 
+**Keep-going hooks** hold one session to its run, so a turn the model ends early does not stall it: Claude Code's Stop hook (`scripts/to-auto-guard.mjs`, registered under `hooks.Stop` in `~/.claude/settings.json`) and pi's `agent_before_settle` extension (`scripts/pi-keep-going.ts`, symlinked into `~/.pi/agent/extensions/`). Both ask `goal.mjs keep-going --agent <session id>`: while a run that session registered is active and its control plane moved since the last nudge, the turn continues with the re-entry instruction. A second turn ended with no commit between is let go, so a stalled run still surfaces as `check --all` STALE. Esc in pi and any hook error always end the turn. Other harnesses need a runner below.
+
 Any recurring runner works: Claude Code's `/loop /to-auto <objective>`, a cron or CI job, or a script that re-invokes the agent. Each tick runs the LEDGER.md re-entry protocol, which starts with `goal.mjs next <slug>`: a deterministic answer from the files, so every tick resumes at the same place whatever model or harness runs it. `done` or `stop` ends the loop.

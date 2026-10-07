@@ -2,6 +2,7 @@
 
 Behavior that moved. The phase files are the spec; this list is the delta.
 
+- BUILD.md step 5: an implementer that ended without a receipt (stopped, killed, crashed) gets a finish dispatch; the orchestrator never writes the receipt. A live run receipted a stopped builder's ticket itself ("orchestrator-verified").
 - `goal.mjs adopt <slug> --agent <id> --harness <name>` hands a run to a new session (LEDGER.md re-entry step 2). The keep-going hook and the guard follow runs.json `agent`, which only `init` set, so a session restarted to load the hook was never nudged.
 - A to-auto session no longer stalls when its model ends a turn mid-run. `goal.mjs keep-going --agent <id>` decides; Claude Code's Stop hook (to-auto-guard.mjs) and a pi `agent_before_settle` extension (`scripts/pi-keep-going.ts`) continue the turn while the session's run is active and its control plane moved since the last nudge. Two live runs stopped mid-pipeline for 15 hours each after a progress report, and an earlier run for 31 hours, because nothing re-invoked them (PIPELINE.md § Under a loop).
 - A `bugs.md` entry whose only action is `ticket NN` counts as open again once every ticket it names is `done`: the entry then says `fixed @ <sha>` (checked) or names a new ticket. Entries routed "to ticket 08" with the fix sent to an in-flight builder outside its frozen criteria, or naming the ticket that found the bug rather than one that fixes it, passed the gate with nothing ever confirming the fix; one live run had five.

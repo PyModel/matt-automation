@@ -2,6 +2,7 @@
 
 Behavior that moved. The phase files are the spec; this list is the delta.
 
+- A criterion `pass` means it holds as written (CONTRACT.md § The receipt); a substituted check is `fail` or `not-run` and goes through `goal.mjs waive`. A brief had authorised a ticket to pass a criterion on a different test, which `waive` never saw because the receipt said `pass`.
 - The receipt check reads a final message that ends in an unfenced JSON receipt (from its last column-0 `{`), so the orchestrator saves the message verbatim instead of extracting the JSON by hand.
 - `bugs.md` entries are `## <finder>-<n>` (`t07-1`, `o-3`; LEDGER.md), so an implementer and the orchestrator writing at once never reuse an id. A run had two `BUG-5` entries, and its NOW blocker named one ambiguously. The subagent contract states the format, since implementers never see LEDGER.md's file table.
 - BUILD.md names what a repair dispatch needs: `--session` of the implement session and `accepted/verify.md` first. A run's first repair came back `PRECONDITION_FAILED` without them.

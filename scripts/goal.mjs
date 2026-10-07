@@ -15,6 +15,7 @@
 //                                                          refused under any ancestor .gitignore/.ignore with a `*` line (gitignore-aware linters scan nothing there)
 //   node scripts/goal.mjs stop <slug> <reason>            halt the run: write runs/<slug>/STOP and set the registry status
 //   node scripts/goal.mjs resume <slug>                   undo a stop once its cause is fixed
+//   node scripts/goal.mjs adopt <slug> --agent <id> --harness <name>   a new session takes over the run (LEDGER.md re-entry)
 //   node scripts/goal.mjs event <slug> <stage> <text>     append `- HH:MM [stage] text` (local clock) to the ledger and commit
 //   node scripts/goal.mjs tick <slug> <stage> [--skipped <reason>]
 //                                                          finish the first unticked stage: tick todo.md, set NOW's stage line, step the registry
@@ -446,6 +447,26 @@ export function resume(repo, slug) {
     }
     writeAndCommit(repo, control, `[${slug}] resume`, writes, { owner: 'registry' });
     return `resumed ${slug}`;
+  });
+}
+
+/** A new session takes over a run (LEDGER.md re-entry): `agent` is who keep-going nudges and the guard releases. */
+export function adopt(repo, slug, { agent = null, harness = null } = {}) {
+  assertSlug(slug);
+  for (const [flag, value] of [['--agent', agent], ['--harness', harness]]) {
+    if (typeof value !== 'string' || !value.trim()) throw new UsageError(`adopt needs ${flag}: \`goal.mjs adopt <slug> --agent <this session's id> --harness <harness name>\``);
+  }
+  const control = requireControl(repo);
+  return withLock(repo, 'registry', () => {
+    const runs = readRegistry(control);
+    const entry = runs.find((r) => r.slug === slug);
+    if (!entry) throw new Refusal(`no run ${slug} in runs.json`);
+    if (['done', 'dry-run'].includes(entry.status)) throw new Refusal(`${slug} is ${entry.status}; there is nothing to take over`);
+    if (entry.agent === agent && entry.harness === harness) return `${slug} already belongs to ${agent}`;
+    const from = `${entry.agent ?? 'nobody'} (${entry.harness ?? '?'})`;
+    Object.assign(entry, { agent, harness });
+    writeAndCommit(repo, control, `[${slug}] adopt: ${from} → ${agent} (${harness})`, { 'runs.json': `${JSON.stringify(runs, null, 2)}\n` }, { owner: 'registry' });
+    return `${slug} now belongs to ${agent} (${harness}); was ${from}`;
   });
 }
 
@@ -2217,7 +2238,7 @@ function sleep(ms) {
 
 const TAKES_VALUE = new Set(['--repo', '--state-dir', '--allow', '--base', '--target-branch', '--status-file', '--worker-model']);
 
-const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--worker-model <model>] [--no-helpers] | next <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] | keep-going --agent <id> | worktree get|return <slug> [NN] | worktree status <slug> | stop <slug> <reason> | resume <slug> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
+const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--worker-model <model>] [--no-helpers] | next <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] | keep-going --agent <id> | worktree get|return <slug> [NN] | worktree status <slug> | stop <slug> <reason> | resume <slug> | adopt <slug> --agent <id> --harness <name> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
 
 function main(argv) {
   configure();
@@ -2338,6 +2359,16 @@ function main(argv) {
       options[names[rest[i]]] = rest[++i];
     }
     console.log(init(repo, rest[0], rest[1], options));
+    return 0;
+  }
+  if (command === 'adopt' && rest.length === 5) {
+    const options = {};
+    for (let i = 1; i < 5; i += 2) {
+      const names = { '--agent': 'agent', '--harness': 'harness' };
+      if (!names[rest[i]]) throw new UsageError(`adopt takes --agent <id> and --harness <name>, got ${rest[i]}`);
+      options[names[rest[i]]] = rest[i + 1];
+    }
+    console.log(adopt(repo, rest[0], options));
     return 0;
   }
   if (command === 'event' && rest.length === 3) {

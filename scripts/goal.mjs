@@ -470,12 +470,21 @@ const statusAfter = (index) => (STAGES[index + 1] ? FLOOR_OF.get(STAGES[index + 
 const openStage = (status) => STAGES.findIndex((s) => RUN_ORDER.indexOf(FLOOR_OF.get(s.id)) >= RUN_ORDER.indexOf(status));
 
 /** The stage whose tick moves the registry to `status` (planning → 0c, specced → 5b, ticketed and building → 6b, reviewing → 7, done → 10). */
-/** The first line of each bugs.md entry (a `## ` heading or a top-level `- [` item) that names no action. */
+/**
+ * The first line of each bugs.md entry (a `## ` heading or a top-level `- [` item) that names no action. An entry whose
+ * only action is `ticket NN` stays open once every ticket it names is in `done`: the ticket closed without the entry
+ * saying the bug was fixed, so the fix was never checked.
+ */
 // ponytail: keyword match on free text, so "fixed" anywhere passes; a structured Action: field if runs game it.
-export function unresolvedBugs(text) {
+export function unresolvedBugs(text, done = new Set()) {
   return text.split(/^(?=## |- \[)/m)
     .filter((e) => /^(## |- \[)/.test(e))
-    .filter((e) => !/\b(fixed|resolved)\b|\bticket\s+#?\d+|\bblocker\b|\bnot a (product )?bug\b/i.test(e.replace(/\bnot (yet )?fixed\b/gi, '')))
+    .filter((e) => {
+      const t = e.replace(/\bnot (yet )?fixed\b/gi, '');
+      if (/\b(fixed|resolved)\b|\bblocker\b|\bnot a (product )?bug\b/i.test(t)) return false;
+      const refs = [...t.matchAll(/\bticket\s+#?(\d+)/gi)].map((m) => ticketId(m[1]));
+      return !refs.length || refs.every((id) => done.has(id));
+    })
     .map((e) => e.split('\n')[0].trim().slice(0, 120));
 }
 
@@ -523,8 +532,10 @@ export function tick(repo, slug, id, { skipped = null } = {}) {
     const { artifact } = STAGES[index];
     if (artifact && !fs.existsSync(path.join(runDir, artifact))) throw new Refusal(`stage ${id} is not finished: runs/${slug}/${artifact} is missing`);
     const bugsFile = path.join(runDir, 'bugs.md');
-    const open = fs.existsSync(bugsFile) ? unresolvedBugs(fs.readFileSync(bugsFile, 'utf8')) : [];
-    if (open.length) throw new Refusal(`stage ${id} cannot be ticked: runs/${slug}/bugs.md has entries with no action (fixed @ <sha>, ticket <NN>, blocker, or not a bug): ${open.join('; ')}. A pre-existing bug gets a ticket now (BUILD.md § Bugs found in flight, rule 3), never a known issue`);
+    const issues = path.join(control, 'tracker', slug, 'issues');
+    const done = new Set(fs.existsSync(issues) ? [...readTickets(issues).tickets].filter(([, t]) => t.status === 'done').map(([n]) => n) : []);
+    const open = fs.existsSync(bugsFile) ? unresolvedBugs(fs.readFileSync(bugsFile, 'utf8'), done) : [];
+    if (open.length) throw new Refusal(`stage ${id} cannot be ticked: runs/${slug}/bugs.md has entries with no action (fixed @ <sha>, ticket <NN> not yet done, blocker, or not a bug): ${open.join('; ')}. A pre-existing bug gets a ticket now (BUILD.md § Bugs found in flight, rule 3), never a known issue; an entry whose ticket is done says \`fixed @ <sha>\` once the fix is checked, or names a new ticket`);
     // dry-run is a terminal label set after 6b; its stages tick without moving it.
     const moves = [];
     if (RUN_ORDER.includes(entry.status)) {

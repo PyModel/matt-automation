@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, nowStage, ignoreAllAncestors } from './goal.mjs';
+import { STAGES, nowStage, ignoreAllAncestors, unresolvedBugs } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -971,6 +971,13 @@ test('tick refuses while a bugs.md entry names no action, and passes once it is 
   handCommit(ctx, '[b] ticket');
   const ok = goal(ctx, ['tick', 'b', '00']);
   assert.equal(ok.status, 0, ok.stderr);
+});
+
+test('a bugs.md entry routed to a ticket reopens once that ticket is done without the entry saying fixed', () => {
+  const text = '## t08-a flag misread\n- Status: fix in ticket 08\n\n## t03-a wrong thread\n- Status: fix in ticket 03; fixed @ abc1234\n';
+  assert.deepEqual(unresolvedBugs(text), []);
+  assert.deepEqual(unresolvedBugs(text, new Set(['03'])), []);
+  assert.deepEqual(unresolvedBugs(text, new Set(['08'])), ['## t08-a flag misread']);
 });
 
 test('keep-going continues an active run only while its control plane moves, and never a stopped or foreign one', () => {

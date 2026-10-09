@@ -50,7 +50,7 @@ The tracker's ticket files stay the source of truth for *what to build*; `ticket
 - 13:41 [0b] setup: local tracker, labels default, single-context (source: default)
 - 13:55 [1] findings.md written, R1–R7, 11 sources
 - …
-- 14:20 [7] t03 dispatched → worktree …, brief: ticket 03, spec.md, CONTEXT.md, tier 2
+- 14:20 [7] t03 dispatched → worktree …, brief: ticket 03, spec.md, GLOSSARY.md, tier 2
 - 14:47 [7] t03 back from its implementer: suite green, review 0 cited / 1 lead, commit c0ffee1
 - 14:48 [7] t03 merged ff into goal/<slug>; worktree returned; ticket closed
 ```

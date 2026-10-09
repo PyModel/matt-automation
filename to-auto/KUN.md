@@ -17,7 +17,7 @@ The `kun` skill pulls `kunchenguid/kun` (https://github.com/kunchenguid/kun) on 
 Whenever a sub-skill says *ask*, *confirm*, *quiz*, *check with the user*, *wait for direction*, *present and let them pick*, or *iterate until the user approves*:
 
 1. **Facts are never questions.** If the findings, the codebase, or `log.md` settle it, take that answer; log `(source: findings)` or `(source: codebase)`.
-2. Otherwise invoke `/kun`, framed as "the user is asked the following; answer as the user": the exact question, the candidate answers, the sub-skill's recommended answer if any, and pointers (objective, spec path, `CONTEXT.md`, the module's defensive tier). Kun's answer is the user's final word, overriding sub-skill recommendations and PIPELINE.md § Defaults (budgets only within PIPELINE.md § Budgets); log `(source: kun)`.
+2. Otherwise invoke `/kun`, framed as "the user is asked the following; answer as the user": the exact question, the candidate answers, the sub-skill's recommended answer if any, and pointers (objective, spec path, `GLOSSARY.md`, the module's defensive tier). Kun's answer is the user's final word, overriding sub-skill recommendations and PIPELINE.md § Defaults (budgets only within PIPELINE.md § Budgets); log `(source: kun)`.
 3. Kun answers with a question of its own → the PIPELINE.md default; log `(source: default)`. Never re-ask; never escalate.
 4. Kun advises on reversible technical and architectural choices. It never grants authority (SKILL.md § Rules, Autonomous); those actions stay blockers.
 
@@ -27,7 +27,7 @@ Every answer is one line in `log.md` (LEDGER.md § Layout).
 
 The same context posing and answering a frontier re-creates the alignment gap grilling exists to close. So each round runs as two subagents, neither of which is the orchestrator, both working in the run worktree:
 
-- **Answerer** (kun persona): receives the numbered frontier with the skill's recommended answers, the findings, `CONTEXT.md`, and the kun cache; answers every question as the user.
+- **Answerer** (kun persona): receives the numbered frontier with the skill's recommended answers, the findings, `GLOSSARY.md`, and the kun cache; answers every question as the user.
 - **Challenger**: receives the same frontier, the answers, the findings, and read access to the run worktree; for each answer it either confirms with evidence or objects with a concrete contradiction (a file, a requirement Rn, a prior log line). It may not add questions.
 
 Objections go back to the answerer once, with the evidence. Still disagreeing → PIPELINE.md default, logged `(source: default, contested)`. Confirmed answers are logged `(source: kun)`. The orchestrator only recomputes the frontier and logs; a round is done when the frontier is empty.

@@ -63,7 +63,7 @@ Rules:
 | Section A: issue tracker | **Local markdown** in the control plane, `<state>/tracker/<feature>/` (default; the written tracker doc names that path and the CONTROL.md status grammar). GitHub only when the objective or the repo's existing `docs/agents/issue-tracker.md` says GitHub. |
 | PRs as a request surface | no |
 | Section B: triage labels | Keep the five defaults: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. Create any missing label with `gh label create <name>` before first use. |
-| Section C: domain docs | single-context (`CONTEXT.md` + `docs/adr/` at the root) unless monorepo signals exist, then multi-context. |
+| Section C: domain docs | single-context (`GLOSSARY.md` + `docs/adr/` at the root) unless monorepo signals exist, then multi-context. |
 | Which file gets `## Agent skills`? | `CLAUDE.md` if it exists, else `AGENTS.md`, else create `AGENTS.md`. |
 | "Let them edit before writing" | Skip; write directly. |
 
@@ -109,7 +109,7 @@ A stage is done exactly when its line holds. Phase files point here.
 - **1 Route**: classification logged (`bug | issue | ready | refactor | upkeep | fog | greenfield | feature`); flow named; adopted-patterns list, each line `pattern, from /<skill>`; research need logged (`none | targeted | up-front`); `findings.md` exists with repo facts, requirements R1…, open questions Q1….
 - **2 On-ramp**: the chosen on-ramp's criteria in FLOWS.md § On-ramp completion criteria, or `skipped: plain feature` / `skipped: ready source <ref>` logged; for route `bug`, the fast-path decision logged with its reason.
 - **3 Research**: every Q in `findings.md` closed with a sourced fact, or `research: skipped (no external unknown)` logged; no "TBD".
-- **4/4b Grill + challenge**: frontier empty; every answer logged `(source: kun)` or `(source: default, contested)`; seams named; `CONTEXT.md` changed on disk (or an evidence-backed no-change log; no manufactured no-op edits); ADRs only where all three gates pass.
+- **4/4b Grill + challenge**: frontier empty; every answer logged `(source: kun)` or `(source: default, contested)`; seams named; `GLOSSARY.md` changed on disk (or an evidence-backed no-change log; no manufactured no-op edits); ADRs only where all three gates pass.
 - **5/5b Spec + reconcile**: every to-spec template section filled; user stories scaled to actual decisions; no file paths or code in Implementation Decisions; the reconciliation gate's list is empty, or past the round budget every item left has a `/kun` ruling in `log.md`; `runs/<slug>/spec.md` present.
 - **6/6b Tickets + claims**: one file per ticket; each has a demo path, tier, capability, claims, "Blocked by", and passes CONTRACT.md § Readiness; new-behaviour criteria red at base and preserved invariants green; no cycles; no two unordered open tickets share an `exclusive` claim; `ready-for-agent` stripped from the parent spec; ticket table in `todo.md`.
 - **7 Build**: every ticket `done` (a `completed` receipt that passed `goal.mjs receipt`, merged fast-forward as a recorded range, boxes ticked, ticket closed) or `stuck` with its reason; every dispatched ticket has `tickets/<NN>.goal.md` and `tickets/<NN>.receipt.md`; per-test comparison against baseline passes; the debt grep (BUILD.md § Bugs found in flight) is empty; per ticket a defensive-design evidence state per control, a red test before code per slice (visible `tdd` calls), and typecheck, lint, and suite output captured; only the run worktree remains; (GitHub, push authorized) draft PR open closing spec and tickets.

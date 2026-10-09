@@ -8,7 +8,7 @@ Source: the docs pages in `mattpocock/skills` (`docs/engineering/*.md`, `.agents
 | research | No stopping criterion: goes too deep or misses the one detail. | One narrow question per call; the requirement it must answer is in the brief. |
 | ask-matt | Reports user-invoked skills as "not installed" because the harness hides them from the skill list. | Every skill is loaded by path through `matt.mjs resolve`; `matt.mjs check` in stage 00 proves each one is linked. |
 | ask-matt | Describes a skill from its one-line gloss, not its SKILL.md; once told the user to skip to-spec and undercounted the work. | Open the SKILL.md before acting on any load-bearing claim; never skip spec or tickets on the router's word. |
-| grill-with-docs | Inside an orchestration layer the interview runs but `CONTEXT.md`/ADR writing silently does not. | Verify `CONTEXT.md` changed on disk before leaving stage 4. |
+| grill-with-docs | Inside an orchestration layer the interview runs but `GLOSSARY.md`/ADR writing silently does not. | Verify `GLOSSARY.md` changed on disk before leaving stage 4. |
 | grill-with-docs | Loads `grilling` without `domain-modeling` and produces a question dump with no paper trail. | Resolve and read both files; confirm both loaded. |
 | grill-with-docs | Most decisions live only in the conversation; precise answers soften downstream. | Log every answer; PLAN.md 5b reconciles the spec against the log. |
 | to-spec | `ready-for-agent` on the parent spec makes AFK agents build the whole spec in one run. | PLAN.md stage 6 strips it. |

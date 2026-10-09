@@ -2,6 +2,7 @@
 
 Behavior that moved. The phase files are the spec; this list is the delta.
 
+- Pin bumped to mattpocock/skills `b0618bc`. The glossary is `GLOSSARY.md` (upstream renamed `CONTEXT.md`), so stage 4's on-disk check and the glossary commit follow it. `resolving-merge-conflicts` was removed upstream; its procedure is BUILD.md § Merge conflicts. implement-spec, pr and retro graduated and are routed by ask-matt. BUILD.md step 3 opens the draft PR after the first merge, and step 4 keeps the merger's rebase in place of upstream's implementer-side merge of the integration tip.
 - Claude Code's keep-going Stop hook holds only a marked session, so removing the session's mark (the guard's documented way out of to-auto mode) also ends the nudges. A session whose owner ended to-auto mode mid-run was still held because runs.json named it as the run's agent.
 - BUILD.md step 5: an implementer that ended without a receipt (stopped, killed, crashed) gets a finish dispatch; the orchestrator never writes the receipt. A live run receipted a stopped builder's ticket itself ("orchestrator-verified").
 - `goal.mjs adopt <slug> --agent <id> --harness <name>` hands a run to a new session (LEDGER.md re-entry step 2). The keep-going hook and the guard follow runs.json `agent`, which only `init` set, so a session restarted to load the hook was never nudged.

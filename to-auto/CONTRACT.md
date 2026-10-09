@@ -68,7 +68,7 @@ Written at dispatch to `runs/<slug>/tickets/<NN>.goal.md` and committed with `go
 - Rules: BUILD.md § The implementer brief, rules 1–8
 
 ## Context
-- Spec: runs/<slug>/spec.md   Notes: runs/<slug>/notes/   Glossary: CONTEXT.md
+- Spec: runs/<slug>/spec.md   Notes: runs/<slug>/notes/   Glossary: GLOSSARY.md
 - Commands: <NOW commands:>   Per-worktree: <NOW per-worktree: with NN and run_id substituted>
 - Budget: <per-ticket slices / minutes from NOW budgets:>
 - Status file: runs/<slug>/tickets/<NN>.status.md   Ledger: runs/<slug>/ledger.md

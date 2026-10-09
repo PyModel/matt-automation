@@ -14,7 +14,7 @@ Test the rows in order; the first match sets the on-ramp. Every route then merge
 
 | # | Situation | ask-matt section | Classification | Autonomous route |
 |---|---|---|---|---|
-| 0 | The checkout is mid-merge or mid-rebase | Standalone: `/resolving-merge-conflicts` | (none) | Resolve first (never `--abort`), then re-enter this table. |
+| 0 | The checkout is mid-merge or mid-rebase | (none; upstream removed `/resolving-merge-conflicts`) | (none) | Resolve first per BUILD.md § Merge conflicts (never `--abort`), then re-enter this table. |
 | 1 | The objective is a raw issue someone else filed | On-ramps: `/triage` | `issue` | Triage self-answered; main flow from the agent-ready issue. Never for tickets `/to-auto` created. |
 | 2 | Something is broken, flaky, or regressed | On-ramps: `/diagnosing-bugs` | `bug` | Loop goes red first, then fix with a regression test; PLAN.md § Bug fast path decides whether stages 4 to 6 run. A post-mortem with no seam queues `improve-codebase-architecture` as a lead. `/to-bug` enters here directly. |
 | 3 | The objective names an approved spec, ticket, or issue in this repo that passes CONTRACT.md § Readiness | The main flow, entered at `/to-spec` or `/implement` | `ready` | PLAN.md § Ready source: stages 2 to 4b skipped; the source becomes `spec.md` or ticket `01`. A failing readiness box falls through to the rows below. |
@@ -34,7 +34,7 @@ Main-flow branch points, answered the same way every run:
 
 ## Why implement-spec drives stage 7
 
-ask-matt's documented rhythm is one `/implement` per ticket with `/clear` between, and a human closing tickets and advancing the frontier. Autonomously the frontier would stall. `implement-spec` (in-progress upstream) runs the same `implement` brief per ticket, in its own worktree, with a merger, frontier re-kick, and a single fix subagent. Every stage after the grilling then produces an artifact the next stage consumes without a human (spec → tickets → graph → merged run branch). Its gaps (seams, tiers, tracker closing, worktree layout) are filled by BUILD.md § Bindings.
+ask-matt's documented rhythm is one `/implement` per ticket with `/clear` between, and a human closing tickets and advancing the frontier. Autonomously the frontier would stall. `implement-spec` runs one implementer per ticket (each driving `tdd`), in its own worktree, with a merger, frontier re-kick, and a single fix subagent. Every stage after the grilling then produces an artifact the next stage consumes without a human (spec → tickets → graph → merged run branch). Its gaps (seams, tiers, tracker closing, worktree layout) are filled by BUILD.md § Bindings.
 
 Three installed skills outside the Matt set deepen the pathway: `research-stack` (every external lookup), `defensive-design` (consequence tiers: Design in stage 4, Implement in stage 7, Review in stage 8), and `zero-tech-debt` (row 4 and prefactoring tickets; its approval gates are self-approved and logged).
 

@@ -1207,11 +1207,11 @@ function dependsOn(tickets, from, to, seen = new Set()) {
   return (tickets.get(from)?.blockers ?? []).some((b) => b === to || dependsOn(tickets, b, to, seen));
 }
 
-/** A claim is a file path, a directory ending in `/`, or a directory ending in `/**`. */
+/** A claim is a file path or a directory (with or without a trailing `/` or `/**`); a directory covers every file under it. */
 export function claimCovers(claim, file) {
   const root = claimRoot(claim);
-  const dir = root.endsWith('/') ? root : null;
-  return dir ? file.startsWith(dir) : file === claim;
+  const dir = root.endsWith('/') ? root : `${root}/`;
+  return file === root || file.startsWith(dir);
 }
 
 const claimRoot = (claim) => (claim.endsWith('/**') ? claim.slice(0, -2) : claim);

@@ -136,6 +136,9 @@ test('claims: unclaimed and guarded touches are breaches, shared-regenerate is n
   const text = ticket('in-flight', 'None', 'exclusive: src/a.ts, lib/ ; shared-regenerate: package-lock.json ; guarded: .github/**');
   assert.deepEqual(claimsBreach(text, ['src/a.ts', 'lib/x/y.ts', 'package-lock.json']), { unclaimed: [], guarded: [] });
   assert.deepEqual(claimsBreach(text, ['src/other.ts', '.github/workflows/ci.yml']), { unclaimed: ['src/other.ts'], guarded: ['.github/workflows/ci.yml'] });
+  // A directory claim without a trailing `/` covers files under it, not siblings sharing its prefix.
+  const bare = ticket('in-flight', 'None', 'exclusive: docs/landing');
+  assert.deepEqual(claimsBreach(bare, ['docs/landing/a.md', 'docs/landing', 'docs/landing2.md']), { unclaimed: ['docs/landing2.md'], guarded: [] });
 });
 
 test('withLock serializes holders and releases on throw', () => {

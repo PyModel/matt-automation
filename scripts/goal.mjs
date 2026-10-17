@@ -1239,7 +1239,7 @@ const QUALITY = new Set(['accurate', 'criteria-too-vague', 'criteria-wrong', 'mi
  * The receipt in a file: the whole file as JSON, else the last ```json fence, else the object that ends the
  * message from its last column-0 `{` (a worker's final message, saved verbatim, may end in an unfenced receipt).
  */
-function receiptJson(text) {
+export function receiptJson(text) {
   const parse = (s) => { try { return JSON.parse(s); } catch { return null; } };
   const whole = parse(text);
   if (whole !== null) return whole;

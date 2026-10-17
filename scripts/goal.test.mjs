@@ -790,6 +790,22 @@ test('CLI claim takes the reason after --', () => {
   assert.notEqual(bad.status, 0);
 });
 
+test('contract: in supervisor mode the fork point is taken against the target branch', () => {
+  const repo = bareRepo();
+  git(repo, 'checkout', '-q', '-b', 'trunk');
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'ticket 00');
+  git(repo, 'checkout', '-q', '-b', 'goal/f-t01');
+  const head = git(repo, 'rev-parse', 'HEAD');
+  const claims = 'exclusive: src/a.ts';
+  const tk = `${ticket('in-flight', 'None', claims)}\n- [ ] suite green\n`;
+  const text = `# Goal: 01\n\n## Current state\n- Ticket base: ${head}\n\n## Completion criteria\n- [ ] suite green\n\n## Constraints\n- Claims: ${claims}; a needed path outside them → stop\n`;
+  configure({ targetBranch: 'trunk' });
+  try {
+    git(repo, 'commit', '-q', '--allow-empty', '-m', 'Refs 01');
+    assert.deepEqual(checkContract({ text, ticketText: tk, worktree: repo }).problems, []);
+  } finally { configure(); }
+});
+
 test('contract: base, claims and criteria must match the worktree and the ticket', () => {
   const repo = bareRepo();
   const stale = git(repo, 'rev-parse', 'HEAD');

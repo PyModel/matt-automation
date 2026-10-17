@@ -1288,7 +1288,8 @@ export function checkContract({ text, ticketText, worktree }) {
   const base = text.match(/^- Ticket base: (\S+)/m)?.[1];
   // The base is where goal/<slug>-t<NN> left goal/<slug>: HEAD at dispatch, still the fork point at a re-dispatch.
   const out = (args) => { const r = spawnSync('git', ['-C', worktree, ...args], { encoding: 'utf8' }); return r.status === 0 ? r.stdout.trim() : null; };
-  const run = out(['rev-parse', '--abbrev-ref', 'HEAD'])?.match(/^(goal\/.+)-t\d+$/)?.[1];
+  const ticketRun = out(['rev-parse', '--abbrev-ref', 'HEAD'])?.match(/^(goal\/.+)-t\d+$/)?.[1];
+  const run = ticketRun && runtime.targetBranch && out(['rev-parse', '--verify', '--quiet', `refs/heads/${ticketRun}`]) == null ? runtime.targetBranch : ticketRun;
   const fork = run ? out(['merge-base', 'HEAD', run]) : out(['rev-parse', 'HEAD']);
   if (!/^[0-9a-f]{40}$/.test(base ?? '') || base !== fork) problems.push(`Ticket base ${base ?? '(missing)'} is not ${fork ?? 'the fork point'} (where the ticket branch left ${run ?? 'the run branch'}); paste \`git rev-parse HEAD\` output at dispatch, never type a sha`);
   const claims = ticketText.match(CLAIMS_LINE)?.[1];

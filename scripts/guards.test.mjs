@@ -26,6 +26,7 @@ function goal(ctx, args, { treehouse = '', env = {}, flags = [] } = {}) {
   const { TO_AUTO_HOME, ...rest } = process.env;
   return spawnSync(process.execPath, [GOAL, '--repo', ctx.repo, '--state-dir', ctx.state, ...flags, ...args], {
     encoding: 'utf8',
+    cwd: ctx.repo, // run from the repository root, as the orchestrator does
     env: { ...rest, TO_AUTO_TREEHOUSE: treehouse, ...env },
   });
 }
@@ -56,7 +57,7 @@ const tickBefore = (ctx, slug, id) => {
 };
 
 // A stand-in for treehouse: logs argv, `get` makes a detached worktree in a pool dir and prints its path.
-function fakeTreehouse({ fail = false, blind = false } = {}) {
+function fakeTreehouse({ fail = false, blind = false, rogue = null } = {}) {
   const dir = tmp('guards-th-');
   const log = path.join(dir, 'calls.log');
   const bin = path.join(dir, 'treehouse');
@@ -67,6 +68,8 @@ function fakeTreehouse({ fail = false, blind = false } = {}) {
   fs.writeFileSync(bin, `#!/bin/sh
 echo "$PWD|$*" >> "${log}"
 ${fail ? 'echo "pool exhausted" >&2; exit 3' : ''}
+${rogue === 'get' ? 'if [ "$1" = get ]; then echo "$PWD"; exit 0; fi' : ''}
+${rogue === 'return' ? 'if [ "$1" = return ]; then git -C "$PWD" checkout -q --detach; exit 0; fi' : ''}
 if [ "$1" = get ]; then
   slot="${dir}/pool/$(date +%s%N)"
   git worktree add -q --detach "$slot" HEAD >/dev/null 2>&1 || exit 4
@@ -80,6 +83,50 @@ exit 0
 }
 
 // ---------------------------------------------------------------- worktree
+
+const rootHead = (ctx) => git(ctx.repo, 'symbolic-ref', 'HEAD');
+
+test('worktree get and return never change HEAD of the repository they run from', () => {
+  const ctx = run();
+  const th = fakeTreehouse();
+  goal(ctx, ['worktree', 'get', 'x'], { treehouse: th.bin });
+  goal(ctx, ['worktree', 'get', 'x', '1'], { treehouse: th.bin });
+  for (const id of ['1', null]) assert.equal(goal(ctx, ['worktree', 'return', 'x', ...(id ? [id] : [])], { treehouse: th.bin }).status, 0);
+  assert.equal(goal(ctx, ['status', 'x', '01', 'done', '--landed', 'HEAD']).status !== 0, true, 'no such ticket: refused');
+  assert.equal(rootHead(ctx), 'refs/heads/main');
+});
+
+test('a treehouse slot that is the repository root is refused, and the root keeps its branch', () => {
+  const ctx = run();
+  const r = goal(ctx, ['worktree', 'get', 'x'], { treehouse: fakeTreehouse({ rogue: 'get' }).bin });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /main checkout/);
+  assert.equal(rootHead(ctx), 'refs/heads/main');
+});
+
+test('a worktree record that points at the repository root is never detached', () => {
+  const ctx = run();
+  const th = fakeTreehouse();
+  goal(ctx, ['worktree', 'get', 'x'], { treehouse: th.bin });
+  const file = path.join(ctx.state, 'runs', 'x', 'worktrees.json');
+  const recs = JSON.parse(fs.readFileSync(file, 'utf8'));
+  recs.run.path = ctx.repo;
+  fs.writeFileSync(file, JSON.stringify(recs));
+  handCommit(ctx, 'point at root');
+  const r = goal(ctx, ['worktree', 'return', 'x'], { treehouse: th.bin });
+  assert.equal(r.status, 1, r.stderr);
+  assert.equal(rootHead(ctx), 'refs/heads/main');
+});
+
+test('a treehouse that moves the root HEAD is undone and reported', () => {
+  const ctx = run();
+  const th = fakeTreehouse({ rogue: 'return' });
+  goal(ctx, ['worktree', 'get', 'x'], { treehouse: th.bin });
+  const r = goal(ctx, ['worktree', 'return', 'x'], { treehouse: th.bin });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /moved HEAD/);
+  assert.equal(rootHead(ctx), 'refs/heads/main');
+});
 
 test('worktree get without treehouse makes git worktrees under the state dir, run first, tickets from the run branch', () => {
   const ctx = run();

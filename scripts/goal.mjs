@@ -2047,6 +2047,30 @@ function checkedOutAt(workspace, branch) {
   return null;
 }
 
+/** The workspace's main worktree: the owner's checkout, whose HEAD no worktree command may move. */
+function mainWorktree(workspace) {
+  return fs.realpathSync(git(workspace, ['worktree', 'list', '--porcelain']).split('\n')[0].slice(9));
+}
+
+/** `git switch` runs only in a linked worktree that is its own root: never the owner's checkout, never a path git would resolve to an enclosing repo. */
+function requireSlot(dir, workspace) {
+  const bad = notWorktreeRoot(dir) || (fs.realpathSync(dir) === mainWorktree(workspace) ? `${dir} is the main checkout` : null);
+  if (bad) throw new Refusal(`${bad}; worktree commands switch branches only in a pool worktree, never in the repository they were run from`);
+}
+
+/** Run an external tool (treehouse) and refuse, restoring the branch, if it left the main checkout's HEAD somewhere else. */
+function keepRootHead(workspace, fn) {
+  const root = mainWorktree(workspace);
+  const read = () => spawnSync('git', ['-C', root, 'symbolic-ref', '-q', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+  const before = read();
+  const result = fn();
+  if (before && read() !== before) {
+    spawnSync('git', ['-C', root, 'switch', '--quiet', before.replace('refs/heads/', '')]);
+    throw new Refusal(`treehouse moved HEAD of ${root} off ${before}; it was switched back. Worktree commands never change the checkout they run from`);
+  }
+  return result;
+}
+
 function worktreeKey(id) {
   if (id === undefined || id === null) return { key: 'run', ticket: null };
   const nn = ticketId(String(id));
@@ -2092,7 +2116,7 @@ export function worktreeGet(repo, slug, id) {
         // New slots are cut under the control plane: the default pool root carries that `*` .gitignore.
         const pool = path.join(control, 'worktrees', 'pool');
         const args = ['get', '--lease', '--no-fetch', '--lease-holder', slug, '--worktree-path', path.join(pool, '{slot}', '{repo}')];
-        const run = spawnSync(bin, args, { cwd: workspace, encoding: 'utf8' });
+        const run = keepRootHead(workspace, () => spawnSync(bin, args, { cwd: workspace, encoding: 'utf8' }));
         wt = run.stdout?.trim().split('\n').at(-1);
         if (run.status !== 0 || !wt || !path.isAbsolute(wt)) throw new Error(`treehouse ${args.join(' ')} failed (exit ${run.status}): ${(run.stderr || run.error?.message || '').trim()}`);
         try {
@@ -2102,6 +2126,7 @@ export function worktreeGet(repo, slug, id) {
           spawnSync(bin, ['return', wt], { cwd: workspace });
           throw error;
         }
+        requireSlot(wt, workspace);
         git(wt, exists ? ['switch', '--quiet', branch] : ['switch', '--quiet', '-c', branch, base]);
       } else {
         wt = path.join(control, 'worktrees', `goal-${slug}${ticket ? `-t${ticket}` : ''}`);
@@ -2131,8 +2156,10 @@ export function worktreeReturn(repo, slug, id) {
       if (dirty) throw new Refusal(`${r.path} has uncommitted changes; commit them on ${r.branch} first:\n${dirty}`);
       if (r.backend === 'treehouse') {
         // Detach first: a pool slot that still holds the branch would block the next checkout of it anywhere else.
+        const workspace = workspaceOf(repo, control);
+        requireSlot(r.path, workspace);
         git(r.path, ['switch', '--quiet', '--detach']);
-        const run = spawnSync(treehouseBin() ?? 'treehouse', ['return', r.path], { encoding: 'utf8' });
+        const run = keepRootHead(workspace, () => spawnSync(treehouseBin() ?? 'treehouse', ['return', r.path], { encoding: 'utf8' }));
         if (run.status !== 0) throw new Error(`treehouse return ${r.path} failed (exit ${run.status}): ${(run.stderr || run.error?.message || '').trim()}`);
       } else {
         git(workspaceOf(repo, control), ['worktree', 'remove', r.path]);

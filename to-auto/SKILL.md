@@ -45,6 +45,16 @@ This skill lives in the matt-automations repo, which vendors Matt Pocock's skill
 - **Wiring is checked first.** BOOTSTRAP.md § 00 runs `matt.mjs check` before any run write; its `drift:` lines are informational (runs use the pin).
 - Installed skills are looked up in `$AGENT_SKILL_HOMES` (path-separated) when set, else `~/.claude/skills` and `~/.agents/skills`. On a harness that keeps skills elsewhere, set it before stage 00.
 
+## Rule skills
+
+Three narrow rule sets are packaged verbatim beside this file in `references/` and also installed as standalone skills (their frontmatter carries the trigger cue; load the skill when its cue matches, else read the packaged file):
+
+- **Run budgets and stop conditions** — `to-auto-run-budget` ([references/run-budget.md](references/run-budget.md)): log `budget: <old> -> <new> (source: <who>)` and commit it with the ledger's wall-clock line in one `goal.mjs commit` before any ticket runs under the new limit; never cut a registered item — the stop conditions decide what stays open.
+- **Build dispatch** — `to-auto-build-dispatch` ([references/build-dispatch.md](references/build-dispatch.md)): pass absolute paths to `goal.mjs`; get worktrees only from `goal.mjs worktree get`; `test -e` every claimed path before dispatch; run every grep criterion at the ticket base — a 0-match result means a mis-specified pattern until proven otherwise.
+- **Grilling rounds via kun** — `to-auto-grilling-rounds` ([references/grilling-rounds.md](references/grilling-rounds.md)): the answerer gets bare questions and options; recommendations go only to the challenger. Accepting every recommendation is a failure signal: re-ask blind.
+
+Not folded here: the goal.mjs state machine and stop/wait rules stay in the standalone skill `to-auto-ticket-lifecycle`. Load it when goal.mjs refuses a transition, a ticket returns claims-breach, or a Stop hook blocks ending a turn.
+
 ## Daily use
 
 - `/to-auto <objective>` from the repo root, then walk away. One run = one branch `goal/<slug>` to merge when you are back. Supervisor mode commits on `--target-branch` instead; `goal.mjs land` writes the item-to-commit map.

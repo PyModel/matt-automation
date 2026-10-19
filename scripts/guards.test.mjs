@@ -96,12 +96,14 @@ test('worktree get and return never change HEAD of the repository they run from'
   assert.equal(rootHead(ctx), 'refs/heads/main');
 });
 
-test('a treehouse slot that is the repository root is refused, and the root keeps its branch', () => {
+test('a treehouse slot that is the repository root is refused, the root keeps its branch, and the slot is handed back', () => {
   const ctx = run();
-  const r = goal(ctx, ['worktree', 'get', 'x'], { treehouse: fakeTreehouse({ rogue: 'get' }).bin });
+  const th = fakeTreehouse({ rogue: 'get' });
+  const r = goal(ctx, ['worktree', 'get', 'x'], { treehouse: th.bin });
   assert.equal(r.status, 1, r.stderr);
   assert.match(r.stderr, /main checkout/);
   assert.equal(rootHead(ctx), 'refs/heads/main');
+  assert.match(th.calls().at(-1), /\|return /, 'the refused slot is released, not kept leased forever');
 });
 
 test('a worktree record that points at the repository root is never detached', () => {

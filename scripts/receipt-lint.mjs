@@ -2,6 +2,8 @@
 // usage: receipt-lint.mjs <receipt file>
 // Run before returning a ticket receipt: it must parse as JSON, and every { path, sha256 } log entry must name a file
 // whose sha256 is the one cited (a truncated, stale or hand-typed hash is a refused receipt and a wasted round trip).
+// Cited paths resolve against this process's cwd, exactly as the receipt gate resolves them; `goal.mjs run` cites
+// absolute log paths, but a hand-typed relative cite only checks out from the worktree whose logs it names — run it there.
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';

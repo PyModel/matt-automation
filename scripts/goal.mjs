@@ -2120,13 +2120,14 @@ export function worktreeGet(repo, slug, id) {
         wt = run.stdout?.trim().split('\n').at(-1);
         if (run.status !== 0 || !wt || !path.isAbsolute(wt)) throw new Error(`treehouse ${args.join(' ')} failed (exit ${run.status}): ${(run.stderr || run.error?.message || '').trim()}`);
         try {
-          // treehouse re-hands any free slot at its recorded path, so an old slot comes back from under the pool root.
+          // treehouse re-hands any free slot at its recorded path, so an old slot comes back from under the pool root;
+          // on any refusal — including a rogue handback of the main checkout — the lease is handed back, else it is kept forever.
           refuseBlinded(wt, `The slot was returned. \`treehouse destroy --yes ${wt}\` (and every other slot of this repository that \`treehouse status\` lists under that root), so the next lease is cut under ${pool}; or set TO_AUTO_TREEHOUSE= to use plain git worktrees.`);
+          requireSlot(wt, workspace);
         } catch (error) {
           spawnSync(bin, ['return', wt], { cwd: workspace });
           throw error;
         }
-        requireSlot(wt, workspace);
         git(wt, exists ? ['switch', '--quiet', branch] : ['switch', '--quiet', '-c', branch, base]);
       } else {
         wt = path.join(control, 'worktrees', `goal-${slug}${ticket ? `-t${ticket}` : ''}`);

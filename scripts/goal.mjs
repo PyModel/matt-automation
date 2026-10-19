@@ -812,6 +812,8 @@ export function keepGoing(root, agent, sessions) {
     let runs;
     try { runs = readRegistry(dir); } catch { continue; }
     const run = runs.find((r) => r.agent === agent && !['done', 'dry-run', 'stopped'].includes(r.status));
+    // A STOP mark releases the agent even while the registry may still call the run active — `stop` commits the file and the
+    // stopped status together, and `next` refuses it until `resume` — so this agent is let go past every run in this state dir.
     if (!run || fs.existsSync(path.join(dir, 'runs', run.slug, 'STOP'))) continue;
     const head = git(dir, ['rev-parse', 'HEAD']).trim();
     const record = path.join(sessions, `${agent}.nudge`);

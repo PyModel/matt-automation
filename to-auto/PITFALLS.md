@@ -28,7 +28,7 @@ Source: the docs pages in `mattpocock/skills` (`docs/engineering/*.md`, `.agents
 | tdd | Proposes work belonging to a sibling ticket. | The brief carries the spec path alongside the ticket and the ticket's claims. |
 | code-review | Diffs `<fixed>...HEAD`, so uncommitted work is invisible. | Commit before every review. |
 | code-review | Sub-agents rediscover the skill and fan out (50+ agents reported). | Add to both sub-agent briefs: "Do not invoke code-review or spawn additional agents; perform this review directly." |
-| code-review | Name clash with Claude Code's built-in `/code-review`. | Load it by path from the pin (`matt.mjs resolve code-review`), which reaches Matt's skill whatever the harness ships. |
+| code-review | Name clash with Claude Code's built-in `/code-review`. | Load it by path from the vendored copy (`matt.mjs resolve code-review`), which reaches Matt's skill whatever the harness ships. |
 | code-review | Finds new leads every run; no convergence; findings are hypotheses. | CLOSE.md stage 8: one pass; act only on cited findings. |
 | code-review | Same session reviewing its own diff is confirmation bias. | Per-ticket review over the whole `<ticket-base>...HEAD`; the final pass in a fresh subagent (CLOSE.md stage 8). |
 | all | A bug noticed while reading a file is parked as a comment or "known issue" and lost by the next context. | BUILD.md § Bugs found in flight. |

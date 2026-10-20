@@ -1,8 +1,8 @@
 # Routing: ask-matt first, then the autonomy overlay
 
-`ask-matt` is the map. Stage 00 reads it (`node ROOT/scripts/matt.mjs resolve ask-matt`) at the pinned commit, and stage 1 takes the route it names for the objective. This file does not restate that map. It says what an autonomous run does at each point where ask-matt expects a human, and it adds the one situation ask-matt does not route: a refactor of a named area.
+`ask-matt` is the map. Stage 00 reads it (`node ROOT/scripts/matt.mjs resolve ask-matt`) at the vendored commit, and stage 1 takes the route it names for the objective. This file does not restate that map. It says what an autonomous run does at each point where ask-matt expects a human, and it adds the one situation ask-matt does not route: a refactor of a named area.
 
-If ask-matt at the pin contradicts this file, follow ask-matt. Record the contradiction in `bugs.md` and the retro proposes the fix to this file. Per-skill stages and substitutes are in [INTEGRATION.md](INTEGRATION.md).
+If the vendored ask-matt contradicts this file, follow ask-matt. Record the contradiction in `bugs.md` and the retro proposes the fix to this file. Per-skill stages and substitutes are in [INTEGRATION.md](INTEGRATION.md).
 
 ## Admission (before stage 0)
 

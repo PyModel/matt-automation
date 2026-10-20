@@ -2,12 +2,13 @@
 // The one owner of "where is a skill, and is the Matt skill set wired correctly".
 //
 //   node scripts/matt.mjs resolve <name>   absolute SKILL.md path the automations must load
-//   node scripts/matt.mjs link             regenerate matt/<name> symlinks from the pinned submodule
-//   node scripts/matt.mjs check            fail on any wiring drift or missing installed skill; print pin and drift
+//   node scripts/matt.mjs link             regenerate matt/<name> symlinks from the vendored checkout
+//   node scripts/matt.mjs check            fast-forward the vendored checkout, then fail on any wiring drift or missing
+//                                          installed skill; print the commit this run uses (pin) and drift
 //   node scripts/matt.mjs check --vendored fail only on the repo's own wiring (CI: no skills are installed there)
 //
-// Matt skills come from vendor/mattpocock-skills (a pinned git submodule) through
-// the committed symlinks in matt/. Skills outside the set (research-stack,
+// Matt skills come from vendor/mattpocock-skills (a gitignored symlink to a local clone of
+// mattpocock/skills on main, fast-forwarded by every check) through the committed symlinks in matt/. Skills outside the set (research-stack,
 // defensive-design, kun, ...) come from the installed-skill directories: AGENT_SKILL_HOMES
 // (path-delimited) when set, else ~/.claude/skills and ~/.agents/skills.
 
@@ -90,9 +91,9 @@ export function check(root, { homes = DEFAULT_HOMES } = {}) {
   const linked = new Set(linkNames(linksDir));
 
   for (const name of linked) {
-    if (!vendored.has(name)) errors.push(`${LINKS}/${name}: stale or dangling link (not in the pinned submodule); run \`node scripts/matt.mjs link\``);
+    if (!vendored.has(name)) errors.push(`${LINKS}/${name}: stale or dangling link (not in the vendored checkout); run \`node scripts/matt.mjs link\``);
     else if (!fs.existsSync(path.join(linksDir, name, 'SKILL.md'))) errors.push(`${LINKS}/${name}: dangling link`);
-    else if (fs.realpathSync(path.join(linksDir, name)) !== fs.realpathSync(vendored.get(name))) errors.push(`${LINKS}/${name}: points away from the pinned submodule`);
+    else if (fs.realpathSync(path.join(linksDir, name)) !== fs.realpathSync(vendored.get(name))) errors.push(`${LINKS}/${name}: points away from the vendored checkout`);
   }
   for (const name of vendored.keys()) {
     if (!linked.has(name)) errors.push(`${LINKS}/${name}: missing link to a vendored skill; run \`node scripts/matt.mjs link\``);
@@ -118,7 +119,7 @@ export function check(root, { homes = DEFAULT_HOMES } = {}) {
       if (!HARNESS_COMMANDS.has(name) && !vendored.has(name)) errors.push(`ask-matt routes to /${name}, which is not a linked Matt skill`);
     }
   } else {
-    errors.push('ask-matt is missing from the pinned submodule; the automations cannot route');
+    errors.push('ask-matt is missing from the vendored checkout; the automations cannot route');
   }
 
   info.push(`pin: ${VENDOR} @ ${pinnedSha(root)}`);
@@ -178,6 +179,16 @@ function isSymlink(file) {
   }
 }
 
+// Runs track upstream main: every check fast-forwards the clone, so each run starts on the latest commit.
+// A failed pull (offline, local commits in the clone) warns and checks what is on disk.
+function pullVendor(root) {
+  try {
+    execFileSync('git', ['-C', path.join(root, VENDOR), 'pull', '--ff-only', '-q'], { stdio: ['ignore', 'ignore', 'pipe'], timeout: 60_000 });
+  } catch (error) {
+    console.log(`warn: could not fast-forward ${VENDOR}; checking what is on disk (${String(error.stderr || error.message).trim().split('\n')[0]})`);
+  }
+}
+
 function pinnedSha(root) {
   try {
     return execFileSync('git', ['-C', path.join(root, VENDOR), 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
@@ -199,6 +210,7 @@ function main([command, ...args]) {
     const { linked, removed } = link(root);
     console.log(`linked ${linked.length} skills into ${LINKS}/${removed.length ? `; removed ${removed.join(', ')}` : ''}`);
   } else if (command === 'check' && (args.length === 0 || (args.length === 1 && args[0] === '--vendored'))) {
+    if (args[0] !== '--vendored') pullVendor(root);
     const { errors, missing, info } = check(root);
     const failures = args[0] === '--vendored' ? errors : [...errors, ...missing];
     for (const line of info) console.log(line);

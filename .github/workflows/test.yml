@@ -5,8 +5,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
+      - run: git clone --depth 1 --branch main https://github.com/mattpocock/skills.git vendor/mattpocock-skills
       - uses: actions/setup-node@v4
         with:
           node-version: 24

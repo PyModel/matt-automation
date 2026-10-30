@@ -490,6 +490,8 @@ test('check --all walks every control plane under the root: one line per problem
   assert.equal(dirty.status, 1);
   assert.deepEqual(dirty.stdout.trim().split('\n'), [`${b.state} x NOW_AHEAD NOW stage 7 needs registry building, but the registry is bootstrapping`]);
   assert.equal(all(['--stale-hours', '0']).stdout.trim().split('\n').length, 3, 'both runs stale plus b ahead');
+  fs.renameSync(path.join(a.state, '.git'), path.join(a.state, '.git-gone'));
+  assert.match(all().stdout, new RegExp(`^${a.state} x RUN_UNCHECKABLE git log in ${a.state} failed`, 'm'), 'a control plane git cannot read is reported, never silently fresh');
 });
 
 test('to-auto-watch.sh notify fires once per problem set: a STALE age that only moves is not a new problem', () => {
@@ -581,6 +583,11 @@ test("to-auto-watch.sh runs nvm's default node when PATH has none, and keeps its
   const lines = fs.readFileSync(log, 'utf8').trim().split('\n');
   assert.equal(lines.length, 1000);
   assert.match(lines.at(-1), /1 problem\(s\)$/);
+  fs.writeFileSync(path.join(home, '.nvm', 'alias', 'default'), 'loop\n');
+  fs.writeFileSync(path.join(home, '.nvm', 'alias', 'loop'), 'default\n');
+  const looped = spawnSync('/bin/sh', [path.join(path.dirname(GOAL), 'to-auto-watch.sh'), 'notify'], { encoding: 'utf8', env, timeout: 20000 });
+  assert.equal(looped.error, undefined, 'an alias cycle is bounded, not a hang');
+  assert.equal(looped.status, 0, looped.stderr);
 });
 
 test('nowStage reads the first token of the NOW stage line only', () => {

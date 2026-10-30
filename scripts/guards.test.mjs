@@ -502,6 +502,46 @@ test('to-auto-watch.sh notify fires once per problem set: a STALE age that only 
   assert.equal(fired().length, 2);
 });
 
+test('to-auto-watch.sh notify names only new problems: another run appearing, clearing or a crashed sweep never re-announces an old one', () => {
+  const home = tmp('guards-home-');
+  const root = path.join(home, '.local', 'state', 'to-auto');
+  const a = { repo: bareRepo(), state: path.join(root, 'aaa') };
+  const b = { repo: bareRepo(), state: path.join(root, 'bbb') };
+  const old = { GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z', GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z' };
+  for (const ctx of [a, b]) assert.equal(goal(ctx, ['control']).status, 0);
+  assert.equal(goal(a, ['init', 'alpha', 'Alpha', ...WHO_ARGS], { env: old }).status, 0);
+  assert.equal(goal(b, ['init', 'beta', 'Beta', ...WHO_ARGS]).status, 0);
+  const calls = path.join(home, 'osascript.log');
+  fs.writeFileSync(path.join(home, 'osascript'), `#!/bin/sh\necho "$*" >> "${calls}"\n`, { mode: 0o755 });
+  const crash = path.join(home, 'crash');
+  fs.mkdirSync(crash);
+  fs.writeFileSync(path.join(crash, 'node'), '#!/bin/sh\necho "error: goal.mjs crashed"\nexit 3\n', { mode: 0o755 });
+  const notify = (dirs = [home]) => {
+    const env = { ...process.env, HOME: home, XDG_STATE_HOME: '', TO_AUTO_HOME: '', PATH: [...dirs, process.env.PATH].join(path.delimiter) };
+    assert.equal(spawnSync('sh', [path.join(path.dirname(GOAL), 'to-auto-watch.sh'), 'notify'], { encoding: 'utf8', env }).status, 0);
+  };
+  const fired = () => fs.readFileSync(calls, 'utf8').trim().split('\n');
+  notify();
+  assert.equal(fired().length, 1);
+  assert.match(fired()[0], /alpha STALE /);
+  setNow(b, 'beta', INCIDENT);
+  notify();
+  assert.equal(fired().length, 2);
+  assert.match(fired()[1], /beta NOW_AHEAD /, 'names the new problem, not the first line of the set');
+  assert.doesNotMatch(fired()[1], /alpha/);
+  assert.match(fired()[1], /to-auto: 1 new run problem\(s\).*: 2 open/);
+  assert.equal(goal(b, ['stop', 'beta', 'parked']).status, 0);
+  notify();
+  assert.equal(fired().length, 2, 'beta clearing is not news, and alpha was already announced');
+  notify([crash, home]);
+  assert.equal(fired().length, 3);
+  assert.match(fired()[2], /goal\.mjs crashed/);
+  notify([crash, home]);
+  assert.equal(fired().length, 3, 'the same crash again is not news');
+  notify();
+  assert.equal(fired().length, 3, 'recovery does not re-announce alpha');
+});
+
 test('nowStage reads the first token of the NOW stage line only', () => {
   assert.equal(nowStage('# t\n\n## NOW\n- stage: 4b challenge\n\n## Events\n- stage: 9\n'), '4b');
   assert.equal(nowStage('# t\n\n## NOW\n- next: x\n'), null);

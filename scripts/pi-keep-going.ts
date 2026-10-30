@@ -1,6 +1,6 @@
 // Pi extension: the Stop-hook half of to-auto-guard.mjs for pi. When an agent run is about to settle in a session that
-// registered an active to-auto run (runs.json `agent` = this session id), it asks `goal.mjs keep-going` and, if the run's
-// control plane moved since the last nudge, appends that reason and continues. Esc (aborted) and errors always win.
+// registered an active to-auto run (runs.json `agent` = this session id), it asks `goal.mjs keep-going` and, if the run
+// committed since the last nudge, appends that reason and continues. Esc (aborted) and errors always win.
 // Install: ln -s <repo>/scripts/pi-keep-going.ts ~/.pi/agent/extensions/to-auto-keep-going.ts (loaded at session start).
 import fs from "node:fs";
 import path from "node:path";

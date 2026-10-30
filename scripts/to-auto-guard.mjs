@@ -10,7 +10,7 @@
 //   keeps the session marked. In a marked session a guard failure denies the call it was judging (fails closed) and
 //   no other: goal.mjs is loaded only for a call a rule names, so a broken goal.mjs never stalls `ls` or `git status`.
 //   A session that cannot be marked has its /to-auto prompt blocked (exit 2).
-//   Stop: in a marked session, while a run it registered (runs.json `agent`) is active and its control plane moved since the last
+//   Stop: in a marked session, while a run it registered (runs.json `agent`) is active and has committed since the last
 //   block, block the end of the turn with `goal.mjs keep-going`'s reason. It fails open: any error lets the turn end.
 // Markers live in `$TO_AUTO_SESSIONS`, else ~/.local/state/to-auto-sessions/<session_id>, outside every state dir.
 import fs from 'node:fs';

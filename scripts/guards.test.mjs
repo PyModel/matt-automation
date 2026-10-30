@@ -404,6 +404,13 @@ test('todo.md behind the registry is TODO_BEHIND, and next resumes at the stage 
   assert.equal(n.status, 0, 'a stale todo.md redirects the resume, it does not block it');
   assert.equal(JSON.parse(n.stdout).stage, '7');
   assert.match(JSON.parse(n.stdout).reason, /registry is building.*unticked from stage 5b/);
+  assert.equal(JSON.parse(n.stdout).tickets, null, 'no tracker yet');
+  const issues = path.join(ctx.state, 'tracker', 'x', 'issues');
+  fs.mkdirSync(issues, { recursive: true });
+  for (const [file, status] of [['01-a.md', 'done'], ['02-b.md', 'in-flight'], ['03-c.md', 'blocked']]) {
+    fs.writeFileSync(path.join(issues, file), `# t\n\n**Status:** ${status}\n**Blocked by:** none\n**Claims:** exclusive: ${file}.txt\n`);
+  }
+  assert.deepEqual(JSON.parse(goal(ctx, ['next', 'x']).stdout).tickets, { done: ['01'], 'in-flight': ['02'], blocked: ['03'] }, "stage 7 names the tracker's tickets, whatever NOW's next: line says");
   tickBefore(ctx, 'x', '7');
   assert.equal(goal(ctx, ['check', 'x']).status, 0);
   assert.doesNotMatch(JSON.parse(goal(ctx, ['next', 'x']).stdout).reason, /registry is/, 'todo.md in step: next reads it as before');
@@ -452,10 +459,17 @@ test('STALE when the run has no goal.mjs commit for longer than --stale-hours; a
   const stale = JSON.parse(goal(ctx, ['check', 'old']).stdout);
   assert.deepEqual(stale.problems.map((p) => p.code), ['STALE']);
   assert.match(stale.problems[0].message, /no goal\.mjs commit for \d+\.\dh while bootstrapping \(limit 2h\)/);
+  assert.match(stale.problems[0].message, /its owner \(test session test-session\) is not moving it: resume it there, `goal\.mjs adopt old --agent <id> --harness <name>` from a live session, or `goal\.mjs stop old <reason>`/);
+  execFileSync('git', ['-C', ctx.state, 'commit', '-q', '--allow-empty', '-m', '[new] note', '-m', '[old] named only in this body'], { env: { ...process.env, TO_AUTO_WRITER: '1' } });
+  assert.equal(goal(ctx, ['check', 'old']).status, 1, 'a commit that names the run only in its body is not its activity');
   assert.equal(goal(ctx, ['check', 'new']).status, 0);
   assert.equal(goal(ctx, ['check', 'new', '--stale-hours', '0']).status, 1);
   assert.equal(goal(ctx, ['event', 'old', '0', 'still working']).status, 0);
   assert.equal(goal(ctx, ['check', 'old']).status, 0, 'a fresh event is activity');
+  const runs = path.join(ctx.state, 'runs.json');
+  fs.writeFileSync(runs, JSON.stringify([...JSON.parse(fs.readFileSync(runs, 'utf8')), { slug: 'ghost', objective: 'Ghost', run_id: 9, started: '2026-01-01T00:00:00.000Z', status: 'building' }]));
+  const ghost = JSON.parse(goal(ctx, ['check', 'ghost']).stdout).problems.find((p) => p.code === 'STALE');
+  assert.match(ghost?.message ?? '', /while building .*its owner \(no session\)/, 'a run with no commit of its own is aged from its registration');
 });
 
 test('check --all walks every control plane under the root: one line per problem, silent and exit 0 when clean', () => {
@@ -486,7 +500,7 @@ test('to-auto-watch.sh notify fires once per problem set: a STALE age that only 
   assert.equal(goal(ctx, ['init', 'old', 'Old', ...WHO_ARGS], { env: at(0) }).status, 0);
   const calls = path.join(home, 'osascript.log');
   fs.writeFileSync(path.join(home, 'osascript'), `#!/bin/sh\necho "$*" >> "${calls}"\n`, { mode: 0o755 });
-  const env = { ...process.env, HOME: home, XDG_STATE_HOME: '', TO_AUTO_HOME: '', PATH: `${home}${path.delimiter}${process.env.PATH}` };
+  const env = { ...process.env, HOME: home, NVM_DIR: '', XDG_STATE_HOME: '', TO_AUTO_HOME: '', PATH: `${home}${path.delimiter}${process.env.PATH}` };
   const notify = () => assert.equal(spawnSync('sh', [path.join(path.dirname(GOAL), 'to-auto-watch.sh'), 'notify'], { encoding: 'utf8', env }).status, 0);
   const fired = () => fs.readFileSync(calls, 'utf8').trim().split('\n');
   notify();
@@ -517,7 +531,7 @@ test('to-auto-watch.sh notify names only new problems: another run appearing, cl
   fs.mkdirSync(crash);
   fs.writeFileSync(path.join(crash, 'node'), '#!/bin/sh\necho "error: goal.mjs crashed"\nexit 3\n', { mode: 0o755 });
   const notify = (dirs = [home]) => {
-    const env = { ...process.env, HOME: home, XDG_STATE_HOME: '', TO_AUTO_HOME: '', PATH: [...dirs, process.env.PATH].join(path.delimiter) };
+    const env = { ...process.env, HOME: home, NVM_DIR: '', XDG_STATE_HOME: '', TO_AUTO_HOME: '', PATH: [...dirs, process.env.PATH].join(path.delimiter) };
     assert.equal(spawnSync('sh', [path.join(path.dirname(GOAL), 'to-auto-watch.sh'), 'notify'], { encoding: 'utf8', env }).status, 0);
   };
   const fired = () => fs.readFileSync(calls, 'utf8').trim().split('\n');
@@ -540,6 +554,33 @@ test('to-auto-watch.sh notify names only new problems: another run appearing, cl
   assert.equal(fired().length, 3, 'the same crash again is not news');
   notify();
   assert.equal(fired().length, 3, 'recovery does not re-announce alpha');
+});
+
+test("to-auto-watch.sh runs nvm's default node when PATH has none, and keeps its sweep log bounded", () => {
+  const home = tmp('guards-home-');
+  const ctx = { repo: bareRepo(), state: path.join(home, '.local', 'state', 'to-auto', 'aaa') };
+  const old = { GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z', GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z' };
+  assert.equal(goal(ctx, ['control']).status, 0);
+  assert.equal(goal(ctx, ['init', 'old', 'Old', ...WHO_ARGS], { env: old }).status, 0);
+  const versions = path.join(home, '.nvm', 'versions', 'node');
+  fs.mkdirSync(path.join(versions, 'v98.0.0', 'bin'), { recursive: true });
+  fs.symlinkSync(process.execPath, path.join(versions, 'v98.0.0', 'bin', 'node'));
+  fs.mkdirSync(path.join(versions, 'v99.0.0', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(versions, 'v99.0.0', 'bin', 'node'), '#!/bin/sh\necho "error: newest, not the default"\nexit 3\n', { mode: 0o755 });
+  fs.mkdirSync(path.join(home, '.nvm', 'alias'));
+  fs.writeFileSync(path.join(home, '.nvm', 'alias', 'default'), 'mine\n');
+  fs.writeFileSync(path.join(home, '.nvm', 'alias', 'mine'), '98\n');
+  const calls = path.join(home, 'osascript.log');
+  fs.writeFileSync(path.join(home, 'osascript'), `#!/bin/sh\necho "$*" >> "${calls}"\n`, { mode: 0o755 });
+  const log = path.join(home, '.local', 'state', 'to-auto-watch.log');
+  fs.writeFileSync(log, 'old sweep\n'.repeat(2001));
+  const env = { HOME: home, NVM_DIR: '', XDG_STATE_HOME: '', TO_AUTO_HOME: '', PATH: `${home}${path.delimiter}/usr/bin${path.delimiter}/bin` };
+  const r = spawnSync('/bin/sh', [path.join(path.dirname(GOAL), 'to-auto-watch.sh'), 'notify'], { encoding: 'utf8', env });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(fs.readFileSync(calls, 'utf8'), /old STALE no goal\.mjs commit/, 'ran goal.mjs on the default (98), not the newest (99)');
+  const lines = fs.readFileSync(log, 'utf8').trim().split('\n');
+  assert.equal(lines.length, 1000);
+  assert.match(lines.at(-1), /1 problem\(s\)$/);
 });
 
 test('nowStage reads the first token of the NOW stage line only', () => {
@@ -1069,7 +1110,7 @@ test('a bugs.md entry routed to a ticket reopens once that ticket is done withou
   assert.deepEqual(unresolvedBugs(text, new Set(['08'])), ['## t08-a flag misread']);
 });
 
-test('keep-going continues an active run only while its control plane moves, and never a stopped or foreign one', () => {
+test('keep-going continues an active run only while the run itself commits, and never a stopped or foreign one', () => {
   const ctx = run('k');
   const home = tmp('guards-home-');
   const keep = (agent) => {
@@ -1081,9 +1122,11 @@ test('keep-going continues an active run only while its control plane moves, and
   assert.equal(first.continue, true);
   assert.match(first.reason, /to-auto run k is .*goal\.mjs next k/);
   assert.equal(keep('test-session').continue, false, 'no commit since the nudge lets the turn end');
+  assert.equal(goal(ctx, ['init', 'peer', 'Peer', '--agent', 'peer-session', '--harness', 'test']).status, 0);
+  assert.equal(keep('test-session').continue, false, "a peer run's commit in the shared control plane is not this run's progress");
   fs.appendFileSync(path.join(ctx.state, 'runs', 'k', 'log.md'), '- progress\n');
   handCommit(ctx, '[k] progress');
-  assert.equal(keep('test-session').continue, true, 'a new control-plane commit earns another nudge');
+  assert.equal(keep('test-session').continue, true, 'a new commit of the run earns another nudge');
   assert.equal(keep('someone-else').continue, false);
   assert.equal(keep('../etc').continue, false);
   assert.equal(goal(ctx, ['adopt', 'k', '--agent', 'someone-else']).status, 2, 'adopt needs --harness too');

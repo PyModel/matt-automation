@@ -4,6 +4,15 @@
 #   to-auto-watch.sh notify   scheduled job: macOS notification naming each problem new since the last sweep; log every sweep
 GOAL="$(cd "$(dirname "$0")" && pwd)/goal.mjs"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}"
+# launchd fixes PATH when the job loads, so a node version pinned there goes stale on the next nvm upgrade.
+# Run nvm's default node (what the owner's shells run) when nvm is installed, else whatever node PATH has.
+nvm="${NVM_DIR:-$HOME/.nvm}" v=default i=0
+while [ -f "$nvm/alias/$v" ] && [ "$i" -lt 10 ]; do v=$(cat "$nvm/alias/$v"); i=$((i + 1)); done
+case "$v" in [0-9]*) v="v$v" ;; esac
+newest() { for d in "$@"; do [ -d "$d" ] && printf '%s\n' "$d"; done | sort -V | tail -1; }
+bin=$(newest "$nvm/versions/node/$v"*/bin)
+[ -n "$bin" ] || bin=$(newest "$nvm"/versions/node/v*/bin)
+[ -z "$bin" ] || PATH="$bin:$PATH"
 out=$(node "$GOAL" check --all 2>&1)
 rc=$?
 
@@ -19,7 +28,10 @@ case "$1" in
     ;;
   notify)
     mkdir -p "$STATE"
-    printf '%s %s\n' "$(date '+%F %T')" "$(printf '%s' "$out" | grep -c . || true) problem(s)" >> "$STATE/to-auto-watch.log"
+    log="$STATE/to-auto-watch.log"
+    printf '%s %s\n' "$(date '+%F %T')" "$(printf '%s' "$out" | grep -c . || true) problem(s)" >> "$log"
+    # One line per sweep: past 2000 lines keep the newest 1000, so the log stays bounded.
+    [ "$(wc -l < "$log")" -le 2000 ] || { tail -n 1000 "$log" > "$log.tmp" && mv "$log.tmp" "$log"; }
     last="$STATE/to-auto-watch.last"
     # A problem's key is <state-dir> <slug> <CODE>; the message carries a STALE age that moves every sweep.
     # Only keys the last sweep lacked are news: a problem that clears, or another that appears, never re-announces an old one.
@@ -31,7 +43,7 @@ case "$1" in
     if [ -n "$new" ]; then
       n=$(printf '%s\n' "$new" | grep -c .)
       open=$(printf '%s\n' "$out" | grep -c .)
-      first=$(printf '%s\n' "$new" | head -1 | awk '{ $1 = ""; print substr($0, 2) }' | tr -d '"\\' | cut -c1-180)
+      first=$(printf '%s\n' "$new" | head -1 | awk '{ $1 = ""; print substr($0, 2) }' | tr -d '\\"' | cut -c1-180)
       osascript -e "display notification \"$first\" with title \"to-auto: $n new run problem(s)\" subtitle \"goal.mjs check --all: $open open\""
     fi
     exit 0

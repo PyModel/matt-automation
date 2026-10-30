@@ -79,4 +79,11 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pymodel.pull-matt.pl
 node scripts/matt.mjs link && node scripts/matt.mjs check   # after upstream adds or renames a skill
 ```
 
+`scripts/to-auto-watch.plist` sweeps every run with `goal.mjs check --all` each 30 minutes and notifies each new problem (a STALE run, NOW ahead of the registry); it runs nvm's default node, so an nvm upgrade never blinds it:
+
+```sh
+cp scripts/to-auto-watch.plist ~/Library/LaunchAgents/com.pymodel.to-auto-watch.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pymodel.to-auto-watch.plist
+```
+
 A failing `check` means an upstream skill is new or renamed: give it a row in [`to-auto/INTEGRATION.md`](to-auto/INTEGRATION.md) (what the pipeline does with it, or `not used` and why), re-read [`to-auto/PITFALLS.md`](to-auto/PITFALLS.md), and commit `matt/` and docs together. Until then `check` fails and runs stop at stage 00.

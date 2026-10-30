@@ -669,14 +669,25 @@ export function next(control, slug) {
   const tickedById = parseTodo(fs.readFileSync(todoFile, 'utf8'));
   const missingLines = STAGES.filter((s) => !tickedById.has(s.id)).map((s) => s.id);
   if (missingLines.length) return { slug, malformed: true, reason: `todo.md has no line for stage(s) ${missingLines.join(', ')}; restore the lines \`goal.mjs init\` writes` };
+  // At stage 7 the tracker, not NOW's free-text `next:` line, says which tickets are in flight (LEDGER.md re-entry step 4).
+  const at = (s, reason) => (s.id === '7' ? { ...resumeAt(slug, s, reason), tickets: ticketsByStatus(control, slug) } : resumeAt(slug, s, reason));
   const drift = todoDrift(control, slug);
   if (drift?.code === 'TODO_AHEAD') return { slug, blocked: true, problems: [drift], reason: drift.message };
-  if (drift) return resumeAt(slug, drift.at, drift.message);
+  if (drift) return at(drift.at, drift.message);
   for (const s of STAGES) {
-    if (!tickedById.get(s.id)) return resumeAt(slug, s, 'first unticked stage');
-    if (s.artifact && !fs.existsSync(path.join(runDir, s.artifact))) return resumeAt(slug, s, `ticked, but runs/${slug}/${s.artifact} is missing`);
+    if (!tickedById.get(s.id)) return at(s, 'first unticked stage');
+    if (s.artifact && !fs.existsSync(path.join(runDir, s.artifact))) return at(s, `ticked, but runs/${slug}/${s.artifact} is missing`);
   }
   return { slug, done: true, reason: 'every stage ticked and every stage artifact present' };
+}
+
+/** Ticket ids by tracker status (`{ 'in-flight': ['07'], done: [...] }`); null before the run has a tracker. */
+function ticketsByStatus(control, slug) {
+  const issues = path.join(control, 'tracker', slug, 'issues');
+  if (!fs.existsSync(issues)) return null;
+  const byStatus = {};
+  for (const [id, t] of readTickets(issues).tickets) (byStatus[t.status ?? 'malformed'] ??= []).push(id);
+  return byStatus;
 }
 
 // --------------------------------------------------------------- check
@@ -740,16 +751,29 @@ function stageProblems(control, slug) {
 }
 
 /**
- * Seconds since the run's last control-plane commit (`[<slug>] …`: tick, event, ticket, receipt), null when unknown.
- * A catch-up tick is bookkeeping, not progress, so ticking an abandoned run's finished stages never hides it from STALE.
+ * The run's own control-plane commits, newest first: subject `[<slug>] …`. `--grep` matches the whole message, so a commit
+ * whose body only names the run is filtered out here. Throws when git cannot read the control plane, so a broken history
+ * surfaces as RUN_UNCHECKABLE instead of a run that is never STALE.
  */
-function runAge(control, slug, now) {
-  // ponytail: looks back 50 commits; a run has at most 19 catch-up ticks in a row.
-  const log = spawnSync('git', ['-C', control, 'log', '-n', '50', '--format=%ct %s', '-F', `--grep=[${slug}] `], { encoding: 'utf8' });
-  if (log.status !== 0) return null;
-  const catchUp = new RegExp(`^\\d+ \\[${slug}\\] tick \\S+: catch-up `); // slugs are [a-z0-9-]
-  const last = log.stdout.split('\n').find((l) => l && !catchUp.test(l));
-  return last ? now / 1000 - Number(last.split(' ')[0]) : null;
+function runCommits(control, slug) {
+  const log = spawnSync('git', ['-C', control, 'log', '--format=%H %ct %s', '-F', `--grep=[${slug}] `], { encoding: 'utf8' });
+  if (log.status !== 0) throw new Error(`git log in ${control} failed: ${log.stderr.trim()}`);
+  return log.stdout.split('\n')
+    .map((l) => l.match(/^(\S+) (\d+) (.*)$/))
+    .filter((m) => m?.[3].startsWith(`[${slug}] `))
+    .map(([, sha, ct, subject]) => ({ sha, ct: Number(ct), subject }));
+}
+
+/**
+ * Seconds since the run's last control-plane commit (`[<slug>] …`: tick, event, ticket, receipt), or since it was registered
+ * when it has none; null when neither is known. A catch-up tick is bookkeeping, not progress, so ticking an abandoned run's
+ * finished stages never hides it from STALE.
+ */
+function runAge(control, entry, now) {
+  const catchUp = new RegExp(`^\\[${entry.slug}\\] tick \\S+: catch-up `); // slugs are [a-z0-9-]
+  const last = runCommits(control, entry.slug).find((c) => !catchUp.test(c.subject));
+  const at = last ? last.ct : Date.parse(entry.started) / 1000;
+  return Number.isFinite(at) ? now / 1000 - at : null;
 }
 
 /**
@@ -764,9 +788,10 @@ export function checkRun(control, slug, { staleHours = 2, now = Date.now() } = {
   const drift = todoDrift(control, slug);
   if (drift) problems.push({ code: drift.code, message: drift.message });
   if (!TERMINAL.has(entry.status) && entry.status !== 'stopped') {
-    const age = runAge(control, slug, now);
+    const age = runAge(control, entry, now);
     if (age !== null && age > staleHours * 3600) {
-      problems.push({ code: 'STALE', message: `no goal.mjs commit for ${(age / 3600).toFixed(1)}h while ${entry.status} (limit ${staleHours}h); is the run still following the pipeline?` });
+      const owner = entry.agent ? `${entry.harness ?? 'unknown harness'} session ${entry.agent}` : 'no session';
+      problems.push({ code: 'STALE', message: `no goal.mjs commit for ${(age / 3600).toFixed(1)}h while ${entry.status} (limit ${staleHours}h); its owner (${owner}) is not moving it: resume it there, \`goal.mjs adopt ${slug} --agent <id> --harness <name>\` from a live session, or \`goal.mjs stop ${slug} <reason>\`` });
     }
   }
   return { slug, ok: !problems.length, registry: entry.status, nowStage: fs.existsSync(ledger) ? nowStage(fs.readFileSync(ledger, 'utf8')) : null, problems };
@@ -798,10 +823,11 @@ export function checkAll(root, opts = {}) {
 
 /**
  * Whether the agent session `agent` must keep going instead of ending its turn: it registered a run (runs.json `agent`)
- * that is not done, a dry run or stopped, and that run's control plane moved since the last nudge. The nudge record in
- * `sessions` is the loop breaker: an agent that ends two turns with no commit between them is let go.
+ * that is not done, a dry run or stopped, and that run committed since the last nudge. The nudge record in `sessions` is
+ * the loop breaker: an agent that ends two turns with no commit of its run between them is let go. Only the run's own
+ * commits count: runs of one repo share a control plane, so its HEAD would keep an idle session going on a peer's commits.
  */
-// ponytail: progress is the control plane's HEAD, so an orchestrator idling on one long worker past a nudge stops once;
+// ponytail: progress is the run's newest commit, so an orchestrator idling on one long worker past a nudge stops once;
 // `check --all` STALE is the backstop. Upgrade: also count an in-flight ticket's live worker pid as progress.
 export function keepGoing(root, agent, sessions) {
   const stop = (reason) => ({ continue: false, reason });
@@ -815,10 +841,10 @@ export function keepGoing(root, agent, sessions) {
     // A STOP mark releases the agent even while the registry may still call the run active — `stop` commits the file and the
     // stopped status together, and `next` refuses it until `resume` — so this agent is let go past every run in this state dir.
     if (!run || fs.existsSync(path.join(dir, 'runs', run.slug, 'STOP'))) continue;
-    const head = git(dir, ['rev-parse', 'HEAD']).trim();
+    const head = runCommits(dir, run.slug)[0]?.sha ?? 'none';
     const record = path.join(sessions, `${agent}.nudge`);
     const last = fs.existsSync(record) ? fs.readFileSync(record, 'utf8').trim() : null;
-    if (last === head) return stop(`${run.slug}: no control-plane commit since the last nudge`);
+    if (last === head) return stop(`${run.slug}: no commit of the run since the last nudge`);
     fs.mkdirSync(sessions, { recursive: true });
     fs.writeFileSync(record, `${head}\n`);
     const at = next(dir, run.slug);

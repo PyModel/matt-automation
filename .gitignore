@@ -2,3 +2,6 @@
 refrence/
 **/.claude/autoharness/
 vendor/mattpocock-skills
+/audit-results.json
+.ledger.jsonl
+.sidecar.json

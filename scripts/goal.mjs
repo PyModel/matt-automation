@@ -2285,6 +2285,19 @@ function heldWork(wt) {
   return null;
 }
 
+/** Delete a tree that may hold read-only directories (a packaged venv ships `dr-x------`): unlinking needs write on the parent. */
+function removeTree(dir) {
+  // Only real directories: chmod follows a symlink, so a linked dir is left to rmSync, which unlinks the link alone.
+  const open = (d) => {
+    const st = fs.lstatSync(d);
+    if (!st.isDirectory()) return;
+    fs.chmodSync(d, (st.mode & 0o7777) | 0o700);
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) open(path.join(d, e.name));
+  };
+  open(dir);
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 const sizeKB = (p) => Number(spawnSync('du', ['-sk', p], { encoding: 'utf8' }).stdout.split('\t')[0]) || 0;
 
 /**
@@ -2379,7 +2392,7 @@ export function gc(repo, { apply = false } = {}) {
     const dir = path.join(control, 'tmp', slug);
     if (!fs.existsSync(dir)) continue;
     const why = status === 'stopped' ? 'the run is stopped and may resume' : null;
-    act({ what: 'tmp', run: slug, path: dir, kb: sizeKB(dir), action: why ? 'keep' : 'delete', ...(why && { why }) }, () => fs.rmSync(dir, { recursive: true, force: true }));
+    act({ what: 'tmp', run: slug, path: dir, kb: sizeKB(dir), action: why ? 'keep' : 'delete', ...(why && { why }) }, () => removeTree(dir));
   }
   const kb = items.filter((i) => i.action !== 'keep').reduce((sum, i) => sum + i.kb, 0);
   return { state: control, workspace, [apply ? 'freedKB' : 'reclaimableKB']: kb, items };

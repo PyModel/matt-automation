@@ -378,6 +378,18 @@ test('gc reports, then returns only what loses nothing: finished runs\' clean wo
   assert.equal(goal(ctx, ['stop', 'halt', 'paused']).status, 0);
   const tmpOf = (slug) => path.join(ctx.state, 'tmp', slug);
   for (const slug of ['fin', 'live', 'halt']) fs.mkdirSync(path.join(tmpOf(slug), 'dd'), { recursive: true });
+  // A packaged venv ships read-only directories, which a plain recursive delete cannot empty.
+  const locked = path.join(tmpOf('fin'), 'venv', 'pkg');
+  fs.mkdirSync(locked, { recursive: true });
+  fs.writeFileSync(path.join(locked, 'mod.ts'), 'x\n');
+  fs.chmodSync(path.join(locked, 'mod.ts'), 0o400);
+  fs.chmodSync(locked, 0o500);
+  // A tmp/<slug> that is a link to a directory elsewhere is unlinked, never followed: its target keeps its files and mode.
+  const outside = tmp('guards-outside-');
+  fs.writeFileSync(path.join(outside, 'keep.txt'), 'x\n');
+  fs.chmodSync(outside, 0o500);
+  fs.mkdirSync(path.join(ctx.state, 'tmp'), { recursive: true });
+  fs.symlinkSync(outside, tmpOf('off'));
   const legacy = path.join(ctx.state, 'worktrees', 'goal-legacy');
   git(ctx.repo, 'worktree', 'add', '-q', '-b', 'goal/legacy', legacy, 'main');
 
@@ -399,6 +411,10 @@ test('gc reports, then returns only what loses nothing: finished runs\' clean wo
   assert.ok(applied.freedKB >= 0);
   for (const p of [wt.fin, wt.halt, legacy, tmpOf('fin')]) assert.equal(fs.existsSync(p), false, `${p} removed`);
   for (const p of [wt.dirty, wt.off, wt.live, tmpOf('halt'), tmpOf('live')]) assert.ok(fs.existsSync(p), `${p} kept`);
+  assert.throws(() => fs.lstatSync(tmpOf('off')), 'the link itself is gone');
+  assert.equal(fs.statSync(outside).mode & 0o777, 0o500, 'a linked directory outside tmp/ is not chmodded');
+  assert.ok(fs.existsSync(path.join(outside, 'keep.txt')));
+  fs.chmodSync(outside, 0o700);
   assert.equal(fs.readFileSync(path.join(wt.dirty, 'wip.txt'), 'utf8'), 'only here\n');
   assert.deepEqual(['fin', 'halt', 'dirty', 'off', 'live'].map((slug) => records(ctx, slug).run.state), ['returned', 'returned', 'active', 'active', 'active']);
   for (const slug of ['fin', 'halt', 'legacy']) assert.equal(git(ctx.repo, 'branch', '--list', `goal/${slug}`), `goal/${slug}`, 'every branch outlives its worktree');

@@ -13,6 +13,8 @@
 //   node scripts/goal.mjs worktree get|return <slug> [NN] | worktree status <slug>
 //                                                          the run's (or ticket NN's) worktree: treehouse lease (cut under <state>/worktrees/pool) when on PATH, else git under <state>/worktrees;
 //                                                          refused under any ancestor .gitignore/.ignore with a `*` line (gitignore-aware linters scan nothing there)
+//   node scripts/goal.mjs gc [--delete-clean] [--all [--state-root <dir>]]
+//                                                          disk finished runs no longer need: their worktrees, free pool slots, tmp/<slug>; report-only by default
 //   node scripts/goal.mjs stop <slug> <reason>            halt the run: write runs/<slug>/STOP and set the registry status
 //   node scripts/goal.mjs resume <slug>                   undo a stop once its cause is fixed
 //   node scripts/goal.mjs adopt <slug> --agent <id> --harness <name>   a new session takes over the run (LEDGER.md re-entry)
@@ -326,6 +328,11 @@ function statusGate(repo, control, slug, status, { restoring = false } = {}) {
   if (status === 'done') {
     const problems = finalVerdictProblems(repo, control, slug);
     if (problems.length) return `${slug} is not done: ${problems.join('; ')}`;
+    // tick 10 returns the run worktree, which a dirty tree refuses; refuse here, before anything is written.
+    const wt = readJson(path.join(control, 'runs', slug, 'worktrees.json')).run;
+    if (wt?.state === 'active' && wt.backend !== 'borrowed' && wt.path && fs.existsSync(wt.path) && !notWorktreeRoot(wt.path) && git(wt.path, ['status', '--porcelain'])) {
+      return `${slug} is not done: the run worktree ${wt.path} has uncommitted changes; commit them on ${wt.branch} or discard them, so the move to done can return it`;
+    }
   }
   return null;
 }
@@ -530,7 +537,7 @@ export function tick(repo, slug, id, { skipped = null } = {}) {
   const control = requireControl(repo);
   // registry then control, the order setRegistry takes them: ledger.md is also written by event under control, so it is
   // read and written under that lock or a concurrent event and this tick lose each other's line.
-  return withLock(repo, 'registry', () => withLock(repo, 'control', () => {
+  const result = withLock(repo, 'registry', () => withLock(repo, 'control', () => {
     const runs = readRegistry(control);
     const entry = runs.find((r) => r.slug === slug);
     if (!entry) throw new Error(`no run ${slug} in runs.json`);
@@ -593,8 +600,13 @@ export function tick(repo, slug, id, { skipped = null } = {}) {
     const what = `${catchUp ? 'catch-up ' : ''}${again ? 're-ticked' : skipped ? `skipped: ${skipped.trim()}` : 'done'}${moves.length ? `; status ${moves.join(' → ')}` : ''}`;
     writes[path.join(runRel, 'ledger.md')] = withEvent(parts.join(''), id, what);
     const sha = writeAndCommit(repo, control, `[${slug}] tick ${id}: ${what}`, writes, { owner: 'registry' });
-    return { slug, ticked: id, registry: entry.status, next: again ? (first?.id ?? 'done') : (nextStage?.id ?? 'done'), commit: sha };
+    return { slug, ticked: id, registry: entry.status, next: again ? (first?.id ?? 'done') : (nextStage?.id ?? 'done'), commit: sha, finished: moves.at(-1) === 'done' };
   }));
+  // A done run holds no worktree: its branch keeps every commit, and a held lease is a pool slot nothing reuses.
+  // Returned after the locks: worktreeReturn takes `worktrees` then `control`, the order worktreeGet takes them.
+  const { finished, ...out } = result;
+  if (finished && readJson(path.join(control, 'runs', slug, 'worktrees.json')).run?.state === 'active') out.worktree = worktreeReturn(repo, slug);
+  return out;
 }
 
 export function init(repo, slug, objective, { agent = null, harness = null, workerModel = null, noHelpers = false } = {}) {
@@ -2006,6 +2018,19 @@ function treehouseBin() {
   return null;
 }
 
+/** The pool slots treehouse lists for `workspace`'s repository; none without treehouse. */
+function treehouseSlots(workspace) {
+  const bin = treehouseBin();
+  if (!bin) return [];
+  const run = spawnSync(bin, ['status', '--json'], { cwd: workspace, encoding: 'utf8' });
+  if (run.status !== 0) throw new Error(`treehouse status --json failed (exit ${run.status}): ${(run.stderr || run.error?.message || '').trim()}`);
+  try {
+    return JSON.parse(run.stdout);
+  } catch {
+    throw new Error(`treehouse status --json printed no JSON list: ${run.stdout.trim().slice(0, 200)}`);
+  }
+}
+
 /**
  * Ancestor `.gitignore`/`.ignore` files above `dir` that ignore everything below them. treehouse stamps `*` into its pool
  * root, and gitignore-aware tools (oxlint, anything on the ignore crate) read ancestor ignore files: a lint there scans no
@@ -2180,24 +2205,31 @@ export function worktreeReturn(repo, slug, id) {
     const r = records[key];
     if (!r) throw new Error(`${slug} has no ${key} worktree`);
     if (r.state === 'returned') return `already returned ${r.path}`;
+    let left = '';
     if (r.backend !== 'borrowed' && fs.existsSync(r.path)) {
-      const dirty = git(r.path, ['status', '--porcelain']);
-      if (dirty) throw new Refusal(`${r.path} has uncommitted changes; commit them on ${r.branch} first:\n${dirty}`);
-      if (r.backend === 'treehouse') {
-        // Detach first: a pool slot that still holds the branch would block the next checkout of it anywhere else.
-        const workspace = workspaceOf(repo, control);
-        requireSlot(r.path, workspace);
-        git(r.path, ['switch', '--quiet', '--detach']);
-        const run = keepRootHead(workspace, () => spawnSync(treehouseBin() ?? 'treehouse', ['return', r.path], { encoding: 'utf8' }));
-        if (run.status !== 0) throw new Error(`treehouse return ${r.path} failed (exit ${run.status}): ${(run.stderr || run.error?.message || '').trim()}`);
+      const workspace = workspaceOf(repo, control);
+      const slot = r.backend === 'treehouse' ? treehouseSlots(workspace).find((s) => canon(s.path) === canon(r.path)) : null;
+      // The pool took the slot back and may have leased it to another run: its tree is no longer this record's to touch.
+      if (slot && (slot.status !== 'leased' || slot.lease_holder !== slug)) {
+        left = ` (treehouse lists it ${slot.status === 'leased' ? `leased by ${slot.lease_holder}` : slot.status}; left as it is)`;
       } else {
-        git(workspaceOf(repo, control), ['worktree', 'remove', r.path]);
+        const dirty = git(r.path, ['status', '--porcelain']);
+        if (dirty) throw new Refusal(`${r.path} has uncommitted changes; commit them on ${r.branch} first:\n${dirty}`);
+        if (r.backend === 'treehouse') {
+          // Detach first: a pool slot that still holds the branch would block the next checkout of it anywhere else.
+          requireSlot(r.path, workspace);
+          git(r.path, ['switch', '--quiet', '--detach']);
+          const run = keepRootHead(workspace, () => spawnSync(treehouseBin() ?? 'treehouse', ['return', r.path], { encoding: 'utf8' }));
+          if (run.status !== 0) throw new Error(`treehouse return ${r.path} failed (exit ${run.status}): ${(run.stderr || run.error?.message || '').trim()}`);
+        } else {
+          git(workspace, ['worktree', 'remove', r.path]);
+        }
       }
     }
     records[key] = { ...r, state: 'returned' };
     fs.writeFileSync(file, `${JSON.stringify(records, null, 2)}\n`);
-    commit(repo, `[${slug}] worktree ${key} returned`, [rel]);
-    return `returned ${r.path}`;
+    commit(repo, `[${slug}] worktree ${key} returned${left}`, [rel]);
+    return `returned ${r.path}${left}`;
   });
 }
 
@@ -2241,6 +2273,138 @@ export function cleanup(repo) {
   }
   fs.rmSync(resolved, { recursive: true, force: true });
   return `removed ${resolved}`;
+}
+
+/** Why removing worktree `wt` would lose work, or null: it must be its own root, clean, with HEAD on a local branch. */
+function heldWork(wt) {
+  const bad = notWorktreeRoot(wt);
+  if (bad) return bad;
+  if (git(wt, ['status', '--porcelain'])) return 'it has uncommitted changes';
+  const head = git(wt, ['rev-parse', 'HEAD']);
+  if (!git(wt, ['for-each-ref', '--count=1', '--contains', head, '--format=%(refname)', 'refs/heads'])) return `its HEAD ${head.slice(0, 12)} is on no local branch`;
+  return null;
+}
+
+const sizeKB = (p) => Number(spawnSync('du', ['-sk', p], { encoding: 'utf8' }).stdout.split('\t')[0]) || 0;
+
+/**
+ * Disk the finished runs (done, stopped, dry-run) of this repo's control plane no longer need: their active worktrees
+ * (worktreeReturn), the free pool slots under <state>/worktrees/pool (treehouse destroy), git worktrees under
+ * <state>/worktrees that no record names, and <state>/tmp/<slug> of a run that cannot resume (not stopped). A worktree goes
+ * only when that loses nothing: clean, with its HEAD on a local branch, which keeps every commit. logs/ and the
+ * repository's goal-logs stay, since receipts cite them. Report-only unless `apply`; each removal is logged to gc.log.
+ */
+export function gc(repo, { apply = false } = {}) {
+  const control = requireControl(repo);
+  const workspace = workspaceOf(repo, control);
+  const runs = readRegistry(control);
+  const finished = new Map(runs.filter((r) => FINISHED_RUNS.has(r.status)).map((r) => [r.slug, r.status]));
+  const items = [];
+  // One item that cannot go is reported and the sweep goes on; nothing is logged as removed unless it was.
+  const act = (item, remove) => {
+    if (apply && item.action !== 'keep') {
+      try {
+        remove();
+        fs.appendFileSync(path.join(control, 'gc.log'), `${new Date().toISOString()} ${item.action} ${item.path} ${item.kb}KB\n`);
+      } catch (error) {
+        Object.assign(item, { action: 'keep', why: error.message.split('\n')[0] });
+      }
+    }
+    items.push(item);
+  };
+  // Sizing a pool takes minutes, so the worktrees lock (which a running run's `worktree get` waits on) is held only around
+  // each removal, which re-reads what it removes first.
+  const records = (slug) => Object.entries(readJson(path.join(control, 'runs', slug, 'worktrees.json')));
+  const claimed = (which) => new Set(runs.filter((r) => which(r.slug)).flatMap((r) => records(r.slug)).filter(([, r]) => r.state === 'active').map(([, r]) => canon(r.path)));
+  const running = () => claimed((slug) => !finished.has(slug));
+  let slots = treehouseSlots(workspace);
+  /** Why a finished run's active record must stay, or null: the slot is another run's now, or its tree holds work. */
+  const recordHeld = (slug, r, slotList) => {
+    const slot = r.backend === 'treehouse' ? slotList.find((s) => canon(s.path) === canon(r.path)) : null;
+    const lent = slot && (slot.status !== 'leased' || slot.lease_holder !== slug);
+    return r.backend === 'borrowed' || lent || !fs.existsSync(r.path) ? null : heldWork(r.path);
+  };
+  for (const [slug] of finished) {
+    for (const [key, r] of records(slug)) {
+      if (r.state !== 'active') continue;
+      const why = recordHeld(slug, r, slots);
+      // A treehouse slot's disk is counted where the slot is destroyed, below.
+      const kb = r.backend === 'git' && fs.existsSync(r.path) ? sizeKB(r.path) : 0;
+      act({ what: 'worktree', run: slug, key, path: r.path, kb, action: why ? 'keep' : 'return', ...(why && { why }) }, () => withLock(repo, 'worktrees', () => {
+        const held = recordHeld(slug, r, treehouseSlots(workspace));
+        if (held) throw new Error(held);
+        worktreeReturn(repo, slug, key === 'run' ? undefined : key.slice(1));
+      }));
+    }
+  }
+  const pool = path.join(control, 'worktrees', 'pool');
+  /** Why `slot` stays, or null; a lease held by a finished run is no claim, a running run's record is. */
+  const slotHeld = (slot) => (slot.status === 'leased' && !finished.has(slot.lease_holder) ? `leased by ${slot.lease_holder}`
+    : running().has(canon(slot.path)) ? 'a running run records it as its worktree'
+      : slot.processes?.length ? 'processes are running in it'
+        : heldWork(slot.path));
+  if (apply) slots = treehouseSlots(workspace);
+  for (const slot of slots.filter((s) => inside(pool, s.path))) {
+    const why = slotHeld(slot);
+    act({ what: 'slot', path: slot.path, kb: sizeKB(slot.path), action: why ? 'keep' : 'destroy', ...(why && { why }) }, () => withLock(repo, 'worktrees', () => {
+      const now = treehouseSlots(workspace).find((s) => canon(s.path) === canon(slot.path));
+      const held = now ? slotHeld(now) : 'treehouse no longer lists it';
+      if (held) throw new Error(held);
+      // treehouse calls a slot unlanded until the remote default branch has its HEAD; slotHeld has just found it clean
+      // with its HEAD on a local branch, so destroying it loses no commit.
+      const args = ['destroy', slot.path, '--yes', '--include-unlanded', ...(now.status === 'leased' ? ['--include-leased'] : [])];
+      const run = spawnSync(treehouseBin(), args, { cwd: workspace, encoding: 'utf8' });
+      if (run.status !== 0 || fs.existsSync(slot.path)) throw new Error(`treehouse ${args.join(' ')} failed (exit ${run.status}): ${(run.stderr || run.stdout || run.error?.message || '').trim()}`);
+      const dir = path.dirname(slot.path);
+      if (dir !== pool && !fs.readdirSync(dir).length) fs.rmdirSync(dir);
+    }));
+  }
+  for (const dir of fs.existsSync(pool) ? fs.readdirSync(pool).map((n) => path.join(pool, n)) : []) {
+    for (const p of fs.statSync(dir).isDirectory() ? fs.readdirSync(dir).map((n) => path.join(dir, n)) : []) {
+      if (!slots.some((s) => canon(s.path) === canon(p))) items.push({ what: 'orphan', path: p, kb: sizeKB(p), action: 'keep', why: `treehouse does not list it in the pool of ${workspace}; inspect it by hand` });
+    }
+  }
+  const listed = [...git(workspace, ['worktree', 'list', '--porcelain']).matchAll(/^worktree (.*)$/gm)].map((m) => m[1]);
+  const named = claimed(() => true);
+  for (const wt of listed.filter((p) => fs.existsSync(p) && inside(path.join(control, 'worktrees'), p) && !inside(pool, p) && !named.has(canon(p)))) {
+    const why = heldWork(wt);
+    act({ what: 'unrecorded', path: wt, kb: sizeKB(wt), action: why ? 'keep' : 'remove', ...(why && { why }) }, () => withLock(repo, 'worktrees', () => {
+      if (claimed(() => true).has(canon(wt))) throw new Error('a run has recorded it since');
+      const held = heldWork(wt);
+      if (held) throw new Error(held);
+      git(workspace, ['worktree', 'remove', wt]);
+    }));
+  }
+  for (const [slug, status] of finished) {
+    const dir = path.join(control, 'tmp', slug);
+    if (!fs.existsSync(dir)) continue;
+    const why = status === 'stopped' ? 'the run is stopped and may resume' : null;
+    act({ what: 'tmp', run: slug, path: dir, kb: sizeKB(dir), action: why ? 'keep' : 'delete', ...(why && { why }) }, () => fs.rmSync(dir, { recursive: true, force: true }));
+  }
+  const kb = items.filter((i) => i.action !== 'keep').reduce((sum, i) => sum + i.kb, 0);
+  return { state: control, workspace, [apply ? 'freedKB' : 'reclaimableKB']: kb, items };
+}
+
+/** gc for every control plane in `root` (plus TO_AUTO_HOME when it is one); a plane whose repository is gone is reported. */
+export function gcAll(root, opts = {}) {
+  const dirs = fs.existsSync(root) ? fs.readdirSync(root).map((d) => path.join(root, d)) : [];
+  if (process.env.TO_AUTO_HOME) dirs.push(path.resolve(process.env.TO_AUTO_HOME));
+  const saved = runtime.stateDir;
+  try {
+    return [...new Set(dirs)].filter(hasMarker).sort().map((dir) => {
+      const ws = readJson(path.join(dir, 'workspace.json'));
+      const repo = ws.returnTo ?? ws.workspace;
+      if (!repo || !fs.existsSync(repo)) return { state: dir, error: `its repository ${repo ?? '(none recorded)'} no longer exists; inspect ${dir} by hand` };
+      runtime.stateDir = dir;
+      try {
+        return gc(repo, opts);
+      } catch (error) {
+        return { state: dir, error: error.message.split('\n')[0] };
+      }
+    });
+  } finally {
+    runtime.stateDir = saved;
+  }
 }
 
 function checkLine(text) {
@@ -2295,7 +2459,7 @@ function sleep(ms) {
 
 const TAKES_VALUE = new Set(['--repo', '--state-dir', '--allow', '--base', '--target-branch', '--status-file', '--worker-model']);
 
-const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--worker-model <model>] [--no-helpers] | next <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] | keep-going --agent <id> | worktree get|return <slug> [NN] | worktree status <slug> | stop <slug> <reason> | resume <slug> | adopt <slug> --agent <id> --harness <name> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
+const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--worker-model <model>] [--no-helpers] | next <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] | keep-going --agent <id> | worktree get|return <slug> [NN] | worktree status <slug> | gc [--delete-clean] [--all [--state-root <dir>]] | stop <slug> <reason> | resume <slug> | adopt <slug> --agent <id> --harness <name> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
 
 function main(argv) {
   configure();
@@ -2368,6 +2532,20 @@ function main(argv) {
   }
   if (command === 'land' && rest.length <= 1) {
     print(land(repo, rest[0] ?? null));
+    return 0;
+  }
+  if (command === 'gc') {
+    let root = path.join(os.homedir(), '.local', 'state', 'to-auto');
+    let all = false;
+    let apply = false;
+    for (let i = 0; i < rest.length; i += 1) {
+      if (rest[i] === '--all') all = true;
+      else if (rest[i] === '--delete-clean') apply = true;
+      else if (rest[i] === '--state-root' && rest[i + 1]) root = rest[++i];
+      else throw new UsageError('gc [--delete-clean] [--all [--state-root <dir>]]');
+    }
+    if (!all && rest.includes('--state-root')) throw new UsageError('gc --state-root needs --all');
+    print(all ? gcAll(root, { apply }) : gc(repo, { apply }));
     return 0;
   }
   if (command === 'cleanup' && rest.length === 0) {

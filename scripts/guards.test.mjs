@@ -56,30 +56,53 @@ const tickBefore = (ctx, slug, id) => {
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^- \[ \] (\S+)/gm, (line, stage) => (done.has(stage) ? `- [x] ${stage}` : line)));
 };
 
-// A stand-in for treehouse: logs argv, `get` makes a detached worktree in a pool dir and prints its path.
-function fakeTreehouse({ fail = false, blind = false, rogue = null } = {}) {
+// A stand-in for treehouse: logs argv; `get` makes a detached worktree in `pool` leased to --lease-holder and prints its
+// path; `status --json` lists the pool with its leases; `return` ends a lease; `destroy` removes the worktree.
+function fakeTreehouse({ fail = false, blind = false, rogue = null, pool = null } = {}) {
   const dir = tmp('guards-th-');
   const log = path.join(dir, 'calls.log');
+  const leases = path.join(dir, 'leases');
   const bin = path.join(dir, 'treehouse');
+  pool ??= path.join(dir, 'pool');
   if (blind) { // the real pool root: treehouse stamps `*` into it
-    fs.mkdirSync(path.join(dir, 'pool'));
-    fs.writeFileSync(path.join(dir, 'pool', '.gitignore'), '*\n');
+    fs.mkdirSync(pool);
+    fs.writeFileSync(path.join(pool, '.gitignore'), '*\n');
   }
   fs.writeFileSync(bin, `#!/bin/sh
 echo "$PWD|$*" >> "${log}"
 ${fail ? 'echo "pool exhausted" >&2; exit 3' : ''}
 ${rogue === 'get' ? 'if [ "$1" = get ]; then echo "$PWD"; exit 0; fi' : ''}
 ${rogue === 'return' ? 'if [ "$1" = return ]; then git -C "$PWD" checkout -q --detach; exit 0; fi' : ''}
-if [ "$1" = get ]; then
-  slot="${dir}/pool/$(date +%s%N)"
+touch "${leases}"
+case "$1" in
+get)
+  holder=; prev=; for a in "$@"; do [ "$prev" = --lease-holder ] && holder=$a; prev=$a; done
+  n=1; while [ -e "${pool}/$n" ]; do n=$((n + 1)); done
+  slot="${pool}/$n/repo"
   git worktree add -q --detach "$slot" HEAD >/dev/null 2>&1 || exit 4
+  echo "$slot $holder" >> "${leases}"
   echo "treehouse: leased" >&2
-  echo "$slot"
-fi
+  echo "$slot" ;;
+status)
+  printf '['; sep=
+  for slot in "${pool}"/*/*; do [ -d "$slot" ] || continue
+    holder=$(grep -F "$slot " "${leases}" | cut -d' ' -f2)
+    if grep -qF "$slot " "${leases}"; then st=leased; else st=available; fi
+    printf '%s{"path":"%s","status":"%s","lease_holder":"%s","processes":[]}' "$sep" "$slot" "$st" "$holder"; sep=,
+  done
+  echo ']' ;;
+return)
+  grep -vF "$2 " "${leases}" > "${leases}.new"; mv "${leases}.new" "${leases}" ;;
+destroy)
+  git worktree remove --force "$2" || exit 5
+  grep -vF "$2 " "${leases}" > "${leases}.new"; mv "${leases}.new" "${leases}" ;;
+esac
 exit 0
 `);
   fs.chmodSync(bin, 0o755);
-  return { bin, log, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []) };
+  const calls = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []);
+  /** Calls that change the pool: `status` only reads it. */
+  return { bin, log, leases, calls, writes: () => calls().filter((c) => !/\|status /.test(c)) };
 }
 
 // ---------------------------------------------------------------- worktree
@@ -217,7 +240,7 @@ test('worktree get uses a treehouse lease when treehouse is installed, and retur
   assert.equal(JSON.parse(goal(ctx, ['worktree', 'status', 'x']).stdout).run.backend, 'treehouse');
   const back = goal(ctx, ['worktree', 'return', 'x'], { treehouse: th.bin });
   assert.equal(back.status, 0, back.stderr);
-  assert.equal(th.calls()[1].split('|')[1], `return ${wt}`);
+  assert.equal(th.writes()[1].split('|')[1], `return ${wt}`);
   assert.notEqual(spawnSync('git', ['-C', wt, 'symbolic-ref', 'HEAD']).status, 0, 'slot is detached before it goes back to the pool');
 });
 
@@ -323,6 +346,149 @@ test('cleanup refuses while a run worktree is active, then removes the state onc
   const ok = goal(ctx, ['cleanup']);
   assert.equal(ok.status, 0, ok.stderr);
   assert.equal(fs.existsSync(ctx.state), false);
+});
+
+// --------------------------------------------------------------------- gc
+
+/** Set a run's registry status directly, as a run that got there would have it. */
+const setStatus = (ctx, slug, status) => {
+  const file = path.join(ctx.state, 'runs.json');
+  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  data.find((r) => r.slug === slug).status = status;
+  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+  handCommit(ctx, `[${slug}] status ${status}`);
+};
+const gcRun = (ctx, args = [], opts) => {
+  const r = goal(ctx, ['gc', ...args], opts);
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout);
+};
+const itemAt = (out, p, what = null) => out.items.find((i) => i.path === p && (!what || i.what === what));
+const records = (ctx, slug) => JSON.parse(fs.readFileSync(path.join(ctx.state, 'runs', slug, 'worktrees.json'), 'utf8'));
+
+test('gc reports, then returns only what loses nothing: finished runs\' clean worktrees on a branch, tmp of runs that cannot resume', () => {
+  const ctx = run('fin');
+  for (const slug of ['live', 'dirty', 'off', 'halt']) assert.equal(goal(ctx, ['init', slug, 'X', ...WHO_ARGS]).status, 0);
+  const wt = {};
+  for (const slug of ['fin', 'live', 'dirty', 'off', 'halt']) wt[slug] = goal(ctx, ['worktree', 'get', slug]).stdout.trim();
+  fs.writeFileSync(path.join(wt.dirty, 'wip.txt'), 'only here\n');
+  git(wt.off, 'switch', '-q', '--detach');
+  git(wt.off, 'commit', '-q', '--allow-empty', '-m', 'on no branch');
+  for (const slug of ['fin', 'dirty', 'off']) setStatus(ctx, slug, 'done');
+  assert.equal(goal(ctx, ['stop', 'halt', 'paused']).status, 0);
+  const tmpOf = (slug) => path.join(ctx.state, 'tmp', slug);
+  for (const slug of ['fin', 'live', 'halt']) fs.mkdirSync(path.join(tmpOf(slug), 'dd'), { recursive: true });
+  const legacy = path.join(ctx.state, 'worktrees', 'goal-legacy');
+  git(ctx.repo, 'worktree', 'add', '-q', '-b', 'goal/legacy', legacy, 'main');
+
+  const before = head(ctx);
+  const report = gcRun(ctx);
+  assert.equal(head(ctx), before, 'a report writes nothing');
+  assert.equal(itemAt(report, wt.fin).action, 'return');
+  assert.equal(itemAt(report, wt.halt).action, 'return', 'a stopped run gets its worktree back from its branch on resume');
+  assert.deepEqual([itemAt(report, wt.dirty).action, itemAt(report, wt.dirty).why], ['keep', 'it has uncommitted changes']);
+  assert.match(itemAt(report, wt.off).why, /^its HEAD [0-9a-f]{12} is on no local branch$/);
+  assert.equal(itemAt(report, wt.live), undefined, 'a running run is not gc\'s to judge');
+  assert.equal(itemAt(report, legacy).action, 'remove', 'a worktree no record names');
+  assert.equal(itemAt(report, tmpOf('fin')).action, 'delete');
+  assert.deepEqual([itemAt(report, tmpOf('halt')).action, itemAt(report, tmpOf('halt')).why], ['keep', 'the run is stopped and may resume']);
+  assert.equal(itemAt(report, tmpOf('live')), undefined);
+  for (const p of [wt.fin, wt.halt, legacy, tmpOf('fin')]) assert.ok(fs.existsSync(p), `${p} survives the report`);
+
+  const applied = gcRun(ctx, ['--delete-clean']);
+  assert.ok(applied.freedKB >= 0);
+  for (const p of [wt.fin, wt.halt, legacy, tmpOf('fin')]) assert.equal(fs.existsSync(p), false, `${p} removed`);
+  for (const p of [wt.dirty, wt.off, wt.live, tmpOf('halt'), tmpOf('live')]) assert.ok(fs.existsSync(p), `${p} kept`);
+  assert.equal(fs.readFileSync(path.join(wt.dirty, 'wip.txt'), 'utf8'), 'only here\n');
+  assert.deepEqual(['fin', 'halt', 'dirty', 'off', 'live'].map((slug) => records(ctx, slug).run.state), ['returned', 'returned', 'active', 'active', 'active']);
+  for (const slug of ['fin', 'halt', 'legacy']) assert.equal(git(ctx.repo, 'branch', '--list', `goal/${slug}`), `goal/${slug}`, 'every branch outlives its worktree');
+  const log = fs.readFileSync(path.join(ctx.state, 'gc.log'), 'utf8');
+  for (const p of [wt.fin, wt.halt, legacy, tmpOf('fin')]) assert.ok(log.includes(` ${p} `), `gc.log names ${p}`);
+  assert.equal(log.includes(wt.dirty), false, 'nothing kept is logged as removed');
+  assert.deepEqual(gcRun(ctx, ['--delete-clean']).items.filter((i) => i.action !== 'keep'), [], 'a second sweep finds nothing');
+});
+
+test('gc destroys free and finished-run pool slots through treehouse and leaves live, re-leased and unknown ones', () => {
+  const ctx = run('fin');
+  for (const slug of ['live', 'gone']) assert.equal(goal(ctx, ['init', slug, 'X', ...WHO_ARGS]).status, 0);
+  const pool = path.join(ctx.state, 'worktrees', 'pool');
+  const th = fakeTreehouse({ pool });
+  const get = (...args) => goal(ctx, ['worktree', 'get', ...args], { treehouse: th.bin }).stdout.trim();
+  const fin = get('fin');
+  const free = get('fin', '1');
+  assert.equal(goal(ctx, ['worktree', 'return', 'fin', '1'], { treehouse: th.bin }).status, 0);
+  const held = get('fin', '2');
+  assert.equal(goal(ctx, ['worktree', 'return', 'fin', '2'], { treehouse: th.bin }).status, 0);
+  fs.appendFileSync(th.leases, `${held} fin\n`); // a lease that outlived its record
+  const live = get('live');
+  const gone = get('gone');
+  // The pool took gone's slot back and leased it to live: gone's record is stale.
+  fs.writeFileSync(th.leases, fs.readFileSync(th.leases, 'utf8').replace(`${gone} gone`, `${gone} live`));
+  // A running run's record names a slot whose lease treehouse lists under a finished run: the record wins.
+  const owned = get('live', '1');
+  fs.writeFileSync(th.leases, fs.readFileSync(th.leases, 'utf8').replace(`${owned} live`, `${owned} fin`));
+  const orphan = path.join(pool, '99', 'repo');
+  fs.mkdirSync(orphan, { recursive: true });
+  for (const slug of ['fin', 'gone']) setStatus(ctx, slug, 'done');
+
+  const report = gcRun(ctx, [], { treehouse: th.bin });
+  assert.deepEqual([fin, free, held].map((p) => itemAt(report, p, 'slot').action), ['destroy', 'destroy', 'destroy']);
+  assert.equal(itemAt(report, fin, 'worktree').action, 'return');
+  assert.equal(itemAt(report, live, 'slot').why, 'leased by live');
+  assert.equal(itemAt(report, gone, 'slot').why, 'leased by live');
+  assert.equal(itemAt(report, gone, 'worktree').action, 'return', 'its stale record is closed without touching the slot');
+  assert.equal(itemAt(report, owned, 'slot').why, 'a running run records it as its worktree');
+  // treehouse lists an orphaned slot (its git link gone) like any other; heldWork keeps it, since git cannot check it.
+  assert.deepEqual([itemAt(report, orphan).action, /is not a worktree root/.test(itemAt(report, orphan).why)], ['keep', true]);
+  assert.equal(th.writes().filter((c) => /\|destroy /.test(c)).length, 0, 'a report destroys nothing');
+
+  gcRun(ctx, ['--delete-clean'], { treehouse: th.bin });
+  for (const p of [fin, free, held]) assert.equal(fs.existsSync(p), false, `${p} destroyed`);
+  assert.equal(fs.existsSync(path.dirname(fin)), false, 'its empty slot dir goes too');
+  for (const p of [live, gone, owned, orphan]) assert.ok(fs.existsSync(p), `${p} kept`);
+  assert.equal(git(gone, 'symbolic-ref', '--short', 'HEAD'), 'goal/gone', 'a slot leased to another run is never detached');
+  assert.equal(records(ctx, 'gone').run.state, 'returned');
+  const destroys = th.writes().filter((c) => /\|destroy /.test(c)).map((c) => c.split('|')[1]);
+  // fin's lease ended with its record's return; held's outlived its record, and a finished run's lease is no claim.
+  assert.deepEqual(destroys.sort(), [`destroy ${fin} --yes --include-unlanded`, `destroy ${free} --yes --include-unlanded`, `destroy ${held} --yes --include-unlanded --include-leased`].sort());
+});
+
+test('worktree return leaves a slot the pool has re-leased to another run as it is', () => {
+  const ctx = run('a');
+  assert.equal(goal(ctx, ['init', 'b', 'X', ...WHO_ARGS]).status, 0);
+  const th = fakeTreehouse();
+  const wt = goal(ctx, ['worktree', 'get', 'a'], { treehouse: th.bin }).stdout.trim();
+  fs.writeFileSync(th.leases, fs.readFileSync(th.leases, 'utf8').replace(`${wt} a`, `${wt} b`));
+  fs.writeFileSync(path.join(wt, 'b-work.txt'), 'b is mid-ticket\n');
+  const r = goal(ctx, ['worktree', 'return', 'a'], { treehouse: th.bin });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), `returned ${wt} (treehouse lists it leased by b; left as it is)`);
+  assert.equal(git(wt, 'symbolic-ref', '--short', 'HEAD'), 'goal/a');
+  assert.ok(fs.existsSync(path.join(wt, 'b-work.txt')));
+  assert.equal(th.writes().filter((c) => /\|return /.test(c)).length, 0);
+});
+
+test('gc --all sweeps every control plane and reports one whose repository is gone', () => {
+  const root = tmp('guards-gc-root-');
+  const plane = (name) => {
+    const ctx = { repo: bareRepo(), state: path.join(root, name) };
+    for (const args of [['control'], ['init', 'x', 'X', ...WHO_ARGS]]) assert.equal(goal(ctx, args).status, 0);
+    fs.writeFileSync(path.join(ctx.state, 'workspace.json'), JSON.stringify({ workspace: ctx.repo, returnTo: ctx.repo }));
+    setStatus(ctx, 'x', 'done');
+    fs.mkdirSync(path.join(ctx.state, 'tmp', 'x'), { recursive: true });
+    return ctx;
+  };
+  const kept = plane('a');
+  const lost = plane('b');
+  fs.rmSync(lost.repo, { recursive: true, force: true });
+  const r = goal(kept, ['gc', '--all', '--state-root', root, '--delete-clean']);
+  assert.equal(r.status, 0, r.stderr);
+  const [a, b] = JSON.parse(r.stdout);
+  assert.equal(a.state, kept.state);
+  assert.equal(itemAt(a, path.join(kept.state, 'tmp', 'x')).action, 'delete');
+  assert.equal(fs.existsSync(path.join(kept.state, 'tmp', 'x')), false);
+  assert.match(b.error, /its repository .* no longer exists; inspect .* by hand/);
+  assert.ok(fs.existsSync(path.join(lost.state, 'tmp', 'x')), 'a plane gc cannot check is left alone');
 });
 
 test('cleanup refuses while the clone holds commits the repo does not have', () => {
@@ -672,7 +838,17 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   git(ctx.repo, 'commit', '-q', '--allow-empty', '-m', 'landed after the review');
   refused(ctx, /main is at .* but the final review saw/, '10');
   git(ctx.repo, 'reset', '-q', '--hard', 'HEAD~1');
-  assert.equal(ticked(ctx, '10').registry, 'done');
+  const wt = path.join(tmp('guards-run-wt-'), 'run');
+  git(ctx.repo, 'worktree', 'add', '-q', '-b', 'goal/x', wt, 'main');
+  put(ctx, 'runs/x/worktrees.json', JSON.stringify({ run: { backend: 'git', path: wt, branch: 'goal/x', state: 'active' } }));
+  fs.writeFileSync(path.join(wt, 'left.txt'), 'x\n');
+  refused(ctx, /x is not done: the run worktree .* has uncommitted changes; commit them on goal\/x or discard them/, '10');
+  fs.rmSync(path.join(wt, 'left.txt'));
+  const finished = ticked(ctx, '10');
+  assert.equal(finished.registry, 'done');
+  assert.equal(finished.worktree, `returned ${wt}`, 'the move to done returns the run worktree');
+  assert.equal(fs.existsSync(wt), false);
+  assert.equal(git(ctx.repo, 'branch', '--list', 'goal/x'), 'goal/x');
   assert.equal(nowOf(ctx), 'done');
   assert.equal(JSON.parse(goal(ctx, ['next', 'x']).stdout).done, true);
   refused(ctx, /x is done/, '10');

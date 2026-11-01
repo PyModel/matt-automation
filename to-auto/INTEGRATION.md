@@ -63,6 +63,7 @@ This table is checked: `node ROOT/scripts/matt.mjs check` fails when a vendored 
 | chief-of-staff | not used | A long-running session coordinating subagents and schedules toward a goal, in dialogue with the user | `/to-auto` is already the coordinator; a second one on the same run would be a second orchestrator. |
 | claude-handoff | not used | Hands the conversation to a fresh background agent | The ledger plus the re-entry protocol already make any fresh context resumable; a handoff agent would be a second orchestrator on the same run. |
 | loop-me | not used | Grills the user to specify their own recurring workflows | It designs loops with a human; a recurring `/to-auto` driven by `goal.mjs next` is the loop. |
+| software-factory | not used | Shared vocabulary for designing a remote software factory with the user (in-progress upstream, user-invoked only) | Design language for whiteboarding a factory, not a delivery step; `/to-auto` runs locally and keeps its own run, ticket and worktree terms. |
 | setup-ts-deep-modules | not used by default | User-invoked TypeScript setup (dependency-cruiser) | Only when the objective names it; then it is the objective, loaded by path, with its questions answered by kun. |
 | writing-beats | not used | Prose-writing workflow | Not software delivery. |
 | writing-fragments | not used | Prose-writing workflow | Not software delivery. |

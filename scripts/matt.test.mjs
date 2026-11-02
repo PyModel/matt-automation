@@ -55,7 +55,7 @@ test('link creates relative symlinks and prunes stale ones', () => {
   assert.ok(fs.existsSync(path.join(root, 'matt/tdd/SKILL.md')));
 });
 
-test('resolve prefers the pinned vendor copy, then installed homes, else throws', () => {
+test('resolve prefers the vendored copy, then installed homes, else throws', () => {
   const { root, homes } = fixture();
   link(root);
   skill(homes[0], 'tdd', 'a drifted local copy');
@@ -110,7 +110,7 @@ test('check reports a row that is neither vendored nor installed as missing, not
   assert.equal(check(root, { homes: [] }).missing.length, 2); // research-stack is gone too
 });
 
-test('this repo: matt/ is in sync with the pin and every vendored skill is integrated', () => {
+test('this repo: matt/ is in sync with the vendored checkout and every vendored skill is integrated', () => {
   // No skill homes: the repo's own wiring must hold on a machine with nothing installed (CI).
   const { errors } = check(REPO, { homes: [] });
   assert.deepEqual(errors, []);

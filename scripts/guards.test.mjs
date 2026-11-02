@@ -768,13 +768,16 @@ test("to-auto-watch.sh runs nvm's default node when PATH has none, and keeps its
   fs.symlinkSync(process.execPath, path.join(versions, 'v98.0.0', 'bin', 'node'));
   fs.mkdirSync(path.join(versions, 'v99.0.0', 'bin'), { recursive: true });
   fs.writeFileSync(path.join(versions, 'v99.0.0', 'bin', 'node'), '#!/bin/sh\necho "error: newest, not the default"\nexit 3\n', { mode: 0o755 });
+  // Alias 98 is v98.x.y, never v980: a prefix matches whole version components only.
+  fs.mkdirSync(path.join(versions, 'v980.0.0', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(versions, 'v980.0.0', 'bin', 'node'), '#!/bin/sh\necho "error: v980 is not 98"\nexit 3\n', { mode: 0o755 });
   fs.mkdirSync(path.join(home, '.nvm', 'alias'));
   fs.writeFileSync(path.join(home, '.nvm', 'alias', 'default'), 'mine\n');
   fs.writeFileSync(path.join(home, '.nvm', 'alias', 'mine'), '98\n');
   const calls = path.join(home, 'osascript.log');
   fs.writeFileSync(path.join(home, 'osascript'), `#!/bin/sh\necho "$*" >> "${calls}"\n`, { mode: 0o755 });
   const log = path.join(home, '.local', 'state', 'to-auto-watch.log');
-  fs.writeFileSync(log, 'old sweep\n'.repeat(2001));
+  fs.writeFileSync(log, 'old sweep\n'.repeat(1500));
   const env = { HOME: home, NVM_DIR: '', XDG_STATE_HOME: '', TO_AUTO_HOME: '', PATH: `${home}${path.delimiter}/usr/bin${path.delimiter}/bin` };
   const r = spawnSync('/bin/sh', [path.join(path.dirname(GOAL), 'to-auto-watch.sh'), 'notify'], { encoding: 'utf8', env });
   assert.equal(r.status, 0, r.stderr);

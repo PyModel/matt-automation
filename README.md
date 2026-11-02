@@ -35,6 +35,7 @@
 ```sh
 git clone git@github.com:PyModel/matt-automation.git
 git clone https://github.com/mattpocock/skills.git ~/Projects/open-source/mattpocock-skills
+mkdir -p matt-automation/vendor   # vendor/ is gitignored, so a fresh clone has none
 ln -s ~/Projects/open-source/mattpocock-skills matt-automation/vendor/mattpocock-skills
 cd matt-automation
 node scripts/matt.mjs check        # prints "ok"
@@ -73,7 +74,7 @@ npm test                                 # unit tests · to-orc selftest · adve
 
 ## 📌 Tracking upstream Matt skills
 
-Owner direction (2026-10-20): "matt-automations should be symlinked to matt skills repo main repo so it should always be updated". So there is no pin to bump: `vendor/mattpocock-skills` is a symlink to a clone of `mattpocock/skills` on `main`. `matt.mjs check` (stage 00 of every run) runs `git pull --ff-only` on it first, and `scripts/pull-matt.plist` (a LaunchAgent) pulls hourly so skills used outside a run stay current too. A run uses the commit `check` prints as `pin:`; a concurrent run's `check` can move it.
+Owner direction (2026-10-20): "matt-automations should be symlinked to matt skills repo main repo so it should always be updated". So there is no pin to bump: `vendor/mattpocock-skills` is a symlink to a clone of `mattpocock/skills` on `main`. `matt.mjs check` (stage 00 of every run) runs `git pull --ff-only` on it first, and `scripts/pull-matt.plist` (a LaunchAgent) pulls hourly so skills used outside a run stay current too, logging each pull to `~/.local/state/pull-matt.log`. A run starts on the commit `check` prints as `vendored:`; the hourly pull or a concurrent run's `check` can move it mid-run.
 
 ```sh
 cp scripts/pull-matt.plist ~/Library/LaunchAgents/com.pymodel.pull-matt.plist
@@ -84,7 +85,7 @@ node scripts/matt.mjs link && node scripts/matt.mjs check   # after upstream add
 `scripts/to-auto-watch.plist` sweeps every run with `goal.mjs check --all` each 30 minutes and notifies each new problem (a STALE run, an orphaned ticket, a target that moved under the run, scripts changed under it, NOW ahead of the registry); it runs nvm's default node, so an nvm upgrade never blinds it:
 
 ```sh
-cp scripts/to-auto-watch.plist ~/Library/LaunchAgents/com.pymodel.to-auto-watch.plist
+sed "s#@ROOT@#$PWD#" scripts/to-auto-watch.plist > ~/Library/LaunchAgents/com.pymodel.to-auto-watch.plist   # from the clone's root
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pymodel.to-auto-watch.plist
 ```
 

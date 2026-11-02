@@ -8,7 +8,7 @@
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>mkdir -p "$HOME/.local/state" &amp;&amp; exec "$HOME/Projects/active/Skills/matt-automations/scripts/to-auto-watch.sh" notify 2&gt;&gt;"$HOME/.local/state/to-auto-watch.log"</string>
+    <string>mkdir -p "$HOME/.local/state" &amp;&amp; exec "@ROOT@/scripts/to-auto-watch.sh" notify 2&gt;&gt;"$HOME/.local/state/to-auto-watch.err"</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>

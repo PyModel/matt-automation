@@ -15,7 +15,7 @@ Commit each budget change with its stop conditions before any ticket runs under 
 - Hard stop at the ceiling: open work stays open, blocker named.
 - Timed benchmarks run only in an idle window (`timed-benchmark-hygiene`), ending before wrap-up; none → `blocked: no idle window`.
 - Past `goal.mjs claim`'s two amendments or `waive`'s one waiver, mark the ticket `stuck` and move unmet criteria to a new ticket. Count both in the retro budget line.
-- Enforce a quota stop only if quota reads unattended; read it at 0d. If `quota-axi` needs a keychain prompt, log `quota stop: not enforceable (credentials = blocker)`.
+- Enforce a quota stop only if quota reads unattended; read it at 0d. If the quota reader needs a credential prompt, log `quota stop: not enforceable (credentials = blocker)`.
 - A stage 8 shorter than CLOSE.md: log `deviation: <step> → <instead>, <why>` with the budget line; name the one re-verify at the merged head.
 
 ## Before choosing a budget

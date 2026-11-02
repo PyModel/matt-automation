@@ -4,7 +4,7 @@
 //   node scripts/matt.mjs resolve <name>   absolute SKILL.md path the automations must load
 //   node scripts/matt.mjs link             regenerate matt/<name> symlinks from the vendored checkout
 //   node scripts/matt.mjs check            fast-forward the vendored checkout, then fail on any wiring drift or missing
-//                                          installed skill; print the commit this run uses (pin) and drift
+//                                          installed skill; print the vendored commit (vendored:) and drift
 //   node scripts/matt.mjs check --vendored fail only on the repo's own wiring (CI: no skills are installed there)
 //
 // Matt skills come from vendor/mattpocock-skills (a gitignored symlink to a local clone of
@@ -73,8 +73,8 @@ export function link(root) {
 }
 
 export function resolve(root, name, { homes = DEFAULT_HOMES } = {}) {
-  const pinned = path.join(root, LINKS, name, 'SKILL.md');
-  if (fs.existsSync(pinned)) return fs.realpathSync(pinned);
+  const vendored = path.join(root, LINKS, name, 'SKILL.md');
+  if (fs.existsSync(vendored)) return fs.realpathSync(vendored);
   for (const home of homes) {
     const installed = path.join(home, name, 'SKILL.md');
     if (fs.existsSync(installed)) return installed;
@@ -122,11 +122,11 @@ export function check(root, { homes = DEFAULT_HOMES } = {}) {
     errors.push('ask-matt is missing from the vendored checkout; the automations cannot route');
   }
 
-  info.push(`pin: ${VENDOR} @ ${pinnedSha(root)}`);
+  info.push(`vendored: ${VENDOR} @ ${vendoredSha(root)}`);
   for (const [name, dir] of vendored) {
     for (const home of homes) {
       const installed = path.join(home, name);
-      if (fs.existsSync(installed) && !sameTree(installed, dir)) info.push(`drift: ${name} installed at ${installed} differs from the pin`);
+      if (fs.existsSync(installed) && !sameTree(installed, dir)) info.push(`drift: ${name} installed at ${installed} differs from the vendored copy`);
     }
   }
   return { errors, missing, info };
@@ -189,7 +189,7 @@ function pullVendor(root) {
   }
 }
 
-function pinnedSha(root) {
+function vendoredSha(root) {
   try {
     return execFileSync('git', ['-C', path.join(root, VENDOR), 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {

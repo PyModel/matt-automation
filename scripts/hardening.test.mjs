@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import {
   init, next, tick, pin, take, frontier, prepareTicket, brief, mergeTicket, verdict, setRegistry, checkRun, checkContract,
   checkReceipt, commit, configure, prepare, worktreeGet, runLogged, scriptsPin, ownerDecisions, gc, MAX_BRIEF_BYTES,
-  adopt, controlDir, firstStageArgv,
+  adopt, controlDir, firstStageArgv, gcAll, stateDir,
 } from './goal.mjs';
 
 process.env.TO_AUTO_TREEHOUSE = ''; // plain git worktrees: a treehouse on PATH must not lease real pool slots
@@ -526,4 +526,50 @@ test('a treehouse slot that is the workspace itself is refused when the workspac
     process.env.TO_AUTO_TREEHOUSE = '';
   }
   assert.equal(git(linked, 'rev-parse', '--abbrev-ref', 'HEAD'), 'side');
+});
+
+test('a duplicate ticket number shows in next and blocks the move to reviewing; a run with no age is uncheckable, never fresh', () => {
+  const { repo, control } = setup();
+  init(repo, 'x', 'X', WHO);
+  write(path.join(control, 'tracker/x/issues/01-a.md'), ticketText('done', 'exclusive: a.txt'));
+  write(path.join(control, 'tracker/x/issues/01-b.md'), ticketText('done', 'exclusive: b.txt'));
+  rawCommit(control, '[x] fixture: two tickets numbered 01');
+  editRegistry(control, (e) => { e.status = 'building'; });
+  assert.match(JSON.stringify(next(control, 'x')), /01 \(01-b\.md: ticket number 01 is also used by 01-a\.md\)/);
+  assert.throws(() => setRegistry(repo, 'x', 'reviewing'), /build is not complete: 01-b\.md: ticket number 01 is also used by 01-a\.md; renumber it/);
+  const bare = path.join(tmp('hard-bare-'), 'c');
+  fs.mkdirSync(bare);
+  const runs = registry(control);
+  runs.push({ slug: 'y', status: 'building' });
+  write(path.join(control, 'runs.json'), `${JSON.stringify(runs, null, 2)}\n`);
+  rawCommit(control, 'fixture: a run with no start time');
+  assert.throws(() => checkRun(control, 'y'), /y has no start time and no commit of its own/);
+});
+
+test('gc keeps the bootstrap worktree and a run whose worktrees.json is unreadable, ignores and bounds gc.log, and names a plane with no workspace.json', () => {
+  const { repo, control } = setup();
+  init(repo, 'x', 'X', WHO);
+  editRegistry(control, (e) => { e.status = 'done'; });
+  const boot = path.join(control, 'worktrees', 'bootstrap');
+  git(repo, 'worktree', 'add', '-q', '--detach', boot);
+  write(path.join(control, 'runs/x/worktrees.json'), '{ not json');
+  rawCommit(control, 'fixture: broken records');
+  const { items } = gc(repo, { apply: true });
+  assert.equal(items.find((i) => i.path === boot)?.why, 'the bootstrap stage removes it');
+  assert.ok(fs.existsSync(boot));
+  assert.match(items.find((i) => i.what === 'worktrees.json').why, /unreadable/);
+  write(path.join(control, 'gc.log'), `${'old line\n'.repeat(1500)}`);
+  write(path.join(control, 'tmp/x/f'), 'x');
+  gc(repo, { apply: true });
+  assert.equal(fs.readFileSync(path.join(control, 'gc.log'), 'utf8').trim().split('\n').length, 1000);
+  assert.equal(git(control, 'status', '--porcelain', '--', 'gc.log', '.gitignore'), '', 'gc.log is ignored, the ignore committed');
+  const lone = tmp('hard-lone-');
+  write(path.join(lone, 'x', '.to-auto'), 'to-auto control plane\n');
+  assert.match(gcAll(lone)[0].error, /no workspace\.json/);
+});
+
+test('paths resolve to their on-disk case, so a state or slot spelled in another case is the same one', () => {
+  const plane = path.join(tmp('hard-case-'), 'Plane');
+  write(path.join(plane, '.to-auto'), 'to-auto control plane\n');
+  assert.equal(stateDir(plane.replace(/Plane$/, 'plane')), plane);
 });

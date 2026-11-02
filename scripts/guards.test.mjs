@@ -887,9 +887,12 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   fs.writeFileSync(path.join(wt, 'left.txt'), 'x\n');
   refused(ctx, /x is not done: the run worktree .* has uncommitted changes; commit them on goal\/x or discard them/, '10');
   fs.rmSync(path.join(wt, 'left.txt'));
+  git(ctx.repo, 'worktree', 'lock', wt); // a return that fails after done is committed
   const finished = ticked(ctx, '10');
   assert.equal(finished.registry, 'done');
-  assert.equal(finished.worktree, `returned ${wt}`, 'the move to done returns the run worktree');
+  assert.match(finished.worktree, /^not returned: .*; fix that, then `goal\.mjs worktree return x`$/, 'reported, not thrown: the run is done');
+  git(ctx.repo, 'worktree', 'unlock', wt);
+  assert.equal(goal(ctx, ['worktree', 'return', 'x']).stdout.trim(), `returned ${wt}`, 'the move to done leaves the return to finish by hand');
   assert.equal(fs.existsSync(wt), false);
   assert.equal(git(ctx.repo, 'branch', '--list', 'goal/x'), 'goal/x');
   assert.equal(nowOf(ctx), 'done');

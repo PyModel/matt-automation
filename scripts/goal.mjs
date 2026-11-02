@@ -175,7 +175,7 @@ export function configure(opts = {}) {
 }
 
 export function repoId(repo) {
-  const common = fs.realpathSync(execFileSync('git', ['-C', repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim());
+  const common = fs.realpathSync.native(execFileSync('git', ['-C', repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim());
   return createHash('sha256').update(common).digest('hex').slice(0, 16);
 }
 
@@ -186,7 +186,7 @@ function hasMarker(dir) {
 /** The state folder: `--state-dir`, else `TO_AUTO_HOME`, else `~/.local/state/to-auto/<repo-id>`. */
 export function stateDir(repo) {
   const resolved = path.resolve(repo);
-  if (hasMarker(resolved)) return fs.realpathSync(resolved);
+  if (hasMarker(resolved)) return fs.realpathSync.native(resolved);
   // A worktree of the clone `prepare` made (<state>/clone) belongs to that state, whatever the flags say: its logs and
   // receipts are checked against the control plane that made it.
   const common = spawnSync('git', ['-C', resolved, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' });
@@ -205,7 +205,7 @@ function assertStateOutside(repo, dir) {
   if (hasMarker(path.resolve(repo))) return;
   let top;
   try {
-    top = fs.realpathSync(git(repo, ['rev-parse', '--show-toplevel']));
+    top = fs.realpathSync.native(git(repo, ['rev-parse', '--show-toplevel']));
   } catch {
     return;
   }
@@ -221,17 +221,17 @@ function requireControl(repo) {
   if (!hasMarker(control)) throw new Error(`no control plane at ${control}; run \`goal.mjs control\` first`);
   let controlCommon;
   try {
-    controlCommon = fs.realpathSync(git(control, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
+    controlCommon = fs.realpathSync.native(git(control, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
   } catch {
     throw new Error(`no control plane at ${control}; run \`goal.mjs control\` first`);
   }
-  const controlReal = fs.realpathSync(control);
+  const controlReal = fs.realpathSync.native(control);
   if (controlCommon !== path.join(controlReal, '.git') && !controlCommon.startsWith(controlReal + path.sep)) {
     throw new Error(`control plane at ${control} is not its own git repo`);
   }
   try {
-    const userCommon = fs.realpathSync(git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
-    const repoReal = fs.realpathSync(repo);
+    const userCommon = fs.realpathSync.native(git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
+    const repoReal = fs.realpathSync.native(repo);
     // Running from inside the control plane (a helper in runs/<slug>/) shares its git dir by being part of it.
     if (userCommon === controlCommon && repoReal !== controlReal && !repoReal.startsWith(controlReal + path.sep)) {
       throw new Error('control plane must not share the user repo\'s git dir');
@@ -280,6 +280,10 @@ function gitIdentity(repo) {
   return { name: read('user.name') || 'to-auto', email: read('user.email') || 'to-auto@localhost' };
 }
 
+// gc.log is a local sweep log, not run state: ignored, and trimmed to its newest GC_LOG_LINES lines.
+const CONTROL_IGNORES = ['locks/', 'clone/', 'worktrees/', 'return.bundle', 'gc.log'];
+const GC_LOG_LINES = 1000;
+
 export function ensureControl(repo) {
   const control = controlDir(repo);
   assertStateOutside(repo, control);
@@ -290,7 +294,7 @@ export function ensureControl(repo) {
     const id = gitIdentity(repo);
     git(control, ['config', 'user.name', id.name]);
     git(control, ['config', 'user.email', id.email]);
-    fs.writeFileSync(path.join(control, '.gitignore'), 'locks/\nclone/\nworktrees/\nreturn.bundle\n');
+    fs.writeFileSync(path.join(control, '.gitignore'), CONTROL_IGNORES.map((l) => `${l}\n`).join(''));
     fs.writeFileSync(path.join(control, '.to-auto'), `to-auto control plane\nrepo-id: ${repoId(repo)}\n`);
     git(control, ['add', '--', '.gitignore', '.to-auto']);
     git(control, ['commit', '-q', '-m', 'Init to-auto control plane']);
@@ -363,6 +367,8 @@ function statusGate(repo, control, slug, status, { restoring = false } = {}) {
   // Read as committed: an uncommitted `**Status:** done` is a hand edit, not a landed ticket.
   const issues = path.join(control, 'tracker', slug, 'issues');
   if (status === 'reviewing' && fs.existsSync(issues)) {
+    const { duplicates } = ticketFiles(issues);
+    if (duplicates.length) return `build is not complete: ${duplicates.map((d) => `${path.basename(d.file)}: ${d.problems[0]}`).join('; ')}; renumber it`;
     const open = [...ticketFiles(issues).files].map(([id, file]) => [id, parseTicket(committedText(control, path.relative(control, file)) ?? '').status ?? 'uncommitted']).filter(([, s]) => !['done', 'stuck'].includes(s));
     if (open.length) return `build is not complete: ${open.map(([id, s]) => `${id} (${s})`).join(', ')}; each ticket is done or marked stuck with its reason first`;
   }
@@ -371,7 +377,7 @@ function statusGate(repo, control, slug, status, { restoring = false } = {}) {
     if (problems.length) return `${slug} is not done: ${problems.join('; ')}`;
     // tick 10 returns the run worktree, which a dirty tree refuses; refuse here, before anything is written.
     const wt = readJson(path.join(control, 'runs', slug, 'worktrees.json')).run;
-    if (wt?.state === 'active' && wt.backend !== 'borrowed' && wt.path && fs.existsSync(wt.path) && !notWorktreeRoot(wt.path) && git(wt.path, ['status', '--porcelain'])) {
+    if (wt?.state === 'active' && wt.backend !== 'borrowed' && wt.path && fs.existsSync(wt.path) && !notWorktreeRoot(wt.path) && !lentAway(workspaceOf(repo, control), wt, slug) && git(wt.path, ['status', '--porcelain'])) {
       return `${slug} is not done: the run worktree ${wt.path} has uncommitted changes; commit them on ${wt.branch} or discard them, so the move to done can return it`;
     }
   }
@@ -737,7 +743,14 @@ export function tick(repo, slug, id, { skipped = null } = {}) {
   // A done run holds no worktree: its branch keeps every commit, and a held lease is a pool slot nothing reuses.
   // Returned after the locks: worktreeReturn takes `worktrees` then `control`, the order worktreeGet takes them.
   const { finished, ...out } = result;
-  if (finished && readJson(path.join(control, 'runs', slug, 'worktrees.json')).run?.state === 'active') out.worktree = worktreeReturn(repo, slug);
+  // The run is done and committed by now, so a return that fails is reported, never thrown: a retry would only hear "done".
+  if (finished && readJson(path.join(control, 'runs', slug, 'worktrees.json')).run?.state === 'active') {
+    try {
+      out.worktree = worktreeReturn(repo, slug);
+    } catch (error) {
+      out.worktree = `not returned: ${error.message.split('\n')[0]}; fix that, then \`goal.mjs worktree return ${slug}\``;
+    }
+  }
   return out;
 }
 
@@ -882,6 +895,8 @@ function ticketsByStatus(control, slug) {
   if (!fs.existsSync(issues)) return null;
   const byStatus = {};
   for (const [id, t] of readTickets(issues).tickets) (byStatus[t.status ?? 'malformed'] ??= []).push(id);
+  // A number two files share is one ticket nobody can move: shown, never dropped.
+  for (const d of ticketFiles(issues).duplicates) (byStatus.malformed ??= []).push(`${d.id} (${path.basename(d.file)}: ${d.problems[0]})`);
   return byStatus;
 }
 
@@ -968,7 +983,8 @@ function runAge(control, entry, now) {
   const catchUp = new RegExp(`^\\[${entry.slug}\\] tick \\S+: catch-up `); // slugs are [a-z0-9-]
   const last = runCommits(control, entry.slug).find((c) => !catchUp.test(c.subject));
   const at = last ? last.ct : Date.parse(entry.started) / 1000;
-  return Number.isFinite(at) ? now / 1000 - at : null;
+  if (!Number.isFinite(at)) throw new Error(`${entry.slug} has no start time and no commit of its own, so its age is unknown`);
+  return now / 1000 - at;
 }
 
 /**
@@ -984,7 +1000,7 @@ export function checkRun(control, slug, { staleHours = 2, idleMinutes = TICKET_I
   if (drift) problems.push({ code: drift.code, message: drift.message });
   if (!TERMINAL.has(entry.status) && entry.status !== 'stopped') {
     const age = runAge(control, entry, now);
-    if (age !== null && age > staleHours * 3600) {
+    if (age > staleHours * 3600) {
       const owner = entry.agent ? `${entry.harness ?? 'unknown harness'} session ${entry.agent}` : 'no session';
       problems.push({ code: 'STALE', message: `no goal.mjs commit for ${(age / 3600).toFixed(1)}h while ${entry.status} (limit ${staleHours}h); its owner (${owner}) is not moving it: resume it there, \`goal.mjs adopt ${slug} --agent <id> --harness <name>\` from a live session, or \`goal.mjs stop ${slug} <reason>\`` });
     }
@@ -1655,7 +1671,8 @@ export function checkContract({ text, ticketText, worktree }) {
   // The base is where goal/<slug>-t<NN> left goal/<slug>: HEAD at dispatch, still the fork point at a re-dispatch.
   const out = (args) => { const r = spawnSync('git', ['-C', worktree, ...args], { encoding: 'utf8' }); return r.status === 0 ? r.stdout.trim() : null; };
   const ticketRun = out(['rev-parse', '--abbrev-ref', 'HEAD'])?.match(/^(goal\/.+)-t\d+$/)?.[1];
-  const run = ticketRun && runtime.targetBranch && out(['rev-parse', '--verify', '--quiet', `refs/heads/${ticketRun}`]) == null ? runtime.targetBranch : ticketRun;
+  // The run branch worktreeGet cut the ticket from: the supervisor target when there is one, else goal/<slug>.
+  const run = ticketRun ? (runtime.targetBranch || ticketRun) : null;
   const fork = run ? out(['merge-base', 'HEAD', run]) : out(['rev-parse', 'HEAD']);
   if (!/^[0-9a-f]{40}$/.test(base ?? '') || base !== fork) problems.push(`Ticket base ${base ?? '(missing)'} is not ${fork ?? 'the fork point'} (where the ticket branch left ${run ?? 'the run branch'}); paste \`git rev-parse HEAD\` output at dispatch, never type a sha`);
   if (/<fill:/.test(text)) problems.push('the contract still has <fill: …> fields; write each from files (CONTRACT.md § The contract)');
@@ -1758,10 +1775,10 @@ function probeCriteria(criteria, worktree) {
  * criteria are the dispatched ones, and the Claims line is the dispatched one plus its `**Claims amended:**` lines.
  */
 export function sinceDispatch(ticketPath) {
-  const file = fs.realpathSync(ticketPath);
+  const file = fs.realpathSync.native(ticketPath);
   const top = spawnSync('git', ['-C', path.dirname(file), 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
   if (top.status !== 0) return [];
-  const root = fs.realpathSync(top.stdout.trim());
+  const root = fs.realpathSync.native(top.stdout.trim());
   const rel = path.relative(root, file);
   const text = fs.readFileSync(file, 'utf8');
   const status = parseTicket(text).status;
@@ -2464,8 +2481,8 @@ function git(cwd, args, env = process.env) {
 }
 
 export function isLinkedWorktree(repo) {
-  const gitDir = fs.realpathSync(git(repo, ['rev-parse', '--path-format=absolute', '--git-dir']));
-  const common = fs.realpathSync(git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
+  const gitDir = fs.realpathSync.native(git(repo, ['rev-parse', '--path-format=absolute', '--git-dir']));
+  const common = fs.realpathSync.native(git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
   return gitDir !== common;
 }
 
@@ -2480,9 +2497,9 @@ export function commonDirWritable(repo) {
 
 function canon(p) {
   const resolved = path.resolve(p);
-  if (fs.existsSync(resolved)) return fs.realpathSync(resolved);
+  if (fs.existsSync(resolved)) return fs.realpathSync.native(resolved);
   const parent = path.dirname(resolved);
-  if (fs.existsSync(parent)) return path.join(fs.realpathSync(parent), path.basename(resolved));
+  if (fs.existsSync(parent)) return path.join(fs.realpathSync.native(parent), path.basename(resolved));
   return resolved;
 }
 
@@ -2540,14 +2557,14 @@ export function prepare(repo) {
   const linked = isLinkedWorktree(repo);
   const writable = commonDirWritable(repo);
   const base = git(repo, ['rev-parse', 'HEAD']);
-  let workspace = fs.realpathSync(repo);
+  let workspace = fs.realpathSync.native(repo);
   let cloned = false;
   if (linked && !writable) {
     const dest = path.join(control, 'clone');
     if (!fs.existsSync(path.join(dest, '.git'))) {
       fs.rmSync(dest, { recursive: true, force: true });
-      remoteGuard(['clone', fs.realpathSync(repo), dest]);
-      execFileSync('git', ['clone', '--no-local', '--quiet', fs.realpathSync(repo), dest], { stdio: ['ignore', 'pipe', 'pipe'] });
+      remoteGuard(['clone', fs.realpathSync.native(repo), dest]);
+      execFileSync('git', ['clone', '--no-local', '--quiet', fs.realpathSync.native(repo), dest], { stdio: ['ignore', 'pipe', 'pipe'] });
       const id = gitIdentity(repo);
       execFileSync('git', ['-C', dest, 'config', 'user.name', id.name], { stdio: 'ignore' });
       execFileSync('git', ['-C', dest, 'config', 'user.email', id.email], { stdio: 'ignore' });
@@ -2555,7 +2572,7 @@ export function prepare(repo) {
     workspace = dest;
     cloned = true;
   }
-  const info = { cloned, workspace, returnTo: fs.realpathSync(repo), base, linked, commonDirWritable: writable };
+  const info = { cloned, workspace, returnTo: fs.realpathSync.native(repo), base, linked, commonDirWritable: writable };
   fs.writeFileSync(path.join(control, 'workspace.json'), `${JSON.stringify(info, null, 2)}\n`);
   commit(repo, '[state] workspace', ['workspace.json']);
   return info;
@@ -2584,7 +2601,7 @@ export function land(repo, slug = null) {
   const control = requireControl(repo);
   const ws = readJson(path.join(control, 'workspace.json'));
   const saved = readJson(path.join(control, 'supervisor.json'));
-  const workspace = ws.workspace || fs.realpathSync(repo);
+  const workspace = ws.workspace || fs.realpathSync.native(repo);
   const base = runtime.base || saved.base || ws.base;
   if (!base) throw new Error('land needs a base; pass --base or run prepare');
   const target = runtime.targetBranch || saved.targetBranch || null;
@@ -2671,7 +2688,7 @@ export function ignoreAllAncestors(dir) {
   const ALL = new Set(['*', '**', '**/*']);
   const hits = [];
   let child;
-  try { child = fs.realpathSync(dir); } catch { child = path.resolve(dir); }
+  try { child = fs.realpathSync.native(dir); } catch { child = path.resolve(dir); }
   for (let parent = path.dirname(child); parent !== child; child = parent, parent = path.dirname(parent)) {
     for (const name of ['.gitignore', '.ignore']) {
       let lines;
@@ -2692,7 +2709,7 @@ function refuseBlinded(dir, remedy) {
 /** Where runs commit: the clone `prepare` made when the shared git dir is read-only, else the repo. */
 function workspaceOf(repo, control) {
   const ws = readJson(path.join(control, 'workspace.json')).workspace;
-  return ws && fs.existsSync(ws) ? ws : fs.realpathSync(repo);
+  return ws && fs.existsSync(ws) ? ws : fs.realpathSync.native(repo);
 }
 
 /**
@@ -2731,17 +2748,17 @@ function checkedOutAt(workspace, branch) {
 
 /** The workspace's main worktree: the owner's checkout, whose HEAD no worktree command may move. */
 function mainWorktree(workspace) {
-  return fs.realpathSync(git(workspace, ['worktree', 'list', '--porcelain']).split('\n')[0].slice(9));
+  return fs.realpathSync.native(git(workspace, ['worktree', 'list', '--porcelain']).split('\n')[0].slice(9));
 }
 
 /** The checkouts no worktree command may switch: the main worktree, and the workspace itself when that is a linked worktree. */
 function ownerCheckouts(workspace) {
-  return [...new Set([mainWorktree(workspace), fs.realpathSync(workspace)])];
+  return [...new Set([mainWorktree(workspace), fs.realpathSync.native(workspace)])];
 }
 
 /** `git switch` runs only in a linked worktree that is its own root: never an owner's checkout, never a path git would resolve to an enclosing repo. */
 function requireSlot(dir, workspace) {
-  const bad = notWorktreeRoot(dir) || (ownerCheckouts(workspace).includes(fs.realpathSync(dir)) ? `${dir} is an owner checkout (the main checkout, or the workspace)` : null);
+  const bad = notWorktreeRoot(dir) || (ownerCheckouts(workspace).includes(fs.realpathSync.native(dir)) ? `${dir} is an owner checkout (the main checkout, or the workspace)` : null);
   if (bad) throw new Refusal(`${bad}; worktree commands switch branches only in a pool worktree, never in the repository they were run from`);
 }
 
@@ -2834,13 +2851,24 @@ export function worktreeGet(repo, slug, id) {
         refuseBlinded(wt, 'Move the control plane (--state-dir or TO_AUTO_HOME) out from under it.');
         git(workspace, exists ? ['worktree', 'add', wt, branch] : ['worktree', 'add', '-b', branch, wt, base]);
       }
-      record = { backend: bin ? 'treehouse' : 'git', path: fs.realpathSync(wt), branch, base: exists ? null : git(workspace, ['rev-parse', base]) };
+      record = { backend: bin ? 'treehouse' : 'git', path: fs.realpathSync.native(wt), branch, base: exists ? null : git(workspace, ['rev-parse', base]) };
     }
     records[key] = { ...record, state: 'active' };
     fs.writeFileSync(file, `${JSON.stringify(records, null, 2)}\n`);
     commit(repo, `[${slug}] worktree ${key} ${record.backend}`, [rel]);
     return record.path;
   });
+}
+
+/**
+ * Why a treehouse record's slot is no longer `slug`'s to touch (the pool took it back, or leased it to another run), or
+ * null. Every reader of a record's tree (return, the done gate, gc) asks this first.
+ */
+function lentAway(workspace, record, slug, slots = null) {
+  if (record.backend !== 'treehouse') return null;
+  const slot = (slots ?? treehouseSlots(workspace)).find((s) => canon(s.path) === canon(record.path));
+  if (!slot || (slot.status === 'leased' && slot.lease_holder === slug)) return null;
+  return `treehouse lists it ${slot.status === 'leased' ? `leased by ${slot.lease_holder}` : slot.status}`;
 }
 
 /** Give a worktree back: treehouse returns it to the pool, git removes it; a dirty worktree is refused, never forced. */
@@ -2855,10 +2883,9 @@ export function worktreeReturn(repo, slug, id) {
     let left = '';
     if (r.backend !== 'borrowed' && fs.existsSync(r.path)) {
       const workspace = workspaceOf(repo, control);
-      const slot = r.backend === 'treehouse' ? treehouseSlots(workspace).find((s) => canon(s.path) === canon(r.path)) : null;
-      // The pool took the slot back and may have leased it to another run: its tree is no longer this record's to touch.
-      if (slot && (slot.status !== 'leased' || slot.lease_holder !== slug)) {
-        left = ` (treehouse lists it ${slot.status === 'leased' ? `leased by ${slot.lease_holder}` : slot.status}; left as it is)`;
+      const lent = lentAway(workspace, r, slug);
+      if (lent) {
+        left = ` (${lent}; left as it is)`;
       } else {
         const dirty = git(r.path, ['status', '--porcelain']);
         if (dirty) throw new Refusal(`${r.path} has uncommitted changes; commit them on ${r.branch} first:\n${dirty}`);
@@ -2909,7 +2936,7 @@ export function cleanup(repo) {
   if (!fs.existsSync(dir)) return `absent ${path.resolve(dir)}`;
   const unsafe = unsafeToClean(repo, dir);
   if (unsafe.length) throw new Refusal(`cleanup would destroy work:\n${unsafe.map((i) => `- ${i}`).join('\n')}`);
-  const resolved = fs.realpathSync(dir);
+  const resolved = fs.realpathSync.native(dir);
   let list = '';
   try {
     list = git(repo, ['worktree', 'list', '--porcelain']);
@@ -2956,6 +2983,13 @@ const sizeKB = (p) => Number(spawnSync('du', ['-sk', p], { encoding: 'utf8' }).s
  */
 export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Date.now() } = {}) {
   const control = requireControl(repo);
+  // A plane made before gc.log was ignored gets the line once, committed, so its log never shows as untracked state.
+  const ignore = path.join(control, '.gitignore');
+  const ignored = fs.existsSync(ignore) ? fs.readFileSync(ignore, 'utf8') : '';
+  if (apply && !ignored.split('\n').includes('gc.log')) {
+    fs.writeFileSync(ignore, `${ignored}${ignored && !ignored.endsWith('\n') ? '\n' : ''}gc.log\n`);
+    commit(repo, '[state] ignore gc.log', ['.gitignore']);
+  }
   const workspace = workspaceOf(repo, control);
   // A run no goal.mjs commit has moved for staleHours gives its clean worktrees back too (heldWork keeps any holding work);
   // its branches keep every commit, and `worktree get` cuts the worktree again if it resumes. Sizing takes minutes, so every
@@ -2965,8 +2999,9 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
     const done = new Map(runs.filter((r) => FINISHED_RUNS.has(r.status)).map((r) => [r.slug, r.status]));
     for (const r of runs) {
       if (done.has(r.slug)) continue;
-      const age = runAge(control, r, now);
-      if (age !== null && age > staleHours * 3600) done.set(r.slug, 'stale');
+      let age = 0;
+      try { age = runAge(control, r, now); } catch { /* age unknown: never treated as stale, `check` reports it */ }
+      if (age > staleHours * 3600) done.set(r.slug, 'stale');
     }
     return done;
   };
@@ -2980,7 +3015,7 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
     if (apply && item.action !== 'keep') {
       try {
         remove();
-        fs.appendFileSync(path.join(control, 'gc.log'), `${new Date().toISOString()} ${item.action} ${item.path} ${item.kb}KB\n`);
+        logGc(control, `${new Date().toISOString()} ${item.action} ${item.path} ${item.kb}KB`);
       } catch (error) {
         Object.assign(item, { action: 'keep', why: error.message.split('\n')[0] });
       }
@@ -2989,7 +3024,15 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
   };
   // Sizing a pool takes minutes, so the worktrees lock (which a running run's `worktree get` waits on) is held only around
   // each removal, which re-reads what it removes first.
-  const records = (slug) => Object.entries(readJson(path.join(control, 'runs', slug, 'worktrees.json')));
+  const broken = [];
+  const records = (slug) => {
+    try {
+      return Object.entries(readJson(path.join(control, 'runs', slug, 'worktrees.json')));
+    } catch (error) {
+      if (!broken.includes(slug)) broken.push(slug);
+      return [];
+    }
+  };
   const claimed = (which) => new Set(readRegistry(control).filter((r) => which(r.slug)).flatMap((r) => records(r.slug)).filter(([, r]) => r.state === 'active').map(([, r]) => canon(r.path)));
   const running = () => {
     const done = finishedNow();
@@ -2997,11 +3040,7 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
   };
   let slots = treehouseSlots(workspace);
   /** Why a finished run's active record must stay, or null: the slot is another run's now, or its tree holds work. */
-  const recordHeld = (slug, r, slotList) => {
-    const slot = r.backend === 'treehouse' ? slotList.find((s) => canon(s.path) === canon(r.path)) : null;
-    const lent = slot && (slot.status !== 'leased' || slot.lease_holder !== slug);
-    return r.backend === 'borrowed' || lent || !fs.existsSync(r.path) ? null : heldWork(r.path);
-  };
+  const recordHeld = (slug, r, slotList) => (r.backend === 'borrowed' || lentAway(workspace, r, slug, slotList) || !fs.existsSync(r.path) ? null : heldWork(r.path));
   for (const [slug] of finished) {
     for (const [key, r] of records(slug)) {
       if (r.state !== 'active') continue;
@@ -3035,7 +3074,7 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
       const run = spawnSync(treehouseBin(), args, { cwd: workspace, encoding: 'utf8' });
       if (run.status !== 0 || fs.existsSync(slot.path)) throw new Error(`treehouse ${args.join(' ')} failed (exit ${run.status}): ${(run.stderr || run.stdout || run.error?.message || '').trim()}`);
       const dir = path.dirname(slot.path);
-      if (dir !== pool && !fs.readdirSync(dir).length) fs.rmdirSync(dir);
+      if (canon(dir) !== canon(pool) && !fs.readdirSync(dir).length) fs.rmdirSync(dir);
     }));
   }
   for (const dir of fs.existsSync(pool) ? fs.readdirSync(pool).map((n) => path.join(pool, n)) : []) {
@@ -3046,7 +3085,8 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
   const listed = [...git(workspace, ['worktree', 'list', '--porcelain']).matchAll(/^worktree (.*)$/gm)].map((m) => m[1]);
   const named = claimed(() => true);
   for (const wt of listed.filter((p) => fs.existsSync(p) && inside(path.join(control, 'worktrees'), p) && !inside(pool, p) && !named.has(canon(p)))) {
-    const why = heldWork(wt);
+    // BOOTSTRAP's temp worktree (PIPELINE.md § worktrees) is in no record while its stage runs; its stage removes it.
+    const why = canon(wt) === canon(path.join(control, 'worktrees', 'bootstrap')) ? 'the bootstrap stage removes it' : heldWork(wt);
     act({ what: 'unrecorded', path: wt, kb: sizeKB(wt), action: why ? 'keep' : 'remove', ...(why && { why }) }, () => withLock(repo, 'worktrees', () => {
       if (claimed(() => true).has(canon(wt))) throw new Error('a run has recorded it since');
       const held = heldWork(wt);
@@ -3063,8 +3103,15 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
       removeTree(dir);
     });
   }
+  for (const slug of broken) items.push({ what: 'worktrees.json', run: slug, path: path.join(control, 'runs', slug, 'worktrees.json'), kb: 0, action: 'keep', why: 'unreadable; its worktrees are kept until it is repaired' });
   const kb = items.filter((i) => i.action !== 'keep').reduce((sum, i) => sum + i.kb, 0);
   return { state: control, workspace, [apply ? 'freedKB' : 'reclaimableKB']: kb, items };
+}
+
+function logGc(control, line) {
+  const file = path.join(control, 'gc.log');
+  const lines = [...(fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean) : []), line].slice(-GC_LOG_LINES);
+  fs.writeFileSync(file, `${lines.join('\n')}\n`);
 }
 
 /** gc for every control plane in `root` (plus TO_AUTO_HOME when it is one); a plane whose repository is gone is reported. */
@@ -3076,7 +3123,8 @@ export function gcAll(root, opts = {}) {
     return [...new Set(dirs)].filter(hasMarker).sort().map((dir) => {
       const ws = readJson(path.join(dir, 'workspace.json'));
       const repo = ws.returnTo ?? ws.workspace;
-      if (!repo || !fs.existsSync(repo)) return { state: dir, error: `its repository ${repo ?? '(none recorded)'} no longer exists; inspect ${dir} by hand` };
+      if (!repo) return { state: dir, error: `it has no workspace.json, so its repository is unknown; \`goal.mjs prepare\` from the repository records it, else inspect ${dir} by hand` };
+      if (!fs.existsSync(repo)) return { state: dir, error: `its repository ${repo} no longer exists; inspect ${dir} by hand` };
       runtime.stateDir = dir;
       try {
         return gc(repo, opts);
@@ -3441,7 +3489,7 @@ function main(argv) {
   return 2;
 }
 
-if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && fs.realpathSync.native(process.argv[1]) === fileURLToPath(import.meta.url)) {
   // exitCode, never process.exit(): exit drops whatever a pipe has not taken yet, so `goal.mjs run -- <suite> | tail`
   // lost the log line and `goal.mjs receipt … | <parser>` read truncated JSON.
   try {

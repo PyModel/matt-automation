@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { scanVendor, link, resolve, check } from './matt.mjs';
+import { execFileSync } from 'node:child_process';
+import { scanVendor, link, resolve, check, pullVendor } from './matt.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -122,4 +123,33 @@ test('check and link ignore dotfiles such as .DS_Store in matt/', () => {
   fs.writeFileSync(path.join(root, 'matt/.DS_Store'), '');
   assert.deepEqual(check(root, { homes }).errors, []);
   assert.deepEqual(link(root).removed, []);
+});
+
+test('pull leaves the vendored clone alone while a to-auto run is live, and fast-forwards it once none is', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'matt-pull-'));
+  const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+  const upstream = path.join(root, 'upstream');
+  fs.mkdirSync(upstream);
+  git(upstream, 'init', '-q', '-b', 'main');
+  git(upstream, 'commit', '-q', '--allow-empty', '-m', 'one');
+  fs.mkdirSync(path.join(root, 'repo', 'vendor'), { recursive: true });
+  execFileSync('git', ['clone', '-q', upstream, path.join(root, 'repo', 'vendor', 'mattpocock-skills')]);
+  git(upstream, 'commit', '-q', '--allow-empty', '-m', 'two');
+  const plane = path.join(root, 'state', 'aaa');
+  write(path.join(plane, '.to-auto'), 'to-auto control plane\n');
+  const registry = (status) => write(path.join(plane, 'runs.json'), JSON.stringify([{ slug: 'x', status, started: new Date().toISOString() }]));
+  const head = () => git(path.join(root, 'repo', 'vendor', 'mattpocock-skills'), 'log', '-1', '--format=%s');
+  const saved = process.env.TO_AUTO_HOME;
+  delete process.env.TO_AUTO_HOME;
+  try {
+    registry('building');
+    assert.equal(pullVendor(path.join(root, 'repo'), { stateRoot: path.join(root, 'state') }), 'held');
+    assert.equal(head(), 'one', 'a live run keeps the skills it started on');
+    registry('done');
+    assert.equal(pullVendor(path.join(root, 'repo'), { stateRoot: path.join(root, 'state') }), 'pulled');
+    assert.equal(head(), 'two');
+  } finally {
+    if (saved !== undefined) process.env.TO_AUTO_HOME = saved;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

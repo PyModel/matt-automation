@@ -441,7 +441,7 @@ test('gc reports, then returns only what loses nothing: finished runs\' clean wo
   assert.deepEqual(gcRun(ctx, ['--delete-clean']).items.filter((i) => i.action !== 'keep'), [], 'a second sweep finds nothing');
 });
 
-test('gc destroys free and finished-run pool slots through treehouse and leaves live, re-leased and unknown ones', () => {
+test('gc keeps free pool slots, frees a finished run\'s lease, destroys slots only with --slots, and leaves live, re-leased and unknown ones', () => {
   const ctx = run('fin');
   for (const slug of ['live', 'gone']) assert.equal(goal(ctx, ['init', slug, 'X', ...WHO_ARGS]).status, 0);
   const pool = path.join(ctx.state, 'worktrees', 'pool');
@@ -464,18 +464,28 @@ test('gc destroys free and finished-run pool slots through treehouse and leaves 
   fs.mkdirSync(orphan, { recursive: true });
   for (const slug of ['fin', 'gone']) setStatus(ctx, slug, 'done');
 
-  const report = gcRun(ctx, [], { treehouse: th.bin });
-  assert.deepEqual([fin, free, held].map((p) => itemAt(report, p, 'slot').action), ['destroy', 'destroy', 'destroy']);
-  assert.equal(itemAt(report, fin, 'worktree').action, 'return');
-  assert.equal(itemAt(report, live, 'slot').why, 'leased by live');
-  assert.equal(itemAt(report, gone, 'slot').why, 'leased by live');
-  assert.equal(itemAt(report, gone, 'worktree').action, 'return', 'its stale record is closed without touching the slot');
-  assert.equal(itemAt(report, owned, 'slot').why, 'a running run records it as its worktree');
+  const kept = gcRun(ctx, [], { treehouse: th.bin });
+  assert.deepEqual([fin, free, held].map((p) => itemAt(kept, p, 'slot').action), ['release', 'keep', 'release'], 'a free slot keeps its caches; a finished run\'s lease is freed');
+  assert.match(itemAt(kept, free, 'slot').why, /free pool slot, kept for the next run's caches/);
+  assert.equal(itemAt(kept, fin, 'worktree').action, 'return');
+  assert.equal(itemAt(kept, live, 'slot').why, 'leased by live');
+  assert.equal(itemAt(kept, gone, 'slot').why, 'leased by live');
+  assert.equal(itemAt(kept, gone, 'worktree').action, 'return', 'its stale record is closed without touching the slot');
+  assert.equal(itemAt(kept, owned, 'slot').why, 'a running run records it as its worktree');
   // treehouse lists an orphaned slot (its git link gone) like any other; heldWork keeps it, since git cannot check it.
-  assert.deepEqual([itemAt(report, orphan).action, /is not a worktree root/.test(itemAt(report, orphan).why)], ['keep', true]);
+  assert.deepEqual([itemAt(kept, orphan).action, /is not a worktree root/.test(itemAt(kept, orphan).why)], ['keep', true]);
+  gcRun(ctx, ['--delete-clean'], { treehouse: th.bin });
+  for (const p of [fin, free, held]) assert.ok(fs.existsSync(p), `${p} kept with its caches`);
+  assert.equal(fs.readFileSync(th.leases, 'utf8').includes(`${held} fin`), false, 'the lease that outlived its record is returned');
+  assert.equal(th.writes().filter((c) => /\|destroy /.test(c)).length, 0, 'nothing destroyed without --slots');
+  fs.appendFileSync(th.leases, `${held} fin\n`); // leased again, for the --slots sweep below
+  const report = gcRun(ctx, ['--slots'], { treehouse: th.bin });
+  assert.deepEqual([fin, free, held].map((p) => itemAt(report, p, 'slot').action), ['destroy', 'destroy', 'destroy']);
+  assert.equal(itemAt(report, live, 'slot').why, 'leased by live');
+  assert.equal(itemAt(report, owned, 'slot').why, 'a running run records it as its worktree');
   assert.equal(th.writes().filter((c) => /\|destroy /.test(c)).length, 0, 'a report destroys nothing');
 
-  gcRun(ctx, ['--delete-clean'], { treehouse: th.bin });
+  gcRun(ctx, ['--delete-clean', '--slots'], { treehouse: th.bin });
   for (const p of [fin, free, held]) assert.equal(fs.existsSync(p), false, `${p} destroyed`);
   assert.equal(fs.existsSync(path.dirname(fin)), false, 'its empty slot dir goes too');
   for (const p of [live, gone, owned, orphan]) assert.ok(fs.existsSync(p), `${p} kept`);

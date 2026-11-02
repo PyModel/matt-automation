@@ -8,8 +8,13 @@
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>mkdir -p "$HOME/.local/state" &amp;&amp; { date; /usr/bin/git -C "$HOME/Projects/open-source/mattpocock-skills" pull --ff-only -q || echo "pull failed: exit $?"; } 2&gt;&amp;1 | tail -n 20 &gt;&gt;"$HOME/.local/state/pull-matt.log"</string>
+    <string>mkdir -p "$HOME/.local/state" &amp;&amp; "@ROOT@/scripts/pull-matt.sh" 2&gt;&amp;1 | tail -n 20 &gt;&gt;"$HOME/.local/state/pull-matt.log"</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>StartInterval</key>
   <integer>3600</integer>
   <key>RunAtLoad</key>

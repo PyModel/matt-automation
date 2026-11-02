@@ -5,3 +5,5 @@ vendor/mattpocock-skills
 /audit-results.json
 .ledger.jsonl
 .sidecar.json
+to-auto-ticket-lifecycle/references/
+to-auto-ticket-lifecycle/*.tmp

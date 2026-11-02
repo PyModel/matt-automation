@@ -841,12 +841,22 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   assert.equal(ticked(ctx, '6b').registry, 'building');
   assert.match(git(ctx.state, 'log', '-1', '--format=%s'), /status ticketed → building$/);
   assert.equal(goal(ctx, ['check', 'x']).status, 0, 'a ticked run is in step with its registry');
+  refused(ctx, /build is not complete: 01 \(uncommitted\)/, '7');
+  fixtureCommit(ctx, '[x] fixture: ticket in flight');
   refused(ctx, /build is not complete: 01 \(in-flight\)/, '7');
   ticket('done');
+  refused(ctx, /build is not complete: 01 \(in-flight\)/, '7'); // the gate reads the ticket as committed
+  fixtureCommit(ctx, '[x] fixture: ticket landed');
   assert.equal(ticked(ctx, '7').registry, 'reviewing');
-  put(ctx, 'runs/x/final-verdict.json', JSON.stringify({ verdict: 'ship', target: 'main', review_head: git(ctx.repo, 'rev-parse', 'main') }));
-  git(ctx.state, 'add', '-A');
-  execFileSync('git', ['-C', ctx.state, 'commit', '-qm', '[x] fixtures'], { env: { ...process.env, TO_AUTO_WRITER: '1' } });
+  refused(ctx, /stage 8 is not finished: runs\/x\/final-verdict\.json is missing/, "8");
+  const tip = git(ctx.repo, 'rev-parse', 'main');
+  const ledger = path.join(ctx.state, 'runs/x/ledger.md');
+  fs.writeFileSync(ledger, fs.readFileSync(ledger, 'utf8').replace('review_base: 1234567', `review_base: ${tip}`));
+  put(ctx, 'runs/x/review.md', `review: nothing cited\n\n\`\`\`json\n${JSON.stringify({ verdict: 'ship', head: tip, open: [] })}\n\`\`\`\n`);
+  assert.equal(goal(ctx, ['commit', '-m', '[x] stage 8 review', 'runs/x/review.md', 'runs/x/ledger.md']).status, 0);
+  const v = goal(ctx, ['verdict', 'x']);
+  assert.equal(v.status, 0, v.stderr);
+  assert.equal(JSON.parse(v.stdout).review_head, tip);
   ticked(ctx, '8');
   ticked(ctx, '9');
   refused(ctx, /runs\/x\/retro\.md is missing/, '10');
@@ -964,6 +974,7 @@ test('catch-up ticks on an abandoned run never hide it from STALE; a tick that m
   const codes = () => JSON.parse(goal(ctx, ['check', 'x']).stdout).problems.map((p) => p.code);
   assert.deepEqual(codes(), ['STALE'], 'todo.md caught up, but nobody has worked on the run for 5h');
   put(ctx, 'tracker/x/issues/01-a.md', '# a\n\n**Status:** done\n**Blocked by:** none\n**Claims:** a.txt (exclusive)\n\n- [x] works\n');
+  fixtureCommit(ctx, '[x] fixture: ticket landed');
   assert.equal(ticked(ctx, '7').registry, 'reviewing');
   assert.deepEqual(codes(), [], 'finishing stage 7 is real progress');
 });
@@ -994,7 +1005,7 @@ test('goal.mjs commit and event refuse a hand edit of any stage copy; NOW may be
   const data = JSON.parse(fs.readFileSync(runsFile, 'utf8'));
   data[0].status = 'building';
   fs.writeFileSync(runsFile, JSON.stringify(data));
-  assert.match(commitCli('runs.json').stderr, /x's status is written only by goal\.mjs tick, stop, resume and registry dry-run/);
+  assert.match(commitCli('runs.json').stderr, /runs\.json is written only by goal\.mjs init, tick, stop, resume, adopt, pin and registry dry-run/);
   git(ctx.state, 'checkout', '--', 'runs.json');
   // NOW_AHEAD put back by hand, as LEDGER.md says: allowed, because it names the stage todo.md says is next.
   setNow(ctx, 'x', '7 build');
@@ -1045,7 +1056,7 @@ test('tick and status moves refuse to carry an uncommitted hand edit of a stage 
   refused(ctx, /stage 0 is ticked only by .*that edit is uncommitted, so undo it/, '00');
   git(ctx.state, 'checkout', '--', 'runs/x/todo.md');
   forceStatus(ctx, 'building');
-  refused(ctx, /x's status is written only by .*that edit is uncommitted/, '00');
+  refused(ctx, /runs\.json is written only by .*that edit is uncommitted/, '00');
   assert.match(goal(ctx, ['stop', 'x', 'why']).stderr, /that edit is uncommitted/);
   assert.equal(fs.existsSync(path.join(ctx.state, 'runs', 'x', 'STOP')), false, 'a refused stop writes no STOP');
   git(ctx.state, 'checkout', '--', 'runs.json');
@@ -1075,7 +1086,7 @@ test('a raw git commit in the control plane meets the same guards: the pre-commi
   git(ctx.state, 'checkout', '--', 'runs/x/todo.md');
   forceStatus(ctx, 'building');
   git(ctx.state, 'add', 'runs.json');
-  assert.match(raw('runs.json').stderr, /x's status is written only by goal\.mjs tick/);
+  assert.match(raw('runs.json').stderr, /runs\.json is written only by goal\.mjs init, tick/);
   git(ctx.state, 'reset', '-q');
   git(ctx.state, 'checkout', '--', 'runs.json');
   put(ctx, 'runs/x/notes.md', 'free prose\n');

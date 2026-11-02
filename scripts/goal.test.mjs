@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { STAGES, init, next, tick, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, checkContract, sinceDispatch, amendClaims, waive, event, withLock, breakStale, commit, controlDir, configure, runLogged, dispatch, orcRunDir, RUN_ORDER } from './goal.mjs';
+import { STAGES, verdict, init, next, tick, stop, resume, setRegistry, slugFor, ensureControl, frontier, take, setStatus, claimsBreach, checkReceipt, checkContract, sinceDispatch, amendClaims, waive, event, withLock, breakStale, commit, controlDir, configure, runLogged, dispatch, orcRunDir, RUN_ORDER } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const WHO = { agent: 'test-session', harness: 'test' };
@@ -491,16 +491,27 @@ test('registry: a run moves one step at a time, leaves stopped only by resume, a
   assert.throws(() => setRegistry(repo, 'x', 'shipped'), /unknown run status/);
   advance(repo, 'x', 'reviewing');
   assert.throws(() => setRegistry(repo, 'x', 'planning'), /cannot go from reviewing to planning/);
-  assert.throws(() => setRegistry(repo, 'x', 'done'), /final-verdict\.json is missing/);
-  const verdict = path.join(control, 'runs/x/final-verdict.json');
+  assert.throws(() => setRegistry(repo, 'x', 'done'), /final-verdict\.json is missing; `goal\.mjs verdict x`/);
   const tip = git(repo, 'rev-parse', 'HEAD');
-  write(verdict, JSON.stringify({ verdict: 'ship', target: 'main', review_head: tip }));
-  assert.throws(() => setRegistry(repo, 'x', 'done'), /uncommitted/);
-  commit(repo, '[x] verdict', ['runs/x/final-verdict.json']);
+  const ledger = path.join(control, 'runs/x/ledger.md');
+  fs.writeFileSync(ledger, fs.readFileSync(ledger, 'utf8').replace('review_base: 1234567', `review_base: ${tip}`));
+  commit(repo, '[x] review_base', ['runs/x/ledger.md']);
+  // A verdict typed by hand is refused at commit time, whatever path spelling names it.
+  write(path.join(control, 'runs/x/final-verdict.json'), JSON.stringify({ verdict: 'ship', target: 'main', review_head: tip }));
+  assert.throws(() => commit(repo, '[x] verdict', ['runs/x/final-verdict.json']), /written only by `goal\.mjs verdict/);
+  fs.rmSync(path.join(control, 'runs/x/final-verdict.json'));
+  assert.throws(() => verdict(repo, 'x'), /review\.md is not committed/);
+  const review = (head, extra = {}) => {
+    write(path.join(control, 'runs/x/review.md'), `report\n\n\`\`\`json\n${JSON.stringify({ verdict: 'ship', head, open: [], ...extra })}\n\`\`\`\n`);
+    commit(repo, '[x] review', ['runs/x/review.md']);
+  };
+  review(tip);
+  verdict(repo, 'x');
   git(repo, 'commit', '-q', '--allow-empty', '-m', 'landed after the review');
   assert.throws(() => setRegistry(repo, 'x', 'done'), /main is at .* but the final review saw/, 'code that landed after the review is unreviewed');
-  write(verdict, JSON.stringify({ verdict: 'ship', target: 'main', review_head: git(repo, 'rev-parse', 'HEAD') }));
-  commit(repo, '[x] verdict at the tip', ['runs/x/final-verdict.json']);
+  assert.throws(() => verdict(repo, 'x'), /review\.md read .*, but main is at/);
+  review(git(repo, 'rev-parse', 'HEAD'));
+  verdict(repo, 'x');
   setRegistry(repo, 'x', 'done');
   init(repo, 'y', 'Y', WHO);
   stop(repo, 'y', 'budget');
@@ -1014,7 +1025,7 @@ test('done: the committed receipt is checked against git at its head, and landed
   assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: head }), /changed_files/);
   save(r);
   assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: 'main' }), /neither contains receipt head.*patch-id/, 'the ticket has not landed on main');
-  assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: 'f'.repeat(40) }), /not a commit in this repository/);
+  assert.throws(() => setStatus(repo, 'f', '01', 'done', { landed: 'f'.repeat(40) }), /not a commit or a <before>\.\.<after> range in this repository/);
   git(repo, 'merge', '-q', '--ff-only', 'goal/f-t01');
   setStatus(repo, 'f', '01', 'done', { landed: 'main' });
   assert.match(read('tracker/f/issues/01-a.md'), /^\*\*Status:\*\* done$/m);

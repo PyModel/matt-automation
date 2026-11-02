@@ -389,6 +389,15 @@ check("the cycle cap stops a second repair", () => {
   if (!/cycle limit/.test(r.status.reason)) throw new Error("reason does not name the cycle limit");
 });
 
+check("--force over a finished implement still counts it: forcing a task never resets the cycle cap", () => {
+  const repo = newRepo("r22f");
+  const { runDir, brief } = newRun("run22f", { accept: ["scout", "research"] });
+  eq(dispatch({ phase: "implement", task: "P3", runDir, brief, repo, extra: ["--cycles", "1"] }).exit, 0, "first implement");
+  const r = dispatch({ phase: "implement", task: "P3", runDir, brief, repo, extra: ["--force"] });
+  eq(r.exit, 77, "forced second implement under --cycles 1");
+  if (!/cycle limit/.test(r.status?.reason ?? "")) throw new Error(`reason does not name the cycle limit: ${r.status?.reason}`);
+});
+
 check("repair refuses to resume a timed-out session", () => {
   const repo = newRepo("r23");
   const { runDir, brief } = newRun("run23", { accept: ["scout", "research", "implement", "verify"] });

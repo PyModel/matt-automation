@@ -714,7 +714,10 @@ if (policy.after) {
   }
 }
 
-const prior = priorDispatches(runDir, opts.task);
+// A --force re-dispatch replaces this task's finished evidence, so that evidence still counts toward the caps: forcing
+// a task never resets its own cycle. A RUNNING status is a background parent's provisional one, never a cycle.
+const own = (() => { try { return JSON.parse(fs.readFileSync(path.join(ctx.out, "orc-status.json"), "utf8")); } catch { return null; } })();
+const prior = [...priorDispatches(runDir, opts.task), ...(own && own.orcStatus !== "RUNNING" ? [own] : [])];
 const priorExecuted = prior.filter((p) => p.orcStatus !== "PRECONDITION_FAILED");
 // A cycle is an implement or repair that ran to an end. TIMEOUT and ABORTED leave a partial tree that
 // DELEGATION.md says to re-run fresh, so they spend budget (--max-cost) but not a cycle.

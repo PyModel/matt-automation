@@ -345,8 +345,6 @@ x=dispatch(repo,rd,b,phase='not-a-phase',extra=['--timeout','1s'])
 expect('Control: an ordinary invalid phase is rejected',x['exit']==77,'PRECONDITION_FAILED',{'exit':x['exit']})
 
 result={'schema':'matt-automation.audit-regressions.v1',
- 'reference_commit':'fe49e377695de0081f7951f81a513417a481dff0',
- 'matches_reference_scripts':all(run(['git','hash-object',str(f)]).stdout.strip()==h for f,h in [(DISPATCH,'ae8fcfd3299d40b7eade8b19431c77c5edf6ce74'),(VALIDATOR,'d2c06a7a1b07426a28bdc105e3e3d9bbc81abcf2')]),
  'runtime':{'node':run(['node','--version']).stdout.strip(),'git':run(['git','--version']).stdout.strip(),'platform':sys.platform,'real_pi_used':False,'network_calls':0},
  'scope_notes':{'A19-A20':'Injected contradictory relay evidence; not a claim the unavailable real relay emits this.','A23':'Suggested stronger policy. All-false phase flags alone do not prove no worker was dispatched, so this is not counted as a confirmed contract violation.','A26-A31':'Disposable Git fixtures reproduce consequences of documented commands/order, not an end-to-end agent run.','A32':'Controlled slow-terminating relay; demonstrates absent process-tree settlement, not measured live pi behavior.'},
  'source_sha256':{str(f.relative_to(a.repo.resolve())):hashlib.sha256(f.read_bytes()).hexdigest() for f in (DISPATCH,VALIDATOR)},

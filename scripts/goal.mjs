@@ -768,7 +768,8 @@ export function init(repo, slug, objective, { agent = null, harness = null, work
   mode ??= runtime.targetBranch ? 'supervisor' : 'branch';
   if (!MODES.includes(mode)) throw new UsageError(`--mode is one of ${MODES.join(', ')}, got ${mode}`);
   if (mode === 'supervisor' && !runtime.targetBranch) throw new UsageError('--mode supervisor needs --target-branch <name> (saved by `goal.mjs supervise`)');
-  if (mode !== 'supervisor' && runtime.targetBranch) throw new UsageError(`--target-branch ${runtime.targetBranch} is supervisor mode, not ${mode}`);
+  // Only a --target-branch given to this call conflicts: the target `supervise` saved is a default, and --mode overrides it.
+  if (mode !== 'supervisor' && runtime.targetBranch && !runtime.targetSaved) throw new UsageError(`--target-branch ${runtime.targetBranch} is supervisor mode, not ${mode}`);
   const control = requireControl(repo);
   const target = mode === 'supervisor' ? runtime.targetBranch : defaultBranch(workspaceOf(repo, control));
   const runDir = path.join(control, 'runs', slug);

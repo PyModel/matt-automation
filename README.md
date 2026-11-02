@@ -54,7 +54,7 @@ A run also needs four installed skills: `kun`, `research-stack`, `defensive-desi
 1. **Route.** Stage `00` runs the wiring check and reads `ask-matt`; `to-auto/FLOWS.md` adds only the autonomy rules on top of its map.
 2. **Resume anywhere.** Every invocation, first run or fiftieth loop tick, asks `goal.mjs next <slug>` where it stands. A ticked stage whose artifact is missing is not trusted.
 3. **Build in parallel.** Tickets carry file claims and a capability tier; `goal.mjs take` hands out the frontier under a lock, and each ticket runs in its own worktree, on a subagent or a pi worker.
-4. **Contract in, receipt out.** Each implementer gets one compiled contract and returns one JSON receipt; `goal.mjs receipt` checks it against git and the ticket before anything merges ([`to-auto/CONTRACT.md`](to-auto/CONTRACT.md)). An objective that already names an agent-ready spec or ticket skips straight to tickets.
+4. **Contract in, receipt out.** Each implementer gets one contract, drafted from files by `goal.mjs prepare-ticket`, and returns one JSON receipt; `goal.mjs merge` checks it against git and the ticket, lands it, and runs the suite on the result ([`to-auto/CONTRACT.md`](to-auto/CONTRACT.md)). An objective that already names an agent-ready spec or ticket skips straight to tickets.
 5. **Halt cleanly.** Every stop, yours or the run's own, goes through `goal.mjs stop`; `goal.mjs resume` picks up after you fix the cause.
 
 ## 🧰 Commands
@@ -66,6 +66,8 @@ node scripts/matt.mjs link               # regenerate matt/ after upstream adds,
 node scripts/goal.mjs next <slug>        # where a run resumes
 node scripts/goal.mjs frontier <feature> # ticket grammar, frontier, overlapping claims, capabilities
 node scripts/goal.mjs receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md>  # gate a receipt
+node scripts/goal.mjs merge <feature> <NN> --check "<suite>"  # land a ticket on the run branch
+node scripts/goal.mjs verdict <slug>     # stage 8 verdict, from the committed review.md / verify.md
 npm test                                 # unit tests · to-orc selftest · adversarial audit
 ```
 
@@ -79,7 +81,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pymodel.pull-matt.pl
 node scripts/matt.mjs link && node scripts/matt.mjs check   # after upstream adds or renames a skill
 ```
 
-`scripts/to-auto-watch.plist` sweeps every run with `goal.mjs check --all` each 30 minutes and notifies each new problem (a STALE run, NOW ahead of the registry); it runs nvm's default node, so an nvm upgrade never blinds it:
+`scripts/to-auto-watch.plist` sweeps every run with `goal.mjs check --all` each 30 minutes and notifies each new problem (a STALE run, an orphaned ticket, a target that moved under the run, scripts changed under it, NOW ahead of the registry); it runs nvm's default node, so an nvm upgrade never blinds it:
 
 ```sh
 cp scripts/to-auto-watch.plist ~/Library/LaunchAgents/com.pymodel.to-auto-watch.plist

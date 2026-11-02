@@ -10,17 +10,18 @@ All under `<state>/runs/<slug>/` in the control plane (CONTROL.md), created at s
 |---|---|---|---|
 | `ledger.md` | **NOW** block followed by an append-only event stream | orchestrator | before and after every stage; on every subagent dispatch and return |
 | `todo.md` | The stage checklist and, from stage 6b, one line per ticket with status | orchestrator | whenever a box changes |
-| `log.md` | Decisions, one line each: `- [stage] Q: <question> → A: <answer> (source: findings \| codebase \| kun \| default)`; ticket completions as `- [implement] <ticket path> done @ <commit>` | orchestrator and subagents | at the moment a decision is made |
+| `log.md` | Decisions, one line each with an id: `- D<n> [stage] Q: <question> → A: <answer> (source: findings \| codebase \| kun \| owner \| default)`; one waiting on an answer is `- D<n> (open) [stage] Q: …`, and every `tick` refuses while one is open; `(source: owner)` lines ride in every contract `prepare-ticket` drafts, so a brief never restates them; ticket completions as `- [implement] <ticket path> done @ <commit>` | orchestrator and subagents | at the moment a decision is made |
 | `findings.md` | Stage 1 repo facts, requirements R1…, open questions Q1…; stage 3 sourced answers | orchestrator / research agent | stages 1 to 3 |
 | `spec.md` | Working copy of the published spec (PLAN.md stage 5) | orchestrator | stage 5 |
 | `baseline.txt` | Stage 0d per-test result set, one `<test id> pass\|fail\|flaky\|skip` line each (raw suite output stays in `<state>/logs/<slug>/`, uncommitted) | orchestrator | stage 0d |
 | `notes/` | Exploration notes for implementers (implement-spec step 2) | exploration subagent | stage 7 |
-| `tickets/<NN>.goal.md` | The ticket's contract (CONTRACT.md § The contract) | orchestrator | at dispatch |
+| `tickets/<NN>.goal.md` | The ticket's contract (CONTRACT.md § The contract) | `goal.mjs prepare-ticket` drafts, orchestrator fills `<fill: …>` | at dispatch |
 | `tickets/<NN>.receipt.md` | The implementer's final message, ending in its receipt (CONTRACT.md § The receipt) | orchestrator | when the implementer returns |
-| `tickets/<NN>.status.md` | Per-ticket flight record: `heartbeat`, `agent: <id/pid>`, `active_cmd`, `slice: n/m`, worktree, branch, merged range, last commit, suite result, same-test-failure count, review findings, evidence states, claims touched, blockers | the ticket's implementer | after every slice and at exit |
+| `tickets/<NN>.status.md` | Per-ticket flight record, never a ticket status (`check` reports STATUS_COPY): `heartbeat`, `agent: <id/pid>`, `active_cmd`, `slice: n/m`, worktree, branch, merged range, last commit, suite result, same-test-failure count, review findings, evidence states, claims touched, blockers | the ticket's implementer | after every slice and at exit |
 | `STOP` | Kill switch (BOOTSTRAP.md § Kill switch and GC) | `goal.mjs stop`: the user's `--stop` or the run's own halt | any time |
 | `bugs.md` | Every bug noticed in flight: file, symptom, introduced-by-run?, action taken (fixed @ commit / ticket NN / blocker), each under `## <finder>-<n> <title>` where the finder is `t<NN>` for an implementer and `o` for the orchestrator, so parallel writers never reuse an id | whoever noticed it | the moment it is noticed |
-| `final-verdict.json` | Stage 8 review verdict | orchestrator | stage 8 |
+| `review.md`, `verify.md` | The stage 8 review and re-verification subagents' final messages, verbatim | orchestrator | stage 8 |
+| `final-verdict.json` | Stage 8 verdict, from review.md / verify.md | `goal.mjs verdict` only | stage 8 |
 | `retro.md` | Stage 10 output | orchestrator | stage 10 |
 
 The tracker's ticket files stay the source of truth for *what to build*; `tickets/<NN>.status.md` is the source of truth for *how far it got*; a receipt that passes `goal.mjs receipt` is the only evidence that it is *done*.

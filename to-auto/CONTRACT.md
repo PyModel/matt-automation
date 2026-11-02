@@ -37,7 +37,7 @@ Tier 2 or 3 in `defensive-design` implies at least `advanced` or `high`. NOW `ti
 
 ## The contract
 
-Written at dispatch to `runs/<slug>/tickets/<NN>.goal.md` and committed with `goal.mjs commit`. Fill every field from files; a field with nothing to say says `none`. Criteria are copied from the ticket verbatim, one checkbox each, because the receipt check matches them by text. Every sha is pasted from `git rev-parse` output, never typed. `goal.mjs contract` refuses a contract whose Ticket base is not the full sha where the ticket branch left the run branch (HEAD at first dispatch), or whose Claims line or criteria are not the ticket's verbatim, or when the ticket's claims changed since its `→ in-flight` commit other than through `goal.mjs claim`.
+Drafted at dispatch to `runs/<slug>/tickets/<NN>.goal.md` by `goal.mjs prepare-ticket <slug> <NN>`, which fills every field files decide (ticket path, worktree and branch, Ticket base from git, criteria and Claims verbatim, capability, owner decisions, NOW's commands, per-worktree and budgets lines) and leaves `<fill: …>` for the rest; write those from files and commit with `goal.mjs commit`. A field with nothing to say says `none`. Criteria are copied from the ticket verbatim, one checkbox each, because the receipt check matches them by text. Every sha is pasted from `git rev-parse` output, never typed. `goal.mjs contract` refuses a contract whose Ticket base is not the full sha where the ticket branch left the run branch (HEAD at first dispatch), or whose Claims line or criteria are not the ticket's verbatim, or when the ticket's claims changed since its `→ in-flight` commit other than through `goal.mjs claim`.
 
 ```markdown
 # Goal: <NN> <ticket title>

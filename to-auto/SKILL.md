@@ -47,13 +47,12 @@ This skill lives in the matt-automations repo, which vendors Matt Pocock's skill
 
 ## Rule skills
 
-Three narrow rule sets are packaged verbatim beside this file in `references/` and also installed as standalone skills (their frontmatter carries the trigger cue; load the skill when its cue matches, else read the packaged file):
+Each rule set has one copy, loaded by path when its cue matches:
 
-- **Run budgets and stop conditions** — `to-auto-run-budget` ([references/run-budget.md](references/run-budget.md)): log `budget: <old> -> <new> (source: <who>)` and commit it with the ledger's wall-clock line in one `goal.mjs commit` before any ticket runs under the new limit; never cut a registered item — the stop conditions decide what stays open.
-- **Build dispatch** — `to-auto-build-dispatch` ([references/build-dispatch.md](references/build-dispatch.md)): pass absolute paths to `goal.mjs`; get worktrees only from `goal.mjs worktree get`; `test -e` every claimed path before dispatch; run every grep criterion at the ticket base — a 0-match result means a mis-specified pattern until proven otherwise.
-- **Grilling rounds via kun** — `to-auto-grilling-rounds` ([references/grilling-rounds.md](references/grilling-rounds.md)): the answerer gets bare questions and options; recommendations go only to the challenger. Accepting every recommendation is a failure signal: re-ask blind.
-
-Not folded here: the goal.mjs state machine and stop/wait rules stay in the standalone skill `to-auto-ticket-lifecycle`. Load it when goal.mjs refuses a transition, a ticket returns claims-breach, or a Stop hook blocks ending a turn.
+- **Run budgets and stop conditions** ([references/run-budget.md](references/run-budget.md)): log `budget: <old> -> <new> (source: <who>)` and commit it with the ledger's wall-clock line in one `goal.mjs commit` before any ticket runs under the new limit; never cut a registered item — the stop conditions decide what stays open.
+- **Build dispatch** ([references/build-dispatch.md](references/build-dispatch.md)): pass absolute paths to `goal.mjs`; get worktrees only from `goal.mjs worktree get` or `prepare-ticket`; `test -e` every claimed path before dispatch; `goal.mjs contract` runs every grep criterion at the ticket base.
+- **Grilling rounds via kun** ([references/grilling-rounds.md](references/grilling-rounds.md)): the answerer gets bare questions and options; recommendations go only to the challenger. Accepting every recommendation is a failure signal: re-ask blind.
+- **Ticket lifecycle** ([../to-auto-ticket-lifecycle/SKILL.md](../to-auto-ticket-lifecycle/SKILL.md), installed as the `to-auto-ticket-lifecycle` skill by `scripts/install.mjs`): load it when goal.mjs refuses a transition, a ticket returns claims-breach, a run goes STALE or a ticket TICKET_IDLE, or a Stop hook blocks ending a turn.
 
 ## Daily use
 

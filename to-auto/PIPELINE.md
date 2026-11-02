@@ -32,12 +32,9 @@ Run and ticket worktrees come only from `goal.mjs worktree`, never from a hand-t
 ```
 git fetch --prune 2>/dev/null || true
 RUN=$(node ROOT/scripts/goal.mjs worktree get <slug>)            # base per the Run row
-WT=$(node ROOT/scripts/goal.mjs worktree get <slug> <NN>)        # cut from the run branch head
-# after a ticket's review (from inside the run worktree, so "fully merged" is judged against the run branch):
-git -C "$WT" rebase goal/<slug>
-git -C "$RUN" merge --ff-only goal/<slug>-t<NN>
-node ROOT/scripts/goal.mjs worktree return <slug> <NN>           # refuses a dirty worktree; never forced
-git -C "$RUN" branch -d goal/<slug>-t<NN>
+node ROOT/scripts/goal.mjs prepare-ticket <slug> <NN>            # ticket worktree (cut from the run branch head) + contract draft
+# after the ticket's receipt is committed: rebase, ff-merge, suite, done, worktree return and branch delete, one transaction
+node ROOT/scripts/goal.mjs merge <slug> <NN> --check "<suite>"
 ```
 
 `goal.mjs worktree status <slug>` prints every worktree the run owns.
@@ -113,13 +110,21 @@ A stage is done exactly when its line holds. Phase files point here.
 - **5/5b Spec + reconcile**: every to-spec template section filled; user stories scaled to actual decisions; no file paths or code in Implementation Decisions; the reconciliation gate's list is empty, or past the round budget every item left has a `/kun` ruling in `log.md`; `runs/<slug>/spec.md` present.
 - **6/6b Tickets + claims**: one file per ticket; each has a demo path, tier, capability, claims, "Blocked by", and passes CONTRACT.md § Readiness; new-behaviour criteria red at base and preserved invariants green; no cycles; no two unordered open tickets share an `exclusive` claim; `ready-for-agent` stripped from the parent spec; ticket table in `todo.md`.
 - **7 Build**: every ticket `done` (a `completed` receipt that passed `goal.mjs receipt`, merged fast-forward as a recorded range, boxes ticked, ticket closed) or `stuck` with its reason; every dispatched ticket has `tickets/<NN>.goal.md` and `tickets/<NN>.receipt.md`; per-test comparison against baseline passes; the debt grep (BUILD.md § Bugs found in flight) is empty; per ticket a defensive-design evidence state per control, a red test before code per slice (visible `tdd` calls), and typecheck, lint, and suite output captured; only the run worktree remains; (GitHub, push authorized) draft PR open closing spec and tickets.
-- **8 Final review**: ran in a fresh review subagent against `review_base`; cited findings fixed by one fix subagent, independently re-verified against the resulting snapshot, and committed; suite no worse than baseline; `final-verdict.json` written; uncited leads listed.
-- **9 Hand back**: `goal.mjs worktree status <slug>` shows no ticket worktree `active` (idle treehouse pool slots in `git worktree list` are not the run's); an authorized PR is marked ready for review. In supervisor mode, `goal.mjs land` has already put the commits on `--target-branch` and written the item map to `--status-file`.
+- **8 Final review**: ran in a fresh review subagent against `review_base`; cited findings fixed by one fix subagent, independently re-verified against the resulting snapshot, and committed; suite no worse than baseline; `review.md` (and `verify.md` after a fix pass) committed and `final-verdict.json` written from them by `goal.mjs verdict`; uncited leads listed.
+- **9 Hand back**: done per the `mode` `goal.mjs next` reports; `goal.mjs worktree status <slug>` shows no ticket worktree `active` (idle treehouse pool slots in `git worktree list` are not the run's); an authorized PR is marked ready for review. In supervisor mode, `goal.mjs land` has already put the commits on `--target-branch` and written the item map to `--status-file`.
 - **10 Retro**: `retro.md` written with candidates ordered by severity.
 - **Every stage**: `bugs.md` has no entry without an action (fixed @ commit, ticket id, blocker, or not a bug), which `goal.mjs tick` checks and refuses on; NOW rewritten and `goal.mjs tick <slug> <id>` run (it ticks `todo.md`, sets NOW's stage line, appends the event and commits) before the next stage starts.
 
 ## Under a loop
 
 **Keep-going hooks** hold one session to its run, so a turn the model ends early does not stall it: Claude Code's Stop hook (`scripts/to-auto-guard.mjs`, registered under `hooks.Stop` in `~/.claude/settings.json`) and pi's `agent_before_settle` extension (`scripts/pi-keep-going.ts`, symlinked into `~/.pi/agent/extensions/`). Both ask `goal.mjs keep-going --agent <session id>`: while a run that session registered is active and has committed since the last nudge (its own `[<slug>]` commits; a peer run's commit in the shared control plane does not count), the turn continues with the re-entry instruction. A second turn ended with no commit between is let go, so a stalled run still surfaces as `check --all` STALE. Esc in pi and any hook error always end the turn, and Claude Code holds only a marked session: removing `~/.local/state/to-auto-sessions/<session id>` ends to-auto mode there, nudges included. Other harnesses need a runner below.
+
+**Harness support.** The contract every harness shares is the CLI: `goal.mjs next`, `keep-going` and `check --all` (STALE, TICKET_IDLE) answer from the control plane, whatever runs them. What each harness adds on top:
+
+| Harness | Keeps a turn going | Denies off-pipeline calls (`to-auto-guard`) | What covers the gap |
+|---|---|---|---|
+| Claude Code | Stop hook (`to-auto-guard.mjs`) | yes (PreToolUse) | — |
+| pi | `pi-keep-going.ts` extension | no | the goal.mjs refusals and `check --all` |
+| opencode, others | no | no | run it under a loop (below) so every tick re-enters through `next`; `check --all` (`to-auto-watch`) flags a stalled run or an orphaned ticket |
 
 Any recurring runner works: Claude Code's `/loop /to-auto <objective>`, a cron or CI job, or a script that re-invokes the agent. Each tick runs the LEDGER.md re-entry protocol, which starts with `goal.mjs next <slug>`: a deterministic answer from the files, so every tick resumes at the same place whatever model or harness runs it. `done` or `stop` ends the loop.

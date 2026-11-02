@@ -590,6 +590,9 @@ test('a branch-mode run keeps goal/<slug> as its run branch after a later superv
   configure({ targetBranch: 'main', targetSaved: true }); // as the CLI loads supervisor.json
   try {
     assert.deepEqual(checkContract({ text, ticketText: ticket, worktree }).problems, []);
+    init(repo, 'y', 'Y', { ...WHO, mode: 'branch' });
+    assert.deepEqual([registry(control).at(-1).mode, registry(control).at(-1).target], ['branch', 'main'], '--mode branch overrides the saved target');
+    assert.throws(() => { configure({ targetBranch: 'main' }); init(repo, 'z', 'Z', { ...WHO, mode: 'branch' }); }, /--target-branch main is supervisor mode, not branch/);
   } finally {
     configure();
   }

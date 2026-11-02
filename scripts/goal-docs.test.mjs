@@ -54,7 +54,6 @@ test('CONTROL.md documents the harness guard and SKILL.md forbids routing around
 // Rules belong in goal.mjs refusals and one-line prose; a doc past its cap is an incident diary again (tasks/design-flaws.md DF3).
 const CAPS = {
   'to-auto/SKILL.md': 9_000,
-  'to-auto-ticket-lifecycle/SKILL.md': 12_000,
   'to-auto/references/build-dispatch.md': 6_000,
   'to-auto/references/run-budget.md': 3_500,
   'to-auto/references/grilling-rounds.md': 3_000,

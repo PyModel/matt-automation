@@ -5,5 +5,5 @@ vendor/mattpocock-skills
 /audit-results.json
 .ledger.jsonl
 .sidecar.json
-to-auto-ticket-lifecycle/references/
-to-auto-ticket-lifecycle/*.tmp
+# autoharness owns this skill: the ~/.claude and ~/.agents installs link here, and its edits stay out of git.
+to-auto-ticket-lifecycle/

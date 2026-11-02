@@ -10,11 +10,11 @@ goal.mjs enforces the file rules; this covers order, judgment and each refusal's
 
 ## Calling goal.mjs
 
-- Define `g(){ node <ROOT>/scripts/goal.mjs "$@"; }`; zsh does not word-split `$G` or `$LIST` (use arrays: `P=(a b); g claim … "${P[@]}"`).
+- Define `g(){ node <ROOT>/scripts/goal.mjs "$@"; }`; zsh does not word-split `$LIST` (use arrays: `P=(a b); g claim … "${P[@]}"`).
 - Run goal.mjs from the project checkout, one state change per tool call; never after a `cd` into the state dir, never piped (`tail`/`grep` hide refusals).
 - After a refusal mid-chain, check what already applied; rerun only the refused step.
 - Every control-plane write goes through `goal.mjs commit -m "[<slug>] <why>" <files>`; uncommitted run files block `status`, `claim`, `waive`, `tick`. Commit them first.
-- Write files with a quoted heredoc (`<<'EOF'`), values via env/argv; `grep -F` backslash escapes after.
+- Write files with a quoted heredoc (`<<'EOF'`), values via env/argv.
 - `runs.json` is written only by goal.mjs; `tick` is the only writer of stage ticks and NOW's stage line; the tracker `**Status:**` only by `take`/`status`. Never hand-edit or `sed` them.
 - On `NOW_AHEAD`/`TODO_BEHIND`/`TODO_AHEAD`, trust the registry stage `next` reports and `tick` each finished stage in order.
 
@@ -26,7 +26,7 @@ goal.mjs enforces the file rules; this covers order, judgment and each refusal's
 - Overlapping exclusive claims need a `**Blocked by:**` edge; `frontier` must show `malformed: []` and `conflicts: []` before `take`.
 - Criteria are `- [ ]` lines, one per fact, no case-only twins. Write measurable facts or exact values, not floors that a system style overshoots.
 - Write "0 matches" as `test "$(grep -c PAT f)" = 0`; code patterns as `git grep -nF`; `-nP` for `\b`; `-e` for patterns starting with `-`; scope greps to claimed files.
-- `contract` probes simple grep/rg criteria at base (erroring → refused; 0 match → refused unless "(Red at base…)" or about absence). It skips commands with `; & < > $(` or backticks: check those by hand. A needle already matching at base proves nothing.
+- `contract` runs a backticked grep/rg criterion's search at base, no shell (error → refused; no match → refused unless "(Red at base…)" or about absence). It skips globs, `~ $ ; & < >`, backticks, `--pre`, `-O`: check those by hand. A needle matching at base proves nothing.
 - Runtime/UI criteria: probe at base with throwaway tests, then revert to a clean worktree.
 - Criteria the host cannot run (device, live system) are `blocked: host`, never a waiver.
 - Before `take`, check for a parallel copy: `git worktree list`, `git branch --list '*<id>*'`, open PRs.
@@ -37,7 +37,7 @@ goal.mjs enforces the file rules; this covers order, judgment and each refusal's
 - New tickets enter only as `ready-for-agent` or `blocked`. Only `stuck`, `needs-human`, `blocked` take `-- <reason>`.
 - `take <slug> <n>` takes n frontier tickets, lowest id first; read the ids it prints. For one chosen ticket use `status <slug> <NN> in-flight`.
 - In-flight means taken, not dispatched: report it queued until it has a worker and a `goal/<slug>-tNN` branch.
-- After each landing, flip every dependent whose blockers are all `done` with `status … ready-for-agent` at once; a `stuck` id on a blocker line never unblocks: swap in its finished deps.
+- After each landing, flip every dependent whose blockers are all `done` to `ready-for-agent` at once; a `stuck` blocker never unblocks: swap in its finished deps.
 - Implementer back `blocked` on an owner: commit its message as the receipt, then `needs-human -- <what passed, what the owner must do, link>`.
 - Park a superseded ticket `blocked -- "parked by <decision>"`; before `tick 7`, move it `stuck` with that reason.
 - `log.md` `- D<n> (open) [stage] Q: …` blocks every tick until rewritten `- D<n> [stage] Q: … → A: … (source: owner|kun)`. Put owner questions to the named stand-in (kun) first, from files.
@@ -87,7 +87,7 @@ goal.mjs enforces the file rules; this covers order, judgment and each refusal's
 ## Landing
 
 - Land only with `goal.mjs merge <slug> <NN> [--check <cmd>]`; never write land.sh or merge scripts. It checks the committed receipt and claims, rebases, ff-merges, runs the suite, sets done, returns the worktree, deletes the branch.
-- Refusals: rebase conflict → resolve per BUILD.md § Merge conflicts, fresh receipt, merge again; rebase changed the change → fresh receipt; red suite → run branch reset, ticket stays in flight.
+- Refusals: rebase conflict → resolve per BUILD.md § Merge conflicts, fresh receipt, merge again; rebase changed the change → fresh receipt; red suite or refused done → run branch reset `--keep` (a run-worktree edit in the way stops it), ticket stays in flight.
 - Never `worktree return` or delete a branch while a `goal.mjs run` is live in it.
 - Flake at landing: introduced by this run until it fails at the run base under the same full-suite load and run count. Never quarantine, skip, or lengthen a sleep: fix it now per BUILD.md § Bugs found in flight (deterministic red test, N clean full-suite runs).
 - After landing: close each routed `bugs.md` entry `fixed in tNN @ <sha>` (every entry needs a Status line before any tick), SendMessage siblings any shared shape change, re-check the frontier.

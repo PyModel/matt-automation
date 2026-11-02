@@ -395,7 +395,20 @@ check("--force over a finished implement still counts it: forcing a task never r
   eq(dispatch({ phase: "implement", task: "P3", runDir, brief, repo, extra: ["--cycles", "1"] }).exit, 0, "first implement");
   const r = dispatch({ phase: "implement", task: "P3", runDir, brief, repo, extra: ["--force"] });
   eq(r.exit, 77, "forced second implement under --cycles 1");
-  if (!/cycle limit/.test(r.status?.reason ?? "")) throw new Error(`reason does not name the cycle limit: ${r.status?.reason}`);
+  if (!/cycle limit/.test(r.stderr)) throw new Error(`refusal does not name the cycle limit: ${r.stderr}`);
+  eq(r.status?.orcStatus, "COMPLIANT", "a refused re-dispatch keeps the evidence of the one that ran");
+  eq(dispatch({ phase: "implement", task: "P3", runDir, brief, repo, extra: ["--force"] }).exit, 77, "a second forced implement is refused too");
+});
+
+check("--force keeps replaced evidence under superseded/, so repeated forcing never exceeds --cycles", () => {
+  const repo = newRepo("r22g");
+  const { runDir, brief } = newRun("run22g", { accept: ["scout", "research"] });
+  eq(dispatch({ phase: "implement", task: "P3", runDir, brief, repo, extra: ["--cycles", "2"] }).exit, 0, "first implement");
+  eq(dispatch({ phase: "implement", task: "P3", runDir, brief, repo, extra: ["--force"] }).exit, 0, "forced second implement under --cycles 2");
+  eq(fs.readdirSync(path.join(runDir, "P3", "superseded")).length, 1, "the first implement's evidence is kept");
+  const r = dispatch({ phase: "implement", task: "P3", runDir, brief, repo, extra: ["--force"] });
+  eq(r.exit, 77, "a third implement under --cycles 2");
+  if (!/cycle limit reached: 2 implementation/.test(r.stderr)) throw new Error(`refusal does not count both implements: ${r.stderr}`);
 });
 
 check("repair refuses to resume a timed-out session", () => {

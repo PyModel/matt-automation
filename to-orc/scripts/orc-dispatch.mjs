@@ -195,6 +195,7 @@ function usageError(msg) {
 }
 
 let finalWritten = false;
+let started = false; // set once the dispatch passes every precondition and begins
 let relayChild = null;
 const say = (m) => process.stdout.write(`orc-dispatch: ${m}\n`);
 const warn = (m) => process.stderr.write(`orc-dispatch: WARNING — ${m}\n`);
@@ -238,7 +239,10 @@ function writeStatus(out, status) {
 function finish(ctx, orcStatus, reason, extra = {}) {
   const status = buildStatus(ctx, orcStatus, reason, extra);
   finalWritten = true;
-  if (ctx.out) {
+  // Until the dispatch starts, a refusal reports on stderr and the exit code only when this task already has evidence:
+  // a refused re-dispatch must never replace (and so erase from the cycle count) a dispatch that ran.
+  const keep = ctx.out && !started && !opts.childOfBackground && fs.existsSync(path.join(ctx.out, "orc-status.json"));
+  if (ctx.out && !keep) {
     try {
       writeStatus(ctx.out, status);
     } catch (e) {
@@ -507,18 +511,21 @@ function spentSoFar(runDir) {
   }
 }
 
-/** Every other dispatch's status file in this run, newest last. `ownTask` is excluded: a
- *  background child would otherwise count its own provisional RUNNING status. */
+/** Every dispatch this run has evidence of, newest last: each other task's status file, and every task's superseded ones
+ *  (what --force moved aside), so forcing a task never erases a cycle. `ownTask`'s current file is excluded: it is either
+ *  superseded already or a background child's own provisional RUNNING status. */
 function priorDispatches(runDir, ownTask) {
   const out = [];
   let dirs = [];
   try { dirs = fs.readdirSync(runDir, { withFileTypes: true }).filter((d) => d.isDirectory()); } catch { return out; }
+  const read = (f) => {
+    try { out.push(JSON.parse(fs.readFileSync(f, "utf8"))); } catch { warn(`unreadable status file ignored: ${f}`); }
+  };
   for (const d of dirs) {
-    if (d.name === ownTask) continue;
-    const f = path.join(runDir, d.name, "orc-status.json");
-    try {
-      if (fs.existsSync(f)) out.push(JSON.parse(fs.readFileSync(f, "utf8")));
-    } catch { warn(`unreadable status file ignored: ${f}`); }
+    const current = path.join(runDir, d.name, "orc-status.json");
+    if (d.name !== ownTask && fs.existsSync(current)) read(current);
+    const superseded = path.join(runDir, d.name, "superseded");
+    if (fs.existsSync(superseded)) for (const f of fs.readdirSync(superseded).filter((n) => n.endsWith(".json")).sort()) read(path.join(superseded, f));
   }
   return out.sort((a, b) => String(a.finishedAt).localeCompare(String(b.finishedAt)));
 }
@@ -714,10 +721,11 @@ if (policy.after) {
   }
 }
 
-// A --force re-dispatch replaces this task's finished evidence, so that evidence still counts toward the caps: forcing
-// a task never resets its own cycle. A RUNNING status is a background parent's provisional one, never a cycle.
+// A --force re-dispatch moves this task's finished evidence to superseded/ (below), so it still counts toward the caps.
+// Until then it is the task's current file, read here as one more dispatch; a RUNNING one is a background parent's
+// provisional status, never a cycle.
 const own = (() => { try { return JSON.parse(fs.readFileSync(path.join(ctx.out, "orc-status.json"), "utf8")); } catch { return null; } })();
-const prior = [...priorDispatches(runDir, opts.task), ...(own && own.orcStatus !== "RUNNING" ? [own] : [])];
+const prior = [...priorDispatches(runDir, opts.task), ...(own && own.orcStatus !== "RUNNING" && !opts.childOfBackground ? [own] : [])];
 const priorExecuted = prior.filter((p) => p.orcStatus !== "PRECONDITION_FAILED");
 // A cycle is an implement or repair that ran to an end. TIMEOUT and ABORTED leave a partial tree that
 // DELEGATION.md says to re-run fresh, so they spend budget (--max-cost) but not a cycle.
@@ -819,6 +827,13 @@ if (opts.dryRun) {
   say("dry run · all preconditions satisfied; nothing dispatched");
   process.exit(0);
 }
+
+// The dispatch starts here. Evidence --force replaces is kept under superseded/, where every later cap still counts it.
+if (!opts.childOfBackground && fs.existsSync(statusFile)) {
+  fs.mkdirSync(path.join(ctx.out, "superseded"), { recursive: true });
+  fs.renameSync(statusFile, path.join(ctx.out, "superseded", `${Date.now()}-${process.pid}.json`));
+}
+started = true;
 
 // Clean any old artifacts in ctx.out before execution so stale results are never read
 if (fs.existsSync(ctx.out)) {

@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process';
 import {
   init, next, tick, pin, take, frontier, prepareTicket, brief, mergeTicket, verdict, setRegistry, checkRun, checkContract,
   checkReceipt, commit, configure, prepare, worktreeGet, runLogged, scriptsPin, ownerDecisions, gc, MAX_BRIEF_BYTES,
+  adopt, controlDir, firstStageArgv,
 } from './goal.mjs';
 
 process.env.TO_AUTO_TREEHOUSE = ''; // plain git worktrees: a treehouse on PATH must not lease real pool slots
@@ -349,4 +350,120 @@ test('gc returns the clean worktrees of a run no commit has moved for the stale 
   gc(repo, { apply: true, now: Date.now() + 100 * 3600 * 1000 });
   assert.equal(fs.existsSync(wt), false);
   assert.equal(git(repo, 'branch', '--list', 'goal/x'), 'goal/x', 'the branch keeps every commit');
+});
+
+/** dispatched(), with ticket 01's change committed on its branch and its receipt committed: ready for `merge`. */
+function readyToMerge() {
+  const ctx = dispatched({ one: '- [ ] a.txt says bye (Red at base)\n', two: '- [ ] b.txt says B (Red at base)\n' });
+  const { repo, control } = ctx;
+  fillIn(repo, control, '01');
+  const wt = worktreeGet(repo, 'x', '01');
+  const base = git(wt, 'rev-parse', 'HEAD');
+  write(path.join(wt, 'a.txt'), 'bye\n');
+  git(wt, 'commit', '-qam', 'Refs 01');
+  const head = git(wt, 'rev-parse', 'HEAD');
+  const { log } = runLogged(wt, 'grep -c bye a.txt');
+  write(path.join(control, 'runs/x/tickets/01.receipt.md'), JSON.stringify({
+    ticket: '01', conclusion: 'completed', ticket_base: base, head, changed_files: ['a.txt'],
+    criteria: [{ criterion: 'a.txt says bye (Red at base)', result: 'pass', evidence: 'grep -c bye a.txt exit 0' }],
+    validation: [{ command: 'grep -c bye a.txt', exit: 0, summary: '1', log }],
+    review: { cited_fixed: 0, leads: [] }, not_validated: [], blockers: [], external_effects: [], worktree_clean: true,
+  }));
+  commit(repo, '[x] 01 receipt', ['runs/x/tickets/01.receipt.md']);
+  return { ...ctx, head, before: git(ctx.run, 'rev-parse', 'HEAD') };
+}
+
+test('merge undoes a landing it cannot finish, and its reset never overwrites an edit made in the run worktree', () => {
+  const { repo, control, run, before, head } = readyToMerge();
+  // A red suite resets with --keep: an edit to a file the merge did not change survives it.
+  assert.throws(() => mergeTicket(repo, 'x', '01', { check: 'echo mine > b.txt; false' }), /suite failed .* goal\/x is back at/);
+  assert.deepEqual([git(run, 'rev-parse', 'HEAD'), fs.readFileSync(path.join(run, 'b.txt'), 'utf8')], [before, 'mine\n']);
+  git(run, 'checkout', '--', 'b.txt');
+  // An edit to a file the merge changed: the reset refuses rather than lose it, and says how to finish by hand.
+  assert.throws(() => mergeTicket(repo, 'x', '01', { check: 'echo mine >> a.txt; false' }), /would overwrite uncommitted edits in .* still at the merged head/);
+  assert.deepEqual([git(run, 'rev-parse', 'HEAD'), fs.readFileSync(path.join(run, 'a.txt'), 'utf8')], [head, 'bye\nmine\n']);
+  git(run, 'checkout', '--', 'a.txt');
+  git(run, 'reset', '-q', '--keep', before);
+  // Green suite, but the ticket cannot go done (here: an uncommitted tracker edit): the run branch goes back, nothing lands.
+  const ticket = path.join(control, 'tracker/x/issues/01-a.md');
+  fs.appendFileSync(ticket, 'note\n');
+  assert.throws(() => mergeTicket(repo, 'x', '01', { check: 'true' }), /could not be marked done: .*uncommitted edits.*goal\/x is back at/);
+  assert.equal(git(run, 'rev-parse', 'HEAD'), before);
+  git(control, 'checkout', '--', 'tracker/x/issues/01-a.md');
+  assert.equal(mergeTicket(repo, 'x', '01', { check: 'true' }).landed, `${before}..${head}`);
+});
+
+test('sole-writer files: a writer refuses an uncommitted hand edit under it, and a deletion never commits past it', () => {
+  const { repo, control } = setup();
+  init(repo, 'x', 'X', WHO);
+  const runs = registry(control);
+  runs[0].status = 'done';
+  runs[0].scripts = { sha256: '0'.repeat(64) }; // so pin has something to write
+  write(path.join(control, 'runs.json'), `${JSON.stringify(runs, null, 2)}\n`);
+  for (const call of [() => init(repo, 'y', 'Y', WHO), () => pin(repo, 'x'), () => adopt(repo, 'x', { agent: 'other', harness: 'test' })]) {
+    assert.throws(call, /runs\.json has an uncommitted edit, and it is written only by goal\.mjs init/);
+  }
+  assert.equal(JSON.parse(git(control, 'show', 'HEAD:runs.json'))[0].status, 'bootstrapping');
+  git(control, 'checkout', '--', 'runs.json');
+  fs.rmSync(path.join(control, 'runs.json'));
+  assert.throws(() => commit(repo, '[x] drop the registry', ['runs.json']), /runs\.json is written only by/);
+  git(control, 'checkout', '--', 'runs.json');
+  runLogged(repo, 'echo ok');
+  fs.appendFileSync(path.join(control, 'logs.txt'), `${'0'.repeat(64)}  /forged.log\n`);
+  assert.throws(() => runLogged(repo, 'touch ran'), /logs\.txt has an uncommitted edit/);
+  assert.equal(fs.existsSync(path.join(repo, 'ran')), false, 'refused before the command runs');
+  assert.doesNotMatch(git(control, 'show', 'HEAD:logs.txt'), /forged/);
+});
+
+test('contract probes run the search alone as argv: no shell, no pipeline tail, no flag that runs a program', () => {
+  assert.deepEqual(firstStageArgv(`grep -n 'a b' x.txt | wc -l`), ['grep', '-n', 'a b', 'x.txt']);
+  assert.deepEqual(firstStageArgv('git grep -nF "foo(" -- src'), ['git', 'grep', '-nF', 'foo(', '--', 'src']);
+  for (const shellOnly of ['grep -rn foo src/*.ts', 'grep "$(id)" f', 'grep x f > out', 'grep x ~/f', "grep 'open"]) assert.equal(firstStageArgv(shellOnly), null, shellOnly);
+  const victim = path.join(tmp('hard-victim-'), 'victim');
+  const { control, drafted } = dispatched({
+    one: `- [ ] \`grep -n hello a.txt | sort -o ${victim}\` still matches\n- [ ] \`rg --pre ./x hello a.txt\` matches\n- [ ] \`grep -c nosuch a.txt\` counts the new lines\n`,
+    two: '- [ ] b.txt says B (Red at base)\n',
+  });
+  const text = fs.readFileSync(drafted.contract, 'utf8').replace(/<fill: [^>]*>/g, 'none');
+  const checked = checkContract({ text, ticketText: fs.readFileSync(path.join(control, 'tracker/x/issues/01-a.md'), 'utf8'), worktree: drafted.worktree });
+  assert.equal(fs.existsSync(victim), false, 'a pipeline tail is never run');
+  assert.deepEqual(checked.probes.map((p) => [p.command.split(' ')[0], p.exit]), [['grep', 0], ['grep', 1]], 'rg --pre is not probed');
+  assert.match(checked.problems.join('\n'), /`grep -c nosuch a\.txt` matches nothing at the ticket base/, 'a count of 0 is no match');
+});
+
+test('TARGET_DIVERGED: a supervisor run registered before init recorded its target is not diffed against main', () => {
+  const { repo, control } = setup();
+  init(repo, 'x', 'X', WHO);
+  const wt = worktreeGet(repo, 'x');
+  write(path.join(wt, 'a.txt'), 'A\n');
+  git(wt, 'commit', '-qam', 'run changes a');
+  write(path.join(repo, 'a.txt'), 'E\n');
+  git(repo, 'commit', '-qam', 'main changes a');
+  assert.deepEqual(codes(control), ['TARGET_DIVERGED']);
+  editRegistry(control, (e) => { delete e.target; e.mode = 'supervisor'; });
+  assert.deepEqual(codes(control), [], 'its run branch is its target');
+});
+
+test('a worktree of the clone prepare made resolves to that state, and its to-orc runs count as a ticket worker', () => {
+  const { repo, control } = setup();
+  const clone = path.join(control, 'clone');
+  git(control, 'clone', '-q', repo, clone);
+  const wt = path.join(tmp('hard-clone-wt-'), 'wt');
+  git(clone, 'worktree', 'add', '-q', '-b', 'side', wt);
+  process.env.TO_AUTO_HOME = tmp('hard-other-state-');
+  assert.equal(controlDir(wt), control, 'the clone belongs to the state that holds it, whatever TO_AUTO_HOME says');
+  process.env.TO_AUTO_HOME = control;
+  init(repo, 'x', 'X', WHO);
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt'));
+  take(repo, 'x', 1);
+  const info = JSON.parse(fs.readFileSync(path.join(control, 'workspace.json'), 'utf8'));
+  write(path.join(control, 'workspace.json'), JSON.stringify({ ...info, cloned: true, workspace: clone }));
+  commit(repo, '[state] workspace', ['workspace.json']);
+  const later = Date.now() + 45 * 60 * 1000;
+  assert.deepEqual(codes(control, { now: later, staleHours: 24 }), ['TICKET_IDLE']);
+  const orc = path.join(repo, '.git', 'to-orc', 'x', 't01');
+  fs.mkdirSync(orc, { recursive: true });
+  const beat = (later - 60 * 1000) / 1000;
+  fs.utimesSync(orc, beat, beat);
+  assert.deepEqual(codes(control, { now: later, staleHours: 24 }), [], 'to-orc writes under the repo dispatch was given, not the clone');
 });

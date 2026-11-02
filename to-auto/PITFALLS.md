@@ -32,3 +32,4 @@ Source: the docs pages in `mattpocock/skills` (`docs/engineering/*.md`, `.agents
 | code-review | Finds new leads every run; no convergence; findings are hypotheses. | CLOSE.md stage 8: one pass; act only on cited findings. |
 | code-review | Same session reviewing its own diff is confirmation bias. | Per-ticket review over the whole `<ticket-base>...HEAD`; the final pass in a fresh subagent (CLOSE.md stage 8). |
 | all | A bug noticed while reading a file is parked as a comment or "known issue" and lost by the next context. | BUILD.md § Bugs found in flight. |
+| git | `git worktree remove` refuses a worktree that holds an initialized submodule (only branches from before main dropped its submodule, 226379e). | `git -C <wt> submodule deinit --all -f`, then remove the worktree; never `--force` a tree you have not checked is clean. |

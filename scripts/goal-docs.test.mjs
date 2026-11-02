@@ -50,3 +50,32 @@ test('CONTROL.md documents the harness guard and SKILL.md forbids routing around
   assert.match(doc('CONTROL.md'), /`scripts\/to-auto-guard\.mjs` \(hooks `UserPromptSubmit`, `UserPromptExpansion`, `PreToolUse`/);
   assert.match(doc('SKILL.md'), /denied by `to-auto-guard` is this rule enforced/);
 });
+
+// Rules belong in goal.mjs refusals and one-line prose; a doc past its cap is an incident diary again (tasks/design-flaws.md DF3).
+const CAPS = {
+  'to-auto/SKILL.md': 9_000,
+  'to-auto-ticket-lifecycle/SKILL.md': 12_000,
+  'to-auto/references/build-dispatch.md': 6_000,
+  'to-auto/references/run-budget.md': 3_500,
+  'to-auto/references/grilling-rounds.md': 3_000,
+};
+const PER_DOC = 25_000;
+const ALL_DOCS = 165_000;
+
+test('every rule doc stays under its size cap, and the to-auto docs together under theirs', () => {
+  const size = (rel) => fs.statSync(path.join(ROOT, rel)).size;
+  for (const [rel, cap] of Object.entries(CAPS)) assert.ok(size(rel) <= cap, `${rel} is ${size(rel)} bytes, cap ${cap}`);
+  const docs = [...PHASE_DOCS.map((f) => `to-auto/${f}`), ...fs.readdirSync(path.join(ROOT, 'to-auto', 'references')).map((f) => `to-auto/references/${f}`)];
+  for (const rel of docs) assert.ok(size(rel) <= PER_DOC, `${rel} is ${size(rel)} bytes, cap ${PER_DOC}`);
+  const total = docs.reduce((sum, rel) => sum + size(rel), 0);
+  assert.ok(total <= ALL_DOCS, `the to-auto docs are ${total} bytes, cap ${ALL_DOCS}`);
+});
+
+test('no doc tells the orchestrator to write the verdict or a landing script by hand', () => {
+  assert.match(doc('CLOSE.md'), /`node ROOT\/scripts\/goal\.mjs verdict <slug>` writes `final-verdict\.json`/);
+  assert.match(doc('BUILD.md'), /`node ROOT\/scripts\/goal\.mjs merge <feature> <NN>/);
+  for (const name of PHASE_DOCS) {
+    assert.doesNotMatch(doc(name), /Write the verdict to/, `${name} has the orchestrator type the verdict`);
+    assert.doesNotMatch(doc(name), /with-lock integration -- <merge script>/, `${name} has the orchestrator write a merge script`);
+  }
+});

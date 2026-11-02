@@ -1147,3 +1147,11 @@ test('next and tick refuse a slug that init would refuse', () => {
   assert.throws(() => next(control, '../x'), /bad slug/);
   assert.throws(() => tick(repo, long, '00'), /bad slug/);
 });
+
+test('goal.mjs runs when its path is typed in another case (macOS paths are case-insensitive)', () => {
+  const typed = path.join(path.dirname(path.dirname(GOAL)), 'SCRIPTS', 'goal.mjs');
+  if (!fs.existsSync(typed)) return; // a case-sensitive file system: nothing to test
+  const r = spawnSync(process.execPath, [typed, 'root'], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.notEqual(r.stdout.trim(), '', 'main() ran: a silent exit 0 would read as "no problems" to every hook');
+});

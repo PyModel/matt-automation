@@ -473,10 +473,11 @@ test('a worktree of the clone prepare made resolves to that state, and its to-or
   assert.deepEqual(codes(control, { now: later, staleHours: 24 }), [], 'to-orc writes under the repo dispatch was given, not the clone');
 });
 
-test('a registry slug that is not a slug (../..) is never read, so gc cannot delete outside its state folder', () => {
+test('a registry slug that is not a slug (..) is never read, so gc cannot delete outside tmp/', () => {
   const { repo, control } = setup();
   init(repo, 'x', 'X', WHO);
-  editRegistry(control, (e) => { e.slug = '../..'; e.status = 'done'; });
+  // `..` aims tmp/<slug> at the state folder itself, so even code without this check deletes only this test's sandbox.
+  editRegistry(control, (e) => { e.slug = '..'; e.status = 'done'; });
   assert.throws(() => gc(repo, { apply: true }), /not a list of runs with a kebab-case slug/);
   assert.ok(fs.existsSync(control));
 });
@@ -572,4 +573,24 @@ test('paths resolve to their on-disk case, so a state or slot spelled in another
   const plane = path.join(tmp('hard-case-'), 'Plane');
   write(path.join(plane, '.to-auto'), 'to-auto control plane\n');
   assert.equal(stateDir(plane.replace(/Plane$/, 'plane')), plane);
+});
+
+test('a branch-mode run keeps goal/<slug> as its run branch after a later supervise saved a target for the repo', () => {
+  const { repo, control } = setup();
+  init(repo, 'x', 'X', WHO);
+  const run = worktreeGet(repo, 'x');
+  write(path.join(run, 'r.txt'), 'run work\n');
+  git(run, 'add', 'r.txt');
+  git(run, 'commit', '-qm', 'run moves past main'); // so goal/x and main give different fork points
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt', '\n- [ ] a.txt says bye (Red at base)\n'));
+  take(repo, 'x', 1);
+  const { contract, worktree } = prepareTicket(repo, 'x', '01');
+  const text = fs.readFileSync(contract, 'utf8').replace(/<fill: [^>]*>/g, 'none');
+  const ticket = fs.readFileSync(path.join(control, 'tracker/x/issues/01-a.md'), 'utf8');
+  configure({ targetBranch: 'main', targetSaved: true }); // as the CLI loads supervisor.json
+  try {
+    assert.deepEqual(checkContract({ text, ticketText: ticket, worktree }).problems, []);
+  } finally {
+    configure();
+  }
 });

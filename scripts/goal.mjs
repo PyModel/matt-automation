@@ -377,7 +377,10 @@ function statusGate(repo, control, slug, status, { restoring = false } = {}) {
     if (problems.length) return `${slug} is not done: ${problems.join('; ')}`;
     // tick 10 returns the run worktree, which a dirty tree refuses; refuse here, before anything is written.
     const wt = readJson(path.join(control, 'runs', slug, 'worktrees.json')).run;
-    if (wt?.state === 'active' && wt.backend !== 'borrowed' && wt.path && fs.existsSync(wt.path) && !notWorktreeRoot(wt.path) && !lentAway(workspaceOf(repo, control), wt, slug) && git(wt.path, ['status', '--porcelain'])) {
+    // A treehouse that cannot list its slots is no reason to refuse a clean run: the dirty check below still runs.
+    let lent = null;
+    try { lent = wt?.state === 'active' ? lentAway(workspaceOf(repo, control), wt, slug) : null; } catch { /* treated as ours */ }
+    if (wt?.state === 'active' && wt.backend !== 'borrowed' && wt.path && fs.existsSync(wt.path) && !notWorktreeRoot(wt.path) && !lent && git(wt.path, ['status', '--porcelain'])) {
       return `${slug} is not done: the run worktree ${wt.path} has uncommitted changes; commit them on ${wt.branch} or discard them, so the move to done can return it`;
     }
   }
@@ -859,6 +862,18 @@ export function next(control, slug) {
 }
 
 /** The hand-back mode: the registry's, or for a run from before it was recorded, supervisor when supervise saved a target. */
+/**
+ * The branch a run integrates on: a --target-branch given to this call, else the run's own registry entry (a supervisor
+ * run's target, else goal/<slug>). The plane-wide target `supervise` saved is never enough alone: it would move every
+ * branch-mode run of the repo onto it.
+ */
+function runBranchOf(control, slug) {
+  if (runtime.targetBranch && !runtime.targetSaved) return runtime.targetBranch;
+  const entry = readRegistry(control).find((r) => r.slug === slug);
+  if (entry && runMode(control, entry) === 'supervisor') return entry.target ?? runtime.targetBranch;
+  return entry || !runtime.targetBranch ? `goal/${slug}` : runtime.targetBranch;
+}
+
 function runMode(control, entry) {
   return entry.mode ?? (readJson(path.join(control, 'supervisor.json')).targetBranch ? 'supervisor' : 'branch');
 }
@@ -1671,8 +1686,9 @@ export function checkContract({ text, ticketText, worktree }) {
   // The base is where goal/<slug>-t<NN> left goal/<slug>: HEAD at dispatch, still the fork point at a re-dispatch.
   const out = (args) => { const r = spawnSync('git', ['-C', worktree, ...args], { encoding: 'utf8' }); return r.status === 0 ? r.stdout.trim() : null; };
   const ticketRun = out(['rev-parse', '--abbrev-ref', 'HEAD'])?.match(/^(goal\/.+)-t\d+$/)?.[1];
-  // The run branch worktreeGet cut the ticket from: the supervisor target when there is one, else goal/<slug>.
-  const run = ticketRun ? (runtime.targetBranch || ticketRun) : null;
+  // The run branch worktreeGet cut the ticket from (runBranchOf: this call's --target-branch, else the run's registry entry).
+  const slug = ticketRun?.slice('goal/'.length);
+  const run = ticketRun ? runBranchOf(controlDir(worktree), slug) : null;
   const fork = run ? out(['merge-base', 'HEAD', run]) : out(['rev-parse', 'HEAD']);
   if (!/^[0-9a-f]{40}$/.test(base ?? '') || base !== fork) problems.push(`Ticket base ${base ?? '(missing)'} is not ${fork ?? 'the fork point'} (where the ticket branch left ${run ?? 'the run branch'}); paste \`git rev-parse HEAD\` output at dispatch, never type a sha`);
   if (/<fill:/.test(text)) problems.push('the contract still has <fill: …> fields; write each from files (CONTRACT.md § The contract)');
@@ -2811,7 +2827,7 @@ export function worktreeGet(repo, slug, id) {
     const prior = records[key];
     if (prior?.state === 'active' && fs.existsSync(prior.path)) return prior.path;
     const workspace = workspaceOf(repo, control);
-    const runBranch = runtime.targetBranch || `goal/${slug}`;
+    const runBranch = runBranchOf(control, slug);
     const branch = ticket ? `goal/${slug}-t${ticket}` : runBranch;
     const base = ticket ? runBranch : runBase(workspace);
     if (ticket && spawnSync('git', ['-C', workspace, 'rev-parse', '--verify', '--quiet', `refs/heads/${runBranch}`]).status !== 0) {
@@ -3096,7 +3112,9 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
   }
   for (const [slug, status] of finished) {
     const dir = path.join(control, 'tmp', slug);
-    if (!fs.existsSync(dir)) continue;
+    // readRegistry already refuses a slug that is not one; this keeps the delete inside tmp/ whatever reaches it.
+    // (Its parent is compared, not the entry: a tmp/<slug> that is a link is unlinked, never followed.)
+    if (!fs.existsSync(dir) || canon(path.dirname(dir)) !== canon(path.join(control, 'tmp')) || path.basename(dir) !== slug) continue;
     const why = status === 'stopped' || status === 'stale' ? `the run is ${status} and may resume` : null;
     act({ what: 'tmp', run: slug, path: dir, kb: why ? 0 : sizeKB(dir), action: why ? 'keep' : 'delete', ...(why && { why }) }, () => {
       if (!['done', 'dry-run'].includes(finishedNow().get(slug))) throw new Error(`${slug} is no longer done`);
@@ -3234,7 +3252,7 @@ function main(argv) {
     const prior = JSON.parse(fs.readFileSync(saved, 'utf8'));
     if (prior.noRemote) runtime.noRemote = true;
     if (!runtime.base && prior.base) runtime.base = prior.base;
-    if (!runtime.targetBranch && prior.targetBranch) runtime.targetBranch = prior.targetBranch;
+    if (!runtime.targetBranch && prior.targetBranch) Object.assign(runtime, { targetBranch: prior.targetBranch, targetSaved: true });
     if (!runtime.statusFile && prior.statusFile) runtime.statusFile = prior.statusFile;
   }
   const [command, ...rest] = args;
@@ -3489,7 +3507,8 @@ function main(argv) {
   return 2;
 }
 
-if (process.argv[1] && fs.realpathSync.native(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Both sides in on-disk spelling: a path typed in another case (macOS) is still this file, and main() still runs.
+if (process.argv[1] && fs.realpathSync.native(process.argv[1]) === fs.realpathSync.native(fileURLToPath(import.meta.url))) {
   // exitCode, never process.exit(): exit drops whatever a pipe has not taken yet, so `goal.mjs run -- <suite> | tail`
   // lost the log line and `goal.mjs receipt … | <parser>` read truncated JSON.
   try {

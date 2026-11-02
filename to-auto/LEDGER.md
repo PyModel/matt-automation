@@ -35,7 +35,7 @@ The tracker's ticket files stay the source of truth for *what to build*; `ticket
 - stage: 7 build
 - next: dispatch t04 (unblocked by t02 @ a1b2c3d)
 - base: <base commit>   review_base: <immutable sha>   bootstrap: <sha or none>   run_branch: goal/<slug>
-- kun: <upstream sha> (cached)   matt-pin: <vendor sha from matt.mjs check>   run_id: 3   nested: yes   worker: subagent   dirty-checkout: no
+- kun: <upstream sha> (cached)   matt-head: <vendored: sha from matt.mjs check>   run_id: 3   nested: yes   worker: subagent   dirty-checkout: no
 - quarantine: 2 tests (see quarantine.json)
 - commands: install=`pnpm i` hooks=`pnpm lefthook install` typecheck=`pnpm tsc` lint=`pnpm lint` test1=`pnpm vitest run <file>` suite=`pnpm test`
 - packages: none

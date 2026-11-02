@@ -6,14 +6,20 @@ GOAL="$(cd "$(dirname "$0")" && pwd)/goal.mjs"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}"
 # launchd fixes PATH when the job loads, so a node version pinned there goes stale on the next nvm upgrade.
 # Run nvm's default node (what the owner's shells run) when nvm is installed, else whatever node PATH has.
+# An alias names a version prefix by whole components (24 is v24.x.y, 24.1 is v24.1.y, never v24.10); `system` keeps PATH's
+# node; node, stable or an unknown alias falls back to the newest installed version.
 nvm="${NVM_DIR:-$HOME/.nvm}" v=default i=0
 while [ -f "$nvm/alias/$v" ] && [ "$i" -lt 10 ]; do v=$(cat "$nvm/alias/$v"); i=$((i + 1)); done
 case "$v" in [0-9]*) v="v$v" ;; esac
 newest() { for d in "$@"; do [ -d "$d" ] && printf '%s\n' "$d"; done | sort -V | tail -1; }
-bin=$(newest "$nvm/versions/node/$v"*/bin)
-[ -n "$bin" ] || bin=$(newest "$nvm"/versions/node/v*/bin)
-[ -z "$bin" ] || PATH="$bin:$PATH"
-out=$(node "$GOAL" check --all 2>&1)
+if [ "$v" != system ]; then
+  bin=$(newest "$nvm/versions/node/$v/bin" "$nvm/versions/node/$v".*/bin)
+  [ -n "$bin" ] || bin=$(newest "$nvm"/versions/node/v*/bin)
+  [ -z "$bin" ] || PATH="$bin:$PATH"
+fi
+# stdout carries the problem lines; node's warnings and crashes go to their own file, so they never read as problems.
+mkdir -p "$STATE"
+out=$(node "$GOAL" check --all 2>>"$STATE/to-auto-watch.err")
 rc=$?
 
 case "$1" in
@@ -30,8 +36,10 @@ case "$1" in
     mkdir -p "$STATE"
     log="$STATE/to-auto-watch.log"
     printf '%s %s\n' "$(date '+%F %T')" "$(printf '%s' "$out" | grep -c . || true) problem(s)" >> "$log"
-    # One line per sweep: past 2000 lines keep the newest 1000, so the log stays bounded.
-    [ "$(wc -l < "$log")" -le 2000 ] || { tail -n 1000 "$log" > "$log.tmp" && mv "$log.tmp" "$log"; }
+    # One line per sweep, the newest 1000 kept; the error file is bounded the same way.
+    for f in "$log" "$STATE/to-auto-watch.err"; do
+      [ ! -f "$f" ] || [ "$(wc -l < "$f")" -le 1000 ] || { tail -n 1000 "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
+    done
     last="$STATE/to-auto-watch.last"
     # A problem's key is <state-dir> <slug> <CODE>; the message carries a STALE age that moves every sweep.
     # Only keys the last sweep lacked are news: a problem that clears, or another that appears, never re-announces an old one.

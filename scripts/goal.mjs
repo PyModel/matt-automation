@@ -1980,8 +1980,8 @@ export function mergeTicket(repo, feature, id, { check = null } = {}) {
     const records = readJson(path.join(control, 'runs', feature, 'worktrees.json'));
     const run = records.run;
     const wt = records[`t${want}`];
-    if (run?.state !== 'active' || !run.path || !fs.existsSync(run.path)) throw new Refusal(`${feature} has no active run worktree`);
-    if (wt?.state !== 'active' || !wt.path || !fs.existsSync(wt.path)) throw new Refusal(`ticket ${want} has no active worktree; \`goal.mjs prepare-ticket ${feature} ${want}\` got it at dispatch`);
+    if (run?.state !== 'active' || !run.path || !fs.existsSync(run.path)) throw new Refusal(`${feature} has no active run worktree (gc returns a stopped or stale run's clean worktrees); \`goal.mjs worktree get ${feature}\` cuts it again from its branch`);
+    if (wt?.state !== 'active' || !wt.path || !fs.existsSync(wt.path)) throw new Refusal(`ticket ${want} has no active worktree; \`goal.mjs prepare-ticket ${feature} ${want}\` cuts it again from its branch and keeps the contract`);
     const contract = committedText(control, path.join('runs', feature, 'tickets', `${want}.goal.md`));
     const base = contract?.match(TICKET_BASE)?.[1];
     if (!base) throw new Refusal(`ticket ${want} has no committed contract with a Ticket base`);
@@ -3046,7 +3046,7 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
       if (r.state !== 'active') continue;
       const why = recordHeld(slug, r, slots);
       // A treehouse slot's disk is counted where the slot is destroyed, below.
-      const kb = r.backend === 'git' && fs.existsSync(r.path) ? sizeKB(r.path) : 0;
+      const kb = !why && r.backend === 'git' && fs.existsSync(r.path) ? sizeKB(r.path) : 0;
       act({ what: 'worktree', run: slug, key, path: r.path, kb, action: why ? 'keep' : 'return', ...(why && { why }) }, () => withLock(repo, 'worktrees', () => {
         stillFinished(slug);
         const held = recordHeld(slug, r, treehouseSlots(workspace));
@@ -3064,7 +3064,7 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
   if (apply) slots = treehouseSlots(workspace);
   for (const slot of slots.filter((s) => inside(pool, s.path))) {
     const why = slotHeld(slot);
-    act({ what: 'slot', path: slot.path, kb: sizeKB(slot.path), action: why ? 'keep' : 'destroy', ...(why && { why }) }, () => withLock(repo, 'worktrees', () => {
+    act({ what: 'slot', path: slot.path, kb: why ? 0 : sizeKB(slot.path), action: why ? 'keep' : 'destroy', ...(why && { why }) }, () => withLock(repo, 'worktrees', () => {
       const now = treehouseSlots(workspace).find((s) => canon(s.path) === canon(slot.path));
       const held = now ? slotHeld(now) : 'treehouse no longer lists it';
       if (held) throw new Error(held);
@@ -3087,7 +3087,7 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
   for (const wt of listed.filter((p) => fs.existsSync(p) && inside(path.join(control, 'worktrees'), p) && !inside(pool, p) && !named.has(canon(p)))) {
     // BOOTSTRAP's temp worktree (PIPELINE.md § worktrees) is in no record while its stage runs; its stage removes it.
     const why = canon(wt) === canon(path.join(control, 'worktrees', 'bootstrap')) ? 'the bootstrap stage removes it' : heldWork(wt);
-    act({ what: 'unrecorded', path: wt, kb: sizeKB(wt), action: why ? 'keep' : 'remove', ...(why && { why }) }, () => withLock(repo, 'worktrees', () => {
+    act({ what: 'unrecorded', path: wt, kb: why ? 0 : sizeKB(wt), action: why ? 'keep' : 'remove', ...(why && { why }) }, () => withLock(repo, 'worktrees', () => {
       if (claimed(() => true).has(canon(wt))) throw new Error('a run has recorded it since');
       const held = heldWork(wt);
       if (held) throw new Error(held);
@@ -3098,7 +3098,7 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
     const dir = path.join(control, 'tmp', slug);
     if (!fs.existsSync(dir)) continue;
     const why = status === 'stopped' || status === 'stale' ? `the run is ${status} and may resume` : null;
-    act({ what: 'tmp', run: slug, path: dir, kb: sizeKB(dir), action: why ? 'keep' : 'delete', ...(why && { why }) }, () => {
+    act({ what: 'tmp', run: slug, path: dir, kb: why ? 0 : sizeKB(dir), action: why ? 'keep' : 'delete', ...(why && { why }) }, () => {
       if (!['done', 'dry-run'].includes(finishedNow().get(slug))) throw new Error(`${slug} is no longer done`);
       removeTree(dir);
     });

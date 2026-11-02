@@ -38,7 +38,7 @@ const out = arg("--out-dir");
 const repo = arg("--cd");
 const mode = process.env.STUB_MODE || "ok";
 fs.mkdirSync(out, { recursive: true });
-// No --model means pi's configured default, which the stub reports as prov-d/model-d.
+// No --model reaching the relay means pi's configured default, which the stub reports as prov-d/model-d.
 const reqProvider = arg("--provider");
 const reqModel = arg("--model") || "prov-d/model-d";
 const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -411,6 +411,19 @@ check("--force keeps replaced evidence under superseded/, so repeated forcing ne
   if (!/cycle limit reached: 2 implementation/.test(r.stderr)) throw new Error(`refusal does not count both implements: ${r.stderr}`);
 });
 
+check("--force over a dispatch that died RUNNING keeps it as ABORTED, which spends no cycle", () => {
+  const repo = newRepo("r22h");
+  const { runDir, brief } = newRun("run22h", { accept: ["scout", "research"] });
+  eq(dispatch({ phase: "implement", task: "P3", runDir, brief, repo, extra: ["--cycles", "1"] }).exit, 0, "first implement");
+  // The dispatch died unpolled: RUNNING, its pids gone. It never finished, so it is no cycle.
+  const f = path.join(runDir, "P3", "orc-status.json");
+  fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, "utf8")), orcStatus: "RUNNING", pid: 999999, relayPid: null }));
+  const r = dispatch({ phase: "implement", task: "P3", runDir, brief, repo, extra: ["--force"] });
+  eq(r.exit, 0, "a forced implement after a dead RUNNING one under --cycles 1");
+  const [kept] = fs.readdirSync(path.join(runDir, "P3", "superseded"));
+  eq(JSON.parse(fs.readFileSync(path.join(runDir, "P3", "superseded", kept), "utf8")).orcStatus, "ABORTED", "kept as ABORTED");
+});
+
 check("repair refuses to resume a timed-out session", () => {
   const repo = newRepo("r23");
   const { runDir, brief } = newRun("run23", { accept: ["scout", "research", "implement", "verify"] });
@@ -597,10 +610,15 @@ check("a malformed or relay-incompatible --timeout is refused", () => {
 });
 
 
-check("a first dispatch without --model runs on pi's default and fixes it in run.json", () => {
+check("a first dispatch must name its worker: none is refused before anything runs, --model default runs pi's default and fixes it", () => {
   const repo = newRepo("pi-default"); const { runDir, brief } = newRun("pi-default", { accept: ["scout"] });
-  const r = spawnSync(process.execPath, [DISPATCH, "--phase", "scout", "--task", "P1", "--brief", brief, "--run-dir", runDir, "--repo", repo],
+  const run = (extra) => spawnSync(process.execPath, [DISPATCH, "--phase", "scout", "--task", "P1", "--brief", brief, "--run-dir", runDir, "--repo", repo, ...extra],
     { encoding: "utf8", env: { ...process.env, TO_ORC_RELAY: STUB, STUB_MODE: "ok" } });
+  const unnamed = run([]);
+  eq(unnamed.status, 77, "no --model on the first dispatch");
+  if (!/names its worker/.test(unnamed.stderr)) throw new Error(`refusal does not say why: ${unnamed.stderr}`);
+  eq(fs.existsSync(path.join(runDir, "run.json")) || fs.existsSync(path.join(runDir, "P1", "orc-status.json")), false, "nothing written");
+  const r = run(["--model", "default"]);
   eq(r.status, 0, "exit");
   const lock = JSON.parse(fs.readFileSync(path.join(runDir, "run.json"), "utf8"));
   eq(lock.worker.model, "prov-d/model-d", "locked model");

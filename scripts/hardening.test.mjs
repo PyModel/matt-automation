@@ -390,6 +390,11 @@ test('merge undoes a landing it cannot finish, and its reset never overwrites an
   assert.throws(() => mergeTicket(repo, 'x', '01', { check: 'true' }), /could not be marked done: .*uncommitted edits.*goal\/x is back at/);
   assert.equal(git(run, 'rev-parse', 'HEAD'), before);
   git(control, 'checkout', '--', 'tracker/x/issues/01-a.md');
+  // The suite cannot even be logged (a hand edit under logs.txt): undone the same way.
+  fs.appendFileSync(path.join(control, 'logs.txt'), 'junk\n');
+  assert.throws(() => mergeTicket(repo, 'x', '01', { check: 'true' }), /suite could not run .*logs\.txt has an uncommitted edit.*goal\/x is back at/);
+  assert.equal(git(run, 'rev-parse', 'HEAD'), before);
+  git(control, 'checkout', '--', 'logs.txt');
   assert.equal(mergeTicket(repo, 'x', '01', { check: 'true' }).landed, `${before}..${head}`);
 });
 
@@ -421,13 +426,13 @@ test('contract probes run the search alone as argv: no shell, no pipeline tail, 
   for (const shellOnly of ['grep -rn foo src/*.ts', 'grep "$(id)" f', 'grep x f > out', 'grep x ~/f', "grep 'open"]) assert.equal(firstStageArgv(shellOnly), null, shellOnly);
   const victim = path.join(tmp('hard-victim-'), 'victim');
   const { control, drafted } = dispatched({
-    one: `- [ ] \`grep -n hello a.txt | sort -o ${victim}\` still matches\n- [ ] \`rg --pre ./x hello a.txt\` matches\n- [ ] \`grep -c nosuch a.txt\` counts the new lines\n`,
+    one: `- [ ] \`grep -n hello a.txt | sort -o ${victim}\` still matches\n- [ ] \`rg --pre ./x hello a.txt\` matches\n- [ ] \`git grep -nO'touch ${victim}' hello\` matches\n- [ ] \`git grep --open='touch ${victim}' hello\` matches\n- [ ] \`grep -c nosuch a.txt\` counts the new lines\n`,
     two: '- [ ] b.txt says B (Red at base)\n',
   });
   const text = fs.readFileSync(drafted.contract, 'utf8').replace(/<fill: [^>]*>/g, 'none');
   const checked = checkContract({ text, ticketText: fs.readFileSync(path.join(control, 'tracker/x/issues/01-a.md'), 'utf8'), worktree: drafted.worktree });
   assert.equal(fs.existsSync(victim), false, 'a pipeline tail is never run');
-  assert.deepEqual(checked.probes.map((p) => [p.command.split(' ')[0], p.exit]), [['grep', 0], ['grep', 1]], 'rg --pre is not probed');
+  assert.deepEqual(checked.probes.map((p) => [p.command.split(' ')[0], p.exit]), [['grep', 0], ['grep', 1]], 'rg --pre and git grep -O, bundled or abbreviated, are not probed');
   assert.match(checked.problems.join('\n'), /`grep -c nosuch a\.txt` matches nothing at the ticket base/, 'a count of 0 is no match');
 });
 
@@ -466,4 +471,59 @@ test('a worktree of the clone prepare made resolves to that state, and its to-or
   const beat = (later - 60 * 1000) / 1000;
   fs.utimesSync(orc, beat, beat);
   assert.deepEqual(codes(control, { now: later, staleHours: 24 }), [], 'to-orc writes under the repo dispatch was given, not the clone');
+});
+
+test('a registry slug that is not a slug (../..) is never read, so gc cannot delete outside its state folder', () => {
+  const { repo, control } = setup();
+  init(repo, 'x', 'X', WHO);
+  editRegistry(control, (e) => { e.slug = '../..'; e.status = 'done'; });
+  assert.throws(() => gc(repo, { apply: true }), /not a list of runs with a kebab-case slug/);
+  assert.ok(fs.existsSync(control));
+});
+
+test('gc re-reads the registry before each removal: a run that started again while gc sized the pool keeps its worktree', () => {
+  const { repo, control } = setup();
+  init(repo, 'x', 'X', WHO);
+  const wt = worktreeGet(repo, 'x');
+  editRegistry(control, (e) => { e.status = 'done'; });
+  // treehouse status is gc's first slow call; this one resumes the run meanwhile, as a live session would.
+  const fake = path.join(tmp('hard-th-'), 'treehouse');
+  write(fake, `#!${process.execPath}
+const fs = require('node:fs'); const { execFileSync } = require('node:child_process');
+const file = ${JSON.stringify(path.join(control, 'runs.json'))};
+const was = fs.readFileSync(file, 'utf8');
+if (was.includes('"status": "done"')) {
+  fs.writeFileSync(file, was.replace('"status": "done"', '"status": "building"'));
+  execFileSync('git', ['-C', ${JSON.stringify(control)}, 'commit', '-qam', 'resumed'], { env: { ...process.env, TO_AUTO_WRITER: '1' } });
+}
+process.stdout.write('[]\\n');
+`);
+  fs.chmodSync(fake, 0o755);
+  process.env.TO_AUTO_TREEHOUSE = fake;
+  try {
+    const item = gc(repo, { apply: true }).items.find((i) => i.what === 'worktree');
+    assert.deepEqual([item.action, item.why], ['keep', 'x is running again']);
+  } finally {
+    process.env.TO_AUTO_TREEHOUSE = '';
+  }
+  assert.ok(fs.existsSync(wt), 'the running run keeps its worktree');
+});
+
+test('a treehouse slot that is the workspace itself is refused when the workspace is a linked worktree', () => {
+  const { repo } = setup();
+  const linked = path.join(tmp('hard-linked-'), 'wt');
+  git(repo, 'worktree', 'add', '-q', '-b', 'side', linked);
+  process.env.TO_AUTO_HOME = tmp('hard-state-');
+  assert.equal(prepare(linked).workspace, linked);
+  init(linked, 'x', 'X', WHO);
+  const fake = path.join(tmp('hard-th-'), 'treehouse');
+  write(fake, '#!/bin/sh\n[ "$1" = get ] && echo "$PWD"\nexit 0\n');
+  fs.chmodSync(fake, 0o755);
+  process.env.TO_AUTO_TREEHOUSE = fake;
+  try {
+    assert.throws(() => worktreeGet(linked, 'x'), /is an owner checkout/);
+  } finally {
+    process.env.TO_AUTO_TREEHOUSE = '';
+  }
+  assert.equal(git(linked, 'rev-parse', '--abbrev-ref', 'HEAD'), 'side');
 });

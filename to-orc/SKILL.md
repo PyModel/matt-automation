@@ -1,6 +1,6 @@
 ---
 name: to-orc
-description: "Delegation-only orchestrator: plan, dispatch, gate, and judge a task through four sequential phases (scouting → researching → implementing → verification), executing nothing yourself. Workers run on pi via the pi-delegate relay, on the model the run names or pi's own configured default; the first dispatch fixes it for the whole run. Every dispatch returns a machine-readable status the orchestrator judges instead of trusting prose. Ends with one raw JSON assessment (PASS / REVISE / FAIL). Use on /to-orc <task> or $to-orc, or when the user wants work delegated under strict phase control with an evidence-backed verdict."
+description: "Delegation-only orchestrator: plan, dispatch, gate, and judge a task through four sequential phases (scouting → researching → implementing → verification), executing nothing yourself. Workers run on pi via the pi-delegate relay, on the model the run's first dispatch names (`--model default` for pi's own configured default); that dispatch fixes it for the whole run. Every dispatch returns a machine-readable status the orchestrator judges instead of trusting prose. Ends with one raw JSON assessment (PASS / REVISE / FAIL). Use on /to-orc <task> or $to-orc, or when the user wants work delegated under strict phase control with an evidence-backed verdict."
 user-invocable: true
 argument-hint: "<task> [--model <provider/id[:thinking]>] [--repo <path>] [--cycles 1|2] [--max-cost <usd>]"
 license: MIT
@@ -29,7 +29,7 @@ Every revision, diff identifier, and command result in your report comes from a 
 
 Workers always run on **`pi`** through the `pi-delegate` relay (found beside this skill or in `$AGENT_SKILL_HOMES`, else `~/.claude/skills` or `~/.agents/skills`). This skill hardcodes no model:
 
-- The run's first dispatch either passes `--model <provider>/<model id>[:<thinking>]` (thinking is a pi thinking level, listed by `orc-dispatch.mjs -h`; any other tag stays part of the model id; `--provider` only when the model has no `<provider>/` prefix) or omits it, and pi runs its own configured default.
+- The run's first dispatch either passes `--model <provider>/<model id>[:<thinking>]` (thinking is a pi thinking level, listed by `orc-dispatch.mjs -h`; any other tag stays part of the model id; `--provider` only when the model has no `<provider>/` prefix) or passes `--model default`, and pi runs its own configured default. A first dispatch that names neither is refused: no worker runs that nobody chose.
 - `<run-dir>/run.json` fixes `--cycles` and `--max-cost` at the first dispatch, and the worker at the first dispatch that proves which model ran. Later dispatches omit `--model`; any dispatch that changes one of these is refused. A different worker means a new run directory.
 - Record the worker in `ledger.md` as `run.json` states it.
 
@@ -61,7 +61,7 @@ A worker saying "done" is not evidence. `COMPLIANT` is not *passed* (VERDICT.md 
 `/to-orc <task>` — the task is the argument; if empty, take it from the last user message.
 
 - `--repo <path>` — the workspace passed to every dispatch. Default: the current working directory.
-- `--model <provider/id[:thinking]>` — the worker for the whole run (§ Worker configuration). Default: pi's configured default model.
+- `--model <provider/id[:thinking]>` — the worker for the whole run (§ Worker configuration). Required on the run's first dispatch; `default` means pi's configured default.
 - `--provider <name>` — only when the model id has no `provider/` prefix.
 - `--cycles 1|2` — maximum implementation→verification cycles, enforced by the dispatcher. A cycle is an implement or repair that ran to an end; a timeout or abort is re-run fresh and spends only budget. `--force` keeps the evidence it replaces under `<task>/superseded/`, so a forced task still counts every cycle it ran. Default `2`.
 - `--max-cost <usd>` — run budget, enforced before each dispatch. Default: none.

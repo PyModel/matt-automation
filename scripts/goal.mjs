@@ -317,8 +317,9 @@ function readRegistry(control) {
   } catch {
     throw new Error(`${file} is not valid JSON; repair it from \`git -C ${control} log -p -- runs.json\``);
   }
-  if (!Array.isArray(runs) || !runs.every((r) => typeof r?.slug === 'string' && typeof r.status === 'string')) {
-    throw new Error(`${file} is not a list of runs with a slug and a status; repair it from \`git -C ${control} log -p -- runs.json\``);
+  // A slug names folders (runs/<slug>, tmp/<slug>) that gc deletes, so one that is not a slug (`../..`) is never read as one.
+  if (!Array.isArray(runs) || !runs.every((r) => SLUG.test(r?.slug ?? '') && typeof r.status === 'string')) {
+    throw new Error(`${file} is not a list of runs with a kebab-case slug and a status; repair it from \`git -C ${control} log -p -- runs.json\``);
   }
   return runs;
 }
@@ -1676,9 +1677,14 @@ export function checkContract({ text, ticketText, worktree }) {
 // from a typo; give criteria an explicit expected result if runs need more than that.
 const PROBE = /`((?:git grep|grep|rg)\s[^`]+)`/;
 const ABSENCE = /\b(no|zero|0) (match|matches|results?|hits|lines|occurrences)\b|\b(finds|matches|prints|returns) nothing\b|\babsent\b|\bno longer\b|\bnot (found|present)\b/i;
-// Flags that make a search tool run another program or write: --pre and --hostname-bin (rg), -O/--open-files-in-pager and
-// --textconv (git grep). A criterion using one is not probed.
-const RUNS_PROGRAM = /^(--pre|--hostname-bin|-O|--open-files-in-pager|--textconv)/;
+// The only options a probed search may carry, so none can run another program or write (rg --pre, git grep -O, in any
+// bundled or abbreviated spelling): short bundles of read-only letters, and these long options. Anything else is not probed.
+const SAFE_SHORT = /^-[0-9ABCEFGHILPRachilnoqrsvwx]+$/;
+const SAFE_LONG = /^--(fixed-strings|extended-regexp|basic-regexp|perl-regexp|ignore-case|count|line-number|word-regexp|line-regexp|files-with-matches|files-without-match|invert-match|recursive|cached|untracked|no-index|heading|quiet|max-count=\d+|(include|exclude|glob|type)=[^=]*)?$/;
+const unsafeOption = (argv) => {
+  const end = argv.indexOf('--');
+  return argv.slice(argv[0] === 'git' ? 2 : 1, end === -1 ? undefined : end).some((a) => a.startsWith('-') && !SAFE_SHORT.test(a) && !SAFE_LONG.test(a));
+};
 
 /**
  * The argv of a command line's first pipeline stage, as sh would split it, or null when the line needs a shell to mean
@@ -1732,7 +1738,7 @@ function probeCriteria(criteria, worktree) {
   for (const c of criteria) {
     const command = c.match(PROBE)?.[1];
     const argv = command ? firstStageArgv(command) : null;
-    if (!argv || argv.some((a) => RUNS_PROGRAM.test(a))) continue;
+    if (!argv || unsafeOption(argv)) continue;
     const r = spawnSync(argv[0], argv.slice(1), { cwd: worktree, encoding: 'utf8', timeout: 30_000, maxBuffer: 1 << 28 });
     const exit = r.error ? 127 : r.status;
     const lines = (r.stdout ?? '').split('\n').filter(Boolean).length;
@@ -1990,7 +1996,12 @@ export function mergeTicket(repo, feature, id, { check = null } = {}) {
       if (reset.status !== 0) throw new Refusal(`${why}; resetting ${run.branch} back to ${before.slice(0, 12)} would overwrite uncommitted edits in ${run.path}, so it is still at the merged head: commit or move those edits, then \`git -C ${run.path} reset --keep ${before.slice(0, 12)}\` (${reset.stderr.trim()})`);
       throw new Refusal(`${why}; ${run.branch} is back at ${before.slice(0, 12)} and ticket ${want} stays in flight`);
     };
-    const suite = runLogged(run.path, command);
+    let suite;
+    try {
+      suite = runLogged(run.path, command);
+    } catch (error) {
+      undo(`the suite could not run on the merged run branch: ${error.message}`);
+    }
     if (suite.exit !== 0) undo(`the suite failed on the merged run branch (exit ${suite.exit}, log ${suite.log.path}) (BUILD.md § Stuck detection)`);
     const after = git(run.path, ['rev-parse', 'HEAD']);
     let status;
@@ -2723,23 +2734,38 @@ function mainWorktree(workspace) {
   return fs.realpathSync(git(workspace, ['worktree', 'list', '--porcelain']).split('\n')[0].slice(9));
 }
 
-/** `git switch` runs only in a linked worktree that is its own root: never the owner's checkout, never a path git would resolve to an enclosing repo. */
+/** The checkouts no worktree command may switch: the main worktree, and the workspace itself when that is a linked worktree. */
+function ownerCheckouts(workspace) {
+  return [...new Set([mainWorktree(workspace), fs.realpathSync(workspace)])];
+}
+
+/** `git switch` runs only in a linked worktree that is its own root: never an owner's checkout, never a path git would resolve to an enclosing repo. */
 function requireSlot(dir, workspace) {
-  const bad = notWorktreeRoot(dir) || (fs.realpathSync(dir) === mainWorktree(workspace) ? `${dir} is the main checkout` : null);
+  const bad = notWorktreeRoot(dir) || (ownerCheckouts(workspace).includes(fs.realpathSync(dir)) ? `${dir} is an owner checkout (the main checkout, or the workspace)` : null);
   if (bad) throw new Refusal(`${bad}; worktree commands switch branches only in a pool worktree, never in the repository they were run from`);
 }
 
-/** Run an external tool (treehouse) and refuse, restoring the branch, if it left the main checkout's HEAD somewhere else. */
-function keepRootHead(workspace, fn) {
-  const root = mainWorktree(workspace);
-  const read = () => spawnSync('git', ['-C', root, 'symbolic-ref', '-q', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
-  const before = read();
+/**
+ * Run an external tool (treehouse) and refuse if it moved an owner checkout's HEAD (its branch, or its commit when detached):
+ * `undo(result)` gives back what the tool handed out, the HEAD is switched back, and a switch-back that fails is reported.
+ */
+function keepRootHead(workspace, fn, undo = () => {}) {
+  const roots = ownerCheckouts(workspace);
+  const read = (root) => ({
+    ref: spawnSync('git', ['-C', root, 'symbolic-ref', '-q', 'HEAD'], { encoding: 'utf8' }).stdout.trim(),
+    sha: spawnSync('git', ['-C', root, 'rev-parse', '-q', '--verify', 'HEAD'], { encoding: 'utf8' }).stdout.trim(),
+  });
+  const before = roots.map(read);
   const result = fn();
-  if (before && read() !== before) {
-    spawnSync('git', ['-C', root, 'switch', '--quiet', before.replace('refs/heads/', '')]);
-    throw new Refusal(`treehouse moved HEAD of ${root} off ${before}; it was switched back. Worktree commands never change the checkout they run from`);
-  }
-  return result;
+  // Attached: only the branch counts (the owner may commit meanwhile). Detached: the commit.
+  const moved = roots.map((root, i) => [root, before[i], read(root)]).filter(([, b, now]) => (b.ref ? now.ref !== b.ref : now.ref || now.sha !== b.sha));
+  if (!moved.length) return result;
+  undo(result);
+  const failed = moved.map(([root, b]) => {
+    const back = spawnSync('git', ['-C', root, 'switch', '--quiet', ...(b.ref ? [b.ref.replace('refs/heads/', '')] : ['--detach', b.sha])], { encoding: 'utf8' });
+    return back.status === 0 ? null : `${root} could not be switched back to ${b.ref || b.sha} (${back.stderr.trim()}): switch it back by hand`;
+  }).filter(Boolean);
+  throw new Refusal(`treehouse moved HEAD of ${moved.map(([root]) => root).join(', ')}; ${failed.length ? failed.join('; ') : 'it was switched back'}. Worktree commands never change the checkout they run from`);
 }
 
 function worktreeKey(id) {
@@ -2787,8 +2813,11 @@ export function worktreeGet(repo, slug, id) {
         // New slots are cut under the control plane: the default pool root carries that `*` .gitignore.
         const pool = path.join(control, 'worktrees', 'pool');
         const args = ['get', '--lease', '--no-fetch', '--lease-holder', slug, '--worktree-path', path.join(pool, '{slot}', '{repo}')];
-        const run = keepRootHead(workspace, () => spawnSync(bin, args, { cwd: workspace, encoding: 'utf8' }));
-        wt = run.stdout?.trim().split('\n').at(-1);
+        const leased = (r) => r.stdout?.trim().split('\n').at(-1);
+        const run = keepRootHead(workspace, () => spawnSync(bin, args, { cwd: workspace, encoding: 'utf8' }), (r) => {
+          if (r.status === 0 && leased(r)) spawnSync(bin, ['return', leased(r)], { cwd: workspace });
+        });
+        wt = leased(run);
         if (run.status !== 0 || !wt || !path.isAbsolute(wt)) throw new Error(`treehouse ${args.join(' ')} failed (exit ${run.status}): ${(run.stderr || run.error?.message || '').trim()}`);
         try {
           // treehouse re-hands any free slot at its recorded path, so an old slot comes back from under the pool root;
@@ -2928,15 +2957,23 @@ const sizeKB = (p) => Number(spawnSync('du', ['-sk', p], { encoding: 'utf8' }).s
 export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Date.now() } = {}) {
   const control = requireControl(repo);
   const workspace = workspaceOf(repo, control);
-  const runs = readRegistry(control);
-  const finished = new Map(runs.filter((r) => FINISHED_RUNS.has(r.status)).map((r) => [r.slug, r.status]));
   // A run no goal.mjs commit has moved for staleHours gives its clean worktrees back too (heldWork keeps any holding work);
-  // its branches keep every commit, and `worktree get` cuts the worktree again if it resumes.
-  for (const r of runs) {
-    if (finished.has(r.slug)) continue;
-    const age = runAge(control, r, now);
-    if (age !== null && age > staleHours * 3600) finished.set(r.slug, 'stale');
-  }
+  // its branches keep every commit, and `worktree get` cuts the worktree again if it resumes. Sizing takes minutes, so every
+  // removal re-reads the registry under its lock: a run registered, resumed or moved since keeps what it records.
+  const finishedNow = () => {
+    const runs = readRegistry(control);
+    const done = new Map(runs.filter((r) => FINISHED_RUNS.has(r.status)).map((r) => [r.slug, r.status]));
+    for (const r of runs) {
+      if (done.has(r.slug)) continue;
+      const age = runAge(control, r, now);
+      if (age !== null && age > staleHours * 3600) done.set(r.slug, 'stale');
+    }
+    return done;
+  };
+  const finished = finishedNow();
+  const stillFinished = (slug) => {
+    if (!finishedNow().has(slug)) throw new Error(`${slug} is running again`);
+  };
   const items = [];
   // One item that cannot go is reported and the sweep goes on; nothing is logged as removed unless it was.
   const act = (item, remove) => {
@@ -2953,8 +2990,11 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
   // Sizing a pool takes minutes, so the worktrees lock (which a running run's `worktree get` waits on) is held only around
   // each removal, which re-reads what it removes first.
   const records = (slug) => Object.entries(readJson(path.join(control, 'runs', slug, 'worktrees.json')));
-  const claimed = (which) => new Set(runs.filter((r) => which(r.slug)).flatMap((r) => records(r.slug)).filter(([, r]) => r.state === 'active').map(([, r]) => canon(r.path)));
-  const running = () => claimed((slug) => !finished.has(slug));
+  const claimed = (which) => new Set(readRegistry(control).filter((r) => which(r.slug)).flatMap((r) => records(r.slug)).filter(([, r]) => r.state === 'active').map(([, r]) => canon(r.path)));
+  const running = () => {
+    const done = finishedNow();
+    return claimed((slug) => !done.has(slug));
+  };
   let slots = treehouseSlots(workspace);
   /** Why a finished run's active record must stay, or null: the slot is another run's now, or its tree holds work. */
   const recordHeld = (slug, r, slotList) => {
@@ -2969,6 +3009,7 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
       // A treehouse slot's disk is counted where the slot is destroyed, below.
       const kb = r.backend === 'git' && fs.existsSync(r.path) ? sizeKB(r.path) : 0;
       act({ what: 'worktree', run: slug, key, path: r.path, kb, action: why ? 'keep' : 'return', ...(why && { why }) }, () => withLock(repo, 'worktrees', () => {
+        stillFinished(slug);
         const held = recordHeld(slug, r, treehouseSlots(workspace));
         if (held) throw new Error(held);
         worktreeReturn(repo, slug, key === 'run' ? undefined : key.slice(1));
@@ -2977,7 +3018,7 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
   }
   const pool = path.join(control, 'worktrees', 'pool');
   /** Why `slot` stays, or null; a lease held by a finished run is no claim, a running run's record is. */
-  const slotHeld = (slot) => (slot.status === 'leased' && !finished.has(slot.lease_holder) ? `leased by ${slot.lease_holder}`
+  const slotHeld = (slot) => (slot.status === 'leased' && !finishedNow().has(slot.lease_holder) ? `leased by ${slot.lease_holder}`
     : running().has(canon(slot.path)) ? 'a running run records it as its worktree'
       : slot.processes?.length ? 'processes are running in it'
         : heldWork(slot.path));
@@ -3017,7 +3058,10 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
     const dir = path.join(control, 'tmp', slug);
     if (!fs.existsSync(dir)) continue;
     const why = status === 'stopped' || status === 'stale' ? `the run is ${status} and may resume` : null;
-    act({ what: 'tmp', run: slug, path: dir, kb: sizeKB(dir), action: why ? 'keep' : 'delete', ...(why && { why }) }, () => removeTree(dir));
+    act({ what: 'tmp', run: slug, path: dir, kb: sizeKB(dir), action: why ? 'keep' : 'delete', ...(why && { why }) }, () => {
+      if (!['done', 'dry-run'].includes(finishedNow().get(slug))) throw new Error(`${slug} is no longer done`);
+      removeTree(dir);
+    });
   }
   const kb = items.filter((i) => i.action !== 'keep').reduce((sum, i) => sum + i.kb, 0);
   return { state: control, workspace, [apply ? 'freedKB' : 'reclaimableKB']: kb, items };

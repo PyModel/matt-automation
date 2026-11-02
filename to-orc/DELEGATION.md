@@ -25,11 +25,11 @@ node <skill-dir>/scripts/orc-dispatch.mjs \
   --phase <scout|research|implement|verify|repair> \
   --task <id> --brief <run-dir>/briefs/<id>.txt \
   --run-dir <run-dir> --repo <path> \
-  [--model <provider/id[:thinking]>] [--provider <name>] \
+  --model <provider/id[:thinking]|default> [--provider <name>] \
   [--cycles <n>] [--max-cost <usd>] [--background] [--session <id>]
 ```
 
-`--phase` is the only policy input. It sets the write rule, the timeout, the session rule, the ordering precondition and the cycle accounting, so there is no flag combination to get wrong:
+`--model` is required on the run's first dispatch (`default` is pi's configured default) and inherited from run.json after; a worker nobody named never runs. `--phase` is the only policy input. It sets the write rule, the timeout, the session rule, the ordering precondition and the cycle accounting, so there is no flag combination to get wrong:
 
 | phase | writes | may start once | default timeout | session |
 |---|---|---|---|---|

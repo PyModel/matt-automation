@@ -3,7 +3,8 @@
 //
 //   node scripts/matt.mjs resolve <name>   absolute SKILL.md path the automations must load
 //   node scripts/matt.mjs link             regenerate matt/<name> symlinks from the vendored checkout
-//   node scripts/matt.mjs check            fast-forward the vendored checkout, then fail on any wiring drift or missing
+//   node scripts/matt.mjs pull             fast-forward the vendored checkout, unless a to-auto run is live (the hourly job)
+//   node scripts/matt.mjs check            fast-forward the vendored checkout (as pull), then fail on any wiring drift or missing
 //                                          installed skill; print the vendored commit (vendored:) and drift
 //   node scripts/matt.mjs check --vendored fail only on the repo's own wiring (CI: no skills are installed there)
 //
@@ -17,6 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { liveRuns, STATE_ROOT } from './goal.mjs';
 
 const VENDOR = 'vendor/mattpocock-skills';
 const LINKS = 'matt';
@@ -179,14 +181,22 @@ function isSymlink(file) {
   }
 }
 
-// Runs track upstream main: every check fast-forwards the clone, so each run starts on the latest commit.
-// A failed pull (offline, local commits in the clone) warns and checks what is on disk.
-function pullVendor(root) {
+// Runs track upstream main: each run starts on the latest commit, and keeps it until it ends. While any to-auto run is
+// live the clone is left where it is, so no run's skills change under it. A failed pull (offline, local commits in the
+// clone) warns and checks what is on disk.
+export function pullVendor(root, { stateRoot = STATE_ROOT } = {}) {
+  const live = liveRuns(stateRoot);
+  if (live.length) {
+    console.log(`held: ${VENDOR} not fast-forwarded while ${live.length} run(s) are live (${live.map((r) => `${r.slug} ${r.status}`).join(', ')})`);
+    return 'held';
+  }
   try {
     execFileSync('git', ['-C', path.join(root, VENDOR), 'pull', '--ff-only', '-q'], { stdio: ['ignore', 'ignore', 'pipe'], timeout: 60_000 });
   } catch (error) {
     console.log(`warn: could not fast-forward ${VENDOR}; checking what is on disk (${String(error.stderr || error.message).trim().split('\n')[0]})`);
+    return 'failed';
   }
+  return 'pulled';
 }
 
 function vendoredSha(root) {
@@ -209,6 +219,10 @@ function main([command, ...args]) {
   } else if (command === 'link' && args.length === 0) {
     const { linked, removed } = link(root);
     console.log(`linked ${linked.length} skills into ${LINKS}/${removed.length ? `; removed ${removed.join(', ')}` : ''}`);
+  } else if (command === 'pull' && args.length === 0) {
+    const result = pullVendor(root);
+    console.log(`${result}: ${VENDOR} @ ${vendoredSha(root)}`);
+    if (result === 'failed') process.exit(1);
   } else if (command === 'check' && (args.length === 0 || (args.length === 1 && args[0] === '--vendored'))) {
     if (args[0] !== '--vendored') pullVendor(root);
     const { errors, missing, info } = check(root);
@@ -219,7 +233,7 @@ function main([command, ...args]) {
     if (failures.length) process.exit(1);
     console.log('ok');
   } else {
-    console.error('usage: matt.mjs resolve <name> | link | check [--vendored]');
+    console.error('usage: matt.mjs resolve <name> | link | pull | check [--vendored]');
     process.exit(2);
   }
   // Exit 0 = ok, 1 = check found problems or a skill does not resolve, 2 = usage, 3 = runtime error.

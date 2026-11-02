@@ -74,10 +74,10 @@ npm test                                 # unit tests · to-orc selftest · adve
 
 ## 📌 Tracking upstream Matt skills
 
-Owner direction (2026-10-20): "matt-automations should be symlinked to matt skills repo main repo so it should always be updated". So there is no pin to bump: `vendor/mattpocock-skills` is a symlink to a clone of `mattpocock/skills` on `main`. `matt.mjs check` (stage 00 of every run) runs `git pull --ff-only` on it first, and `scripts/pull-matt.plist` (a LaunchAgent) pulls hourly so skills used outside a run stay current too, logging each pull to `~/.local/state/pull-matt.log`. A run starts on the commit `check` prints as `vendored:`; the hourly pull or a concurrent run's `check` can move it mid-run.
+Owner direction (2026-10-20): "matt-automations should be symlinked to matt skills repo main repo so it should always be updated". So there is no pin to bump: `vendor/mattpocock-skills` is a symlink to a clone of `mattpocock/skills` on `main`. `matt.mjs check` (stage 00 of every run) fast-forwards it first, and `scripts/pull-matt.plist` (a LaunchAgent running `matt.mjs pull`) does hourly so skills used outside a run stay current too, logging to `~/.local/state/pull-matt.log`. Both hold while any to-auto run is live (registered, not finished, moved within 72 h), so a run keeps the commit `check` printed as `vendored:` until it ends.
 
 ```sh
-cp scripts/pull-matt.plist ~/Library/LaunchAgents/com.pymodel.pull-matt.plist
+sed "s#@ROOT@#$PWD#" scripts/pull-matt.plist > ~/Library/LaunchAgents/com.pymodel.pull-matt.plist   # from the clone's root
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pymodel.pull-matt.plist
 node scripts/matt.mjs link && node scripts/matt.mjs check   # after upstream adds or renames a skill
 ```

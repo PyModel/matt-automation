@@ -15,7 +15,7 @@
 //   node scripts/goal.mjs worktree get|return <slug> [NN] | worktree status <slug>
 //                                                          the run's (or ticket NN's) worktree: treehouse lease (cut under <state>/worktrees/pool) when on PATH, else git under <state>/worktrees;
 //                                                          refused under any ancestor .gitignore/.ignore with a `*` line (gitignore-aware linters scan nothing there)
-//   node scripts/goal.mjs gc [--delete-clean] [--stale-hours <n>] [--all [--state-root <dir>]]
+//   node scripts/goal.mjs gc [--delete-clean [--slots]] [--stale-hours <n>] [--all [--state-root <dir>]]
 //                                                          disk finished and stale runs no longer need: their worktrees, free pool slots, tmp/<slug>; report-only by default
 //   node scripts/goal.mjs stop <slug> <reason>            halt the run: write runs/<slug>/STOP and set the registry status
 //   node scripts/goal.mjs resume <slug>                   undo a stop once its cause is fixed
@@ -1149,6 +1149,30 @@ function ticketProblems(control, entry, now, idleMinutes) {
     }
   }
   return out;
+}
+
+/** Where every repo's control plane lives by default; `--state-root` and TO_AUTO_HOME name others. */
+export const STATE_ROOT = path.join(os.homedir(), '.local', 'state', 'to-auto');
+
+/**
+ * Runs that are live now under every control plane in `root` (plus TO_AUTO_HOME): registered, not done, stopped or a
+ * dry run, and moved within `staleHours` (an abandoned run is check's STALE, not a reason to hold anything forever).
+ * An unreadable registry is skipped here and reported by `check --all`.
+ */
+export function liveRuns(root = STATE_ROOT, { staleHours = STALE_GC_HOURS, now = Date.now() } = {}) {
+  const dirs = fs.existsSync(root) ? fs.readdirSync(root).map((d) => path.join(root, d)) : [];
+  if (process.env.TO_AUTO_HOME) dirs.push(path.resolve(process.env.TO_AUTO_HOME));
+  const live = [];
+  for (const dir of [...new Set(dirs)].filter(hasMarker).sort()) {
+    let runs = [];
+    try { runs = readRegistry(dir); } catch { continue; }
+    for (const r of runs.filter((x) => !FINISHED_RUNS.has(x.status))) {
+      let age = 0;
+      try { age = runAge(dir, r, now); } catch { /* no age: counted live */ }
+      if (age <= staleHours * 3600) live.push({ state: dir, slug: r.slug, status: r.status });
+    }
+  }
+  return live;
 }
 
 /** Every registered run under every control plane in `root` (plus TO_AUTO_HOME when it is one): one line per problem. */
@@ -2998,7 +3022,7 @@ const sizeKB = (p) => Number(spawnSync('du', ['-sk', p], { encoding: 'utf8' }).s
  * only when that loses nothing: clean, with its HEAD on a local branch, which keeps every commit. logs/ and the
  * repository's goal-logs stay, since receipts cite them. Report-only unless `apply`; each removal is logged to gc.log.
  */
-export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Date.now() } = {}) {
+export function gc(repo, { apply = false, slots: destroySlots = false, staleHours = STALE_GC_HOURS, now = Date.now() } = {}) {
   const control = requireControl(repo);
   // A plane made before gc.log was ignored gets the line once, committed, so its log never shows as untracked state.
   const ignore = path.join(control, '.gitignore');
@@ -3079,12 +3103,24 @@ export function gc(repo, { apply = false, staleHours = STALE_GC_HOURS, now = Dat
       : slot.processes?.length ? 'processes are running in it'
         : heldWork(slot.path));
   if (apply) slots = treehouseSlots(workspace);
+  // A free slot keeps its dependencies and build caches for the next run: gc frees a finished run's lease (release) and
+  // destroys a slot only with --slots, when the disk matters more than the next run's warm caches.
+  const FREE_SLOT = 'a free pool slot, kept for the next run\'s caches (`gc --delete-clean --slots` destroys it)';
   for (const slot of slots.filter((s) => inside(pool, s.path))) {
-    const why = slotHeld(slot);
-    act({ what: 'slot', path: slot.path, kb: why ? 0 : sizeKB(slot.path), action: why ? 'keep' : 'destroy', ...(why && { why }) }, () => withLock(repo, 'worktrees', () => {
+    const why = slotHeld(slot) ?? (!destroySlots && slot.status !== 'leased' ? FREE_SLOT : null);
+    const action = why ? 'keep' : destroySlots ? 'destroy' : 'release';
+    act({ what: 'slot', path: slot.path, kb: action === 'destroy' ? sizeKB(slot.path) : 0, action, ...(why && { why }) }, () => withLock(repo, 'worktrees', () => {
       const now = treehouseSlots(workspace).find((s) => canon(s.path) === canon(slot.path));
       const held = now ? slotHeld(now) : 'treehouse no longer lists it';
       if (held) throw new Error(held);
+      if (action === 'release') {
+        // Detached first, as worktreeReturn does: a free slot that still holds the branch blocks its checkout elsewhere.
+        requireSlot(slot.path, workspace);
+        git(slot.path, ['switch', '--quiet', '--detach']);
+        const back = keepRootHead(workspace, () => spawnSync(treehouseBin(), ['return', slot.path], { cwd: workspace, encoding: 'utf8' }));
+        if (back.status !== 0) throw new Error(`treehouse return ${slot.path} failed (exit ${back.status}): ${(back.stderr || back.error?.message || '').trim()}`);
+        return;
+      }
       // treehouse calls a slot unlanded until the remote default branch has its HEAD; slotHeld has just found it clean
       // with its HEAD on a local branch, so destroying it loses no commit.
       const args = ['destroy', slot.path, '--yes', '--include-unlanded', ...(now.status === 'leased' ? ['--include-leased'] : [])];
@@ -3208,7 +3244,7 @@ function sleep(ms) {
 
 const TAKES_VALUE = new Set(['--repo', '--state-dir', '--allow', '--base', '--target-branch', '--status-file', '--worker-model']);
 
-const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--mode branch|supervisor|pr] [--worker-model <model>] [--no-helpers] | next <slug> | pin <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] [--idle-minutes <n>] | keep-going --agent <id> | worktree get|return <slug> [NN] | worktree status <slug> | gc [--delete-clean] [--stale-hours <n>] [--all [--state-root <dir>]] | stop <slug> <reason> | resume <slug> | adopt <slug> --agent <id> --harness <name> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | prepare-ticket <feature> <id> | brief <feature> <id> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | merge <feature> <id> [--check <command>] | verdict <slug> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
+const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--mode branch|supervisor|pr] [--worker-model <model>] [--no-helpers] | next <slug> | pin <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] [--idle-minutes <n>] | keep-going --agent <id> | worktree get|return <slug> [NN] | worktree status <slug> | gc [--delete-clean [--slots]] [--stale-hours <n>] [--all [--state-root <dir>]] | stop <slug> <reason> | resume <slug> | adopt <slug> --agent <id> --harness <name> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | prepare-ticket <feature> <id> | brief <feature> <id> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | merge <feature> <id> [--check <command>] | verdict <slug> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
 
 function main(argv) {
   configure();
@@ -3284,19 +3320,21 @@ function main(argv) {
     return 0;
   }
   if (command === 'gc') {
-    let root = path.join(os.homedir(), '.local', 'state', 'to-auto');
+    let root = STATE_ROOT;
     let all = false;
     let apply = false;
     let staleHours = STALE_GC_HOURS;
+    let slots = false;
     for (let i = 0; i < rest.length; i += 1) {
       if (rest[i] === '--all') all = true;
       else if (rest[i] === '--delete-clean') apply = true;
+      else if (rest[i] === '--slots') slots = true;
       else if (rest[i] === '--state-root' && rest[i + 1]) root = rest[++i];
       else if (rest[i] === '--stale-hours' && /^\d+(\.\d+)?$/.test(rest[i + 1] ?? '')) staleHours = Number(rest[++i]);
-      else throw new UsageError('gc [--delete-clean] [--stale-hours <n>] [--all [--state-root <dir>]]');
+      else throw new UsageError('gc [--delete-clean [--slots]] [--stale-hours <n>] [--all [--state-root <dir>]]');
     }
     if (!all && rest.includes('--state-root')) throw new UsageError('gc --state-root needs --all');
-    print(all ? gcAll(root, { apply, staleHours }) : gc(repo, { apply, staleHours }));
+    print(all ? gcAll(root, { apply, slots, staleHours }) : gc(repo, { apply, slots, staleHours }));
     return 0;
   }
   if (command === 'cleanup' && rest.length === 0) {
@@ -3424,7 +3462,7 @@ function main(argv) {
   }
   if (command === 'check' && rest.length >= 1) {
     const opts = {};
-    let root = path.join(os.homedir(), '.local', 'state', 'to-auto');
+    let root = STATE_ROOT;
     let all = false;
     let slug = null;
     for (let i = 0; i < rest.length; i += 1) {
@@ -3446,7 +3484,7 @@ function main(argv) {
     return result.ok ? 0 : 1;
   }
   if (command === 'keep-going' && rest.length === 2 && rest[0] === '--agent') {
-    const root = path.join(os.homedir(), '.local', 'state', 'to-auto');
+    const root = STATE_ROOT;
     const sessions = process.env.TO_AUTO_SESSIONS || path.join(os.homedir(), '.local', 'state', 'to-auto-sessions');
     print(keepGoing(root, rest[1], sessions));
     return 0;

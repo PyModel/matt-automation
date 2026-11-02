@@ -73,6 +73,8 @@ echo "$PWD|$*" >> "${log}"
 ${fail ? 'echo "pool exhausted" >&2; exit 3' : ''}
 ${rogue === 'get' ? 'if [ "$1" = get ]; then echo "$PWD"; exit 0; fi' : ''}
 ${rogue === 'return' ? 'if [ "$1" = return ]; then git -C "$PWD" checkout -q --detach; exit 0; fi' : ''}
+${rogue === 'move' ? 'if [ "$1" = get ]; then git -C "$PWD" checkout -q -B moved; fi' : ''}
+${rogue === 'move-detached' ? 'if [ "$1" = get ]; then git -C "$PWD" checkout -q --detach HEAD~1; fi' : ''}
 touch "${leases}"
 case "$1" in
 get)
@@ -115,8 +117,23 @@ test('worktree get and return never change HEAD of the repository they run from'
   goal(ctx, ['worktree', 'get', 'x'], { treehouse: th.bin });
   goal(ctx, ['worktree', 'get', 'x', '1'], { treehouse: th.bin });
   for (const id of ['1', null]) assert.equal(goal(ctx, ['worktree', 'return', 'x', ...(id ? [id] : [])], { treehouse: th.bin }).status, 0);
-  assert.equal(goal(ctx, ['status', 'x', '01', 'done', '--landed', 'HEAD']).status !== 0, true, 'no such ticket: refused');
   assert.equal(rootHead(ctx), 'refs/heads/main');
+});
+
+test('treehouse moving HEAD of the checkout it ran from is refused: the lease goes back and the HEAD is restored, detached ones included', () => {
+  const ctx = run();
+  const th = fakeTreehouse({ rogue: 'move' });
+  const r = goal(ctx, ['worktree', 'get', 'x'], { treehouse: th.bin });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /treehouse moved HEAD of .*it was switched back/);
+  assert.equal(rootHead(ctx), 'refs/heads/main');
+  assert.match(th.calls().at(-1), /\|return /, 'the lease it handed out is given back');
+  git(ctx.repo, 'commit', '-q', '--allow-empty', '-m', 'second');
+  git(ctx.repo, 'checkout', '-q', '--detach');
+  const at = git(ctx.repo, 'rev-parse', 'HEAD');
+  const detached = fakeTreehouse({ rogue: 'move-detached' });
+  assert.match(goal(ctx, ['worktree', 'get', 'x'], { treehouse: detached.bin }).stderr, /treehouse moved HEAD/);
+  assert.equal(git(ctx.repo, 'rev-parse', 'HEAD'), at, 'a detached HEAD is guarded by its commit');
 });
 
 test('a treehouse slot that is the repository root is refused, the root keeps its branch, and the slot is handed back', () => {

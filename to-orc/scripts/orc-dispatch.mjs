@@ -109,10 +109,11 @@ Options:
   --repo <path>      worker workspace (default: current directory)
   --model <pattern>  pi model pattern <provider>/<model id>[:<thinking>]
                      (off|minimal|low|medium|high|xhigh|max; any other tag
-                     stays in the model id). Omit it on the run's first
-                     dispatch to use pi's configured default. Either way
-                     run.json fixes the model that ran; later dispatches
-                     may omit --model and must not change it.
+                     stays in the model id), or \`default\` for pi's own
+                     configured default. Required on the run's first
+                     dispatch, so no worker runs that nobody named;
+                     run.json fixes the model that ran, and later
+                     dispatches may omit --model and must not change it.
   --provider <name>  only when --model has no <provider>/ prefix
   --session <id>     pi session to resume; required by repair, rejected elsewhere
   --timeout <dur>    watchdog override, e.g. 90m / 2h / 1h30m (default: per phase)
@@ -675,15 +676,18 @@ if (fs.existsSync(runLockFile)) {
     finish({ ...ctx, out: null }, "EVIDENCE_UNREADABLE", `${runLockFile} is corrupt — the run's settings cannot be proven`);
   }
 }
-// No hardcoded worker. The run's first dispatch either names a model or uses pi's own
-// configured default; run.json then fixes the model that actually ran for every later dispatch.
+// No hardcoded worker, and no unnamed one: the run's first dispatch names a model, or `--model default` for pi's own
+// configured default (whatever that is today, e.g. a paid Grok); run.json then fixes the model that ran for every later one.
 // --cycles and --max-cost left unset inherit the run's settings; only an explicit different value is a change.
 if (opts.cycles === null) opts.cycles = locked?.cycles ?? 2;
 if (opts.maxCost === undefined) opts.maxCost = locked ? locked.maxCost : null;
 const PI_DEFAULT = { runtime: "pi", provider: null, model: null, requestedModelId: null, thinking: "pi default", piDefault: true };
-const worker = opts.model || opts.provider
-  ? parseWorkerSpec(opts.provider || undefined, opts.model)
-  : locked?.worker?.model ? parseWorkerSpec(locked.worker.provider, locked.worker.model) : PI_DEFAULT;
+if (!opts.model && !opts.provider && !locked?.worker?.model) {
+  finish({ ...ctx, out: null }, "PRECONDITION_FAILED", "the run's first dispatch names its worker: --model <provider>/<model id>[:<thinking>], or --model default for pi's configured default; a worker nobody named never runs");
+}
+const worker = opts.model === "default" && !opts.provider ? PI_DEFAULT
+  : opts.model || opts.provider ? parseWorkerSpec(opts.provider || undefined, opts.model)
+    : parseWorkerSpec(locked.worker.provider, locked.worker.model);
 const workerLabel = worker.piDefault ? "pi's configured default model" : `${worker.provider}/${worker.requestedModelId}`;
 ctx.worker = worker;
 const briefPath = path.resolve(opts.brief);
@@ -831,7 +835,16 @@ if (opts.dryRun) {
 // The dispatch starts here. Evidence --force replaces is kept under superseded/, where every later cap still counts it.
 if (!opts.childOfBackground && fs.existsSync(statusFile)) {
   fs.mkdirSync(path.join(ctx.out, "superseded"), { recursive: true });
-  fs.renameSync(statusFile, path.join(ctx.out, "superseded", `${Date.now()}-${process.pid}.json`));
+  const kept = path.join(ctx.out, "superseded", `${Date.now()}-${process.pid}.json`);
+  // A RUNNING record here has no live process (checked above): its dispatch died unpolled, which is an abort, not a cycle.
+  let old = null;
+  try { old = JSON.parse(fs.readFileSync(statusFile, "utf8")); } catch { /* unreadable: kept as it is */ }
+  if (old?.orcStatus === "RUNNING") {
+    fs.writeFileSync(kept, `${JSON.stringify({ ...old, orcStatus: "ABORTED", reason: `superseded by --force: ${old.reason ?? "RUNNING"} with no live process` }, null, 2)}\n`);
+    fs.rmSync(statusFile);
+  } else {
+    fs.renameSync(statusFile, kept);
+  }
 }
 started = true;
 

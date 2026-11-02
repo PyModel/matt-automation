@@ -21,3 +21,45 @@ Evidence comes from this session: the P1 pythinker-bot run (state `6e023dd727973
 | DF15 | L | Harness coupling: Stop hooks, keep-going marks and to-auto-guard are Claude Code features. pi/opencode get weaker guarantees | Runs 8–9 ran on opencode. The pi default provider is dead. pi needs a separate keep-going extension | One harness-neutral liveness/guard contract. Document what each harness lacks |
 | DF16 | L | Skill fragmentation and duplicate copies | 6 to-auto skills archived. Rule sets ship "verbatim beside this file and also installed as standalone skills", so the two copies drift | One copy. Install by link only |
 | DF17 | L | Submodule worktrees can't be removed by `git worktree remove` | Hit while archiving run 2. Main dropped the submodule in 226379e, so it only affects old branches | None needed on main. Keep a PITFALLS row |
+
+## Code review of recent main (7dfc2e0..094df6b, 2026-10-17..11-01)
+
+The reviewer ran 157/157 tests green on an isolated copy. Findings by severity (codes R1..R29 are the reviewer's F1..F29):
+
+**P1**
+- R1 `goal.mjs:2392`: the gc `tmp/<slug>` delete has no inside-check. A `runs.json` slug of `../..` with status done makes `gc --delete-clean` delete `~/.local/state/to-auto`. The SLUG regex is never applied in `readRegistry`.
+- R2 `goal.mjs:2314/2347/2385`: gc reads the registry once and never again. A run that runs `init` + `worktree get`, or `resume`s, during the multi-minute pool sizing has its clean worktree removed. This breaks CONTROL.md's "running run's worktrees never touched".
+- R3 `goal.mjs:2282`: "clean" means `git status --porcelain`, which hides ignored files. gc deletes `.env`, local DBs and builds (probed). It also passes `--include-unlanded`, which turns off treehouse's dirty check.
+- R4 `goal.mjs:2104-2116`: the HEAD guard watches only the first `worktree list` entry. When the workspace is itself a linked worktree, a rogue slot equal to `$PWD` passes, and `git switch` runs in the user's checkout.
+
+**P2**
+- R5 `:2172`: `keepRootHead` throws before the try that returns the lease, so the treehouse slot leaks (probed).
+- R6 `:608`: `tick 10` commits done, then `worktreeReturn` can throw. Exit is 3 with no JSON, and a retry gets "already done".
+- R7 `:333`: the done gate's dirty check ignores a slot re-leased to another run, so `tick 10` is refused forever.
+- R8 `:2380-2390`: the bootstrap temp worktree is in no record, so another run's gc can remove it mid-stage.
+- R9 `:2394`: a stopped run keeps `tmp/` but loses its worktrees, so resume points at dead slot paths.
+- R10 `matt.mjs:184` + `pull-matt.plist`: an hourly fast-forward of upstream skills, which agents follow as instructions, with no review or pin. This is supply-chain risk, a new upstream skill breaks stage 00 everywhere, and CI clones live main.
+- R11 SKILL.md:44 "one version per run" is false now that pulls happen mid-run. `pullVendor` fast-forwards whatever branch is checked out.
+- R12 README:37-38: the quick start symlinks the untracked `vendor/`, so it fails. The plists hard-code paths that differ from the README's clone name.
+
+**P3**
+- R13 Plain `realpathSync` doesn't normalize case. `worktreeReturn`'s lent lookup misses a slot whose path differs only in case.
+- R14 `:2121`: the switch-back result is unchecked, and a HEAD that was already detached is unguarded.
+- R15 `gc.log` is uncommitted, not ignored and unbounded.
+- R16 A plane without `workspace.json` gets a misleading "repository no longer exists" message.
+- R17 `:2372`: a canonical vs non-canonical compare could `rmdir` the pool dir.
+- R18 One bad item (git error, bad worktrees.json, broken pool entry, treehouse status failure) aborts the whole gc.
+- R19 CLOSE.md stage 10 runs `gc --delete-clean` after every run and destroys free slots, against PIPELINE's "keep build caches". Stage 00 runs `du` over the whole pool.
+- R20 `:787`: a run with no `started` gives NaN, so it is never STALE.
+- R21 `:1332`: `targetBranch` is ignored when a leftover `goal/<slug>` exists, giving the wrong fork point.
+- R22 receipt-lint passes receipts the gate refuses (a validation with no log, a log outside logsDir). Its header misdescribes the cwd. Its test leaks a tmp dir.
+- R23 `to-auto-watch.sh:9-13`: nvm resolution mishandles `node`/`stable`/`system` aliases, a partial `24.1`, and a bare `2`.
+- R24 `to-auto-watch.sh:34`: trims only after 2000 lines, though the docs say 1000. stderr goes to a replaced file. Node warnings count as new problems.
+- R25 `pull-matt.plist` has no StandardErrorPath, so failed pulls are invisible.
+- R26 `guards.test.mjs:118`: an assertion that pins nothing.
+- R27 Leftover "pin" wording in matt.mjs/matt.test. BOOTSTRAP says `--gc`; the command is `gc`.
+- R28 build-dispatch.md and run-budget.md carry run-specific details (Gradle, quota-axi, M4 tickets) in generic docs.
+- R29 `ticketsByStatus` silently drops tickets with duplicate numbers.
+
+**Test gaps:** gc races (R2, R8), ignored files (R3), slug traversal (R1), a linked-worktree workspace (R4), a HEAD-moving get (R5), tick 10 with a treehouse slot (R6, R7), pullVendor, gc argument errors.
+**Not checked:** to-orc selftest, audit_regressions.py, install/resilience/guard tests, real `treehouse destroy`, plists under launchd.

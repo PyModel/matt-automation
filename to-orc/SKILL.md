@@ -63,7 +63,7 @@ A worker saying "done" is not evidence. `COMPLIANT` is not *passed* (VERDICT.md 
 - `--repo <path>` — the workspace passed to every dispatch. Default: the current working directory.
 - `--model <provider/id[:thinking]>` — the worker for the whole run (§ Worker configuration). Default: pi's configured default model.
 - `--provider <name>` — only when the model id has no `provider/` prefix.
-- `--cycles 1|2` — maximum implementation→verification cycles, enforced by the dispatcher. A cycle is an implement or repair that ran to an end; a timeout or abort is re-run fresh and spends only budget. Default `2`.
+- `--cycles 1|2` — maximum implementation→verification cycles, enforced by the dispatcher. A cycle is an implement or repair that ran to an end; a timeout or abort is re-run fresh and spends only budget. `--force` keeps the evidence it replaces under `<task>/superseded/`, so a forced task still counts every cycle it ran. Default `2`.
 - `--max-cost <usd>` — run budget, enforced before each dispatch. Default: none.
 - `--timeout <dur>` — override a phase's default watchdog when a phase needs longer.
 

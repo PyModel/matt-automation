@@ -569,10 +569,12 @@ test('gc keeps the bootstrap worktree and a run whose worktrees.json is unreadab
   assert.match(gcAll(lone)[0].error, /no workspace\.json/);
 });
 
-test('paths resolve to their on-disk case, so a state or slot spelled in another case is the same one', () => {
+test('paths resolve to their on-disk case, so a state or slot spelled in another case is the same one', (t) => {
   const plane = path.join(tmp('hard-case-'), 'Plane');
   write(path.join(plane, '.to-auto'), 'to-auto control plane\n');
-  assert.equal(stateDir(plane.replace(/Plane$/, 'plane')), plane);
+  const other = plane.replace(/Plane$/, 'plane');
+  if (!fs.existsSync(other)) return t.skip('case-sensitive filesystem: another case is another path'); // CI's Linux runner
+  assert.equal(stateDir(other), plane);
 });
 
 test('a branch-mode run keeps goal/<slug> as its run branch after a later supervise saved a target for the repo', () => {

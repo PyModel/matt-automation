@@ -214,3 +214,12 @@ test('Stop blocks the end of a turn while the session\'s run is active and movin
   fs.rmSync(path.join(w.env.TO_AUTO_SESSIONS, 's1'));
   assert.equal(stop(), null, 'removing the mark ends to-auto mode, nudges included');
 });
+
+test('prose in a commit message, a branch listing and a sibling skill are not the commands they mention', () => {
+  const w = world();
+  assert.equal(w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto-ticket-lifecycle explain take' }), null, 'another skill does not mark the session');
+  assert.equal(w.bash(INCIDENT), 'allow');
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto x' });
+  for (const command of ['git commit -m "docs: we never git push from CI"', "git commit -m '[x] drop the hand-typed git worktree add'", 'git commit --message="gh pr create is stage 9"', 'git branch | head', 'git branch 2>&1', 'git branch > /tmp/b']) assert.equal(w.bash(command), 'allow', command);
+  for (const command of ['git commit -m "x" && git push', 'git --work-tree /x push origin main', 'git --git-dir /x/.git push', 'git checkout -t origin/foo', 'git checkout --track origin/foo', 'git branch 2fa-login']) assert.equal(w.bash(command), 'deny', command);
+});

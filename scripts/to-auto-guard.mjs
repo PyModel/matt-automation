@@ -19,7 +19,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Only a prompt that starts with the command invokes it; quoting `/to-auto` in prose does not.
-const INVOKED = /^\s*[/$]to-auto\b/;
+// (?![\w-]), never \b: `/to-auto-ticket-lifecycle` is another skill and must not mark the session.
+const INVOKED = /^\s*[/$]to-auto(?![\w-])/;
 // Claude Code session ids are UUIDs; anything else is ignored rather than joined into a path.
 const SESSION_ID = /^[\w-]+$/;
 // ponytail: marks older than this are swept on the next mark; a session resumed after 30 idle days is unguarded until it says /to-auto again.
@@ -27,11 +28,12 @@ const MARK_TTL_MS = 30 * 864e5;
 const INACTIVE = new Set(['done', 'dry-run', 'stopped']);
 
 // Shell quoting that splits a word (`pus""h`, `pu\sh`, `'push'`) is removed first, so the rules see the plain spelling.
-const plain = (command) => command.replace(/["'\\]/g, '');
+// A quoted commit message is prose, dropped before that: `commit -m "never git push from CI"` is no push.
+const plain = (command) => command.replace(/(\s(?:-m|--message)[=\s]\s*)(?:"(?:[^"\\]|\\.)*"|'[^']*')/g, '$1MSG').replace(/["'\\]/g, '');
 // `git [global options] <subcommand>`: the subcommand is the first non-option word, so `git stash push` and `git log --grep=push` pass.
-const GIT = String.raw`\bgit\s+(?:-[Cc]\s+\S+\s+|--?\S+\s+)*`;
+const GIT = String.raw`\bgit\s+(?:(?:-[Cc]|--(?:git-dir|work-tree|namespace))\s+\S+\s+|--?\S+\s+)*`;
 const RAW_WORKTREE = new RegExp(GIT + String.raw`worktree\s+add\b`);
-const BRANCH_OR_PUSH = new RegExp(GIT + String.raw`(?:push\b|switch\s+(?:-c|-C|--create|--orphan)\b|checkout\s+(?:-[bB]|--orphan)\b|branch\s+(?:-[cCt]\s+|--(?:copy|track|no-track)\s+)?[^-\s])`);
+const BRANCH_OR_PUSH = new RegExp(GIT + String.raw`(?:push\b|switch\s+(?:-c|-C|--create|--orphan)\b|checkout\s+(?:-[bBt]|--orphan|--track)\b|branch\s+(?:-[cCt]\s+|--(?:copy|track|no-track)\s+)?(?![|&;<>]|\d*[<>])[^-\s])`);
 const GH_WRITE = /\bgh\s+(?:pr\s+(?:create|merge|ready|edit|close|reopen|comment|review|checkout|update-branch)|issue\s+(?:create|edit|comment|close|reopen|delete|transfer|pin|unpin|lock|unlock|develop))\b/;
 const GH_API = /\bgh\s+api\b([^;&|\n]*)/g;
 // pflag also takes attached values (`-XPOST`, `-fkey=v`); `-f`/`-F` are gh api's only short flags on those letters.

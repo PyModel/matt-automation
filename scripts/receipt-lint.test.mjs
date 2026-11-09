@@ -51,3 +51,13 @@ test('the CLI checks against the worktree it runs in, exiting 1 on a bad receipt
     fs.rmSync(file, { force: true });
   }
 });
+
+test('run through a linked path it still lints: silence with exit 0 read as a pass', () => {
+  const link = path.join(dir, 'lint-link.mjs');
+  fs.symlinkSync(fileURLToPath(new URL('./receipt-lint.mjs', import.meta.url)), link);
+  const bad = path.join(dir, 'empty-receipt.json');
+  fs.writeFileSync(bad, '{}');
+  const r = spawnSync(process.execPath, [link, bad], { cwd: dir, encoding: 'utf8' });
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.notEqual(r.stderr, '');
+});

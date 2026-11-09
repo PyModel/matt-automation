@@ -257,8 +257,10 @@ function installCommitHook(gitDir) {
     if (fs.readFileSync(hook, 'utf8') === text) return;
   } catch { /* not installed yet */ }
   fs.mkdirSync(path.dirname(hook), { recursive: true });
-  fs.writeFileSync(`${hook}.new`, text, { mode: 0o755 });
-  fs.renameSync(`${hook}.new`, hook);
+  // A temp name of its own: two goal.mjs copies installing at once shared `pre-commit.new`, and the slower rename threw ENOENT.
+  const fresh = `${hook}.${process.pid}.new`;
+  fs.writeFileSync(fresh, text, { mode: 0o755 });
+  fs.renameSync(fresh, hook);
 }
 
 /** The pre-commit check: every staged control-plane file must pass the guards `goal.mjs commit` applies with no owner. */
@@ -296,8 +298,14 @@ export function ensureControl(repo) {
     git(control, ['config', 'user.email', id.email]);
     fs.writeFileSync(path.join(control, '.gitignore'), CONTROL_IGNORES.map((l) => `${l}\n`).join(''));
     fs.writeFileSync(path.join(control, '.to-auto'), `to-auto control plane\nrepo-id: ${repoId(repo)}\n`);
-    git(control, ['add', '--', '.gitignore', '.to-auto']);
-    git(control, ['commit', '-q', '-m', 'Init to-auto control plane']);
+    try {
+      git(control, ['add', '--', '.gitignore', '.to-auto']);
+      git(control, ['commit', '-q', '-m', 'Init to-auto control plane']);
+    } catch (error) {
+      // The marker means "initialized": left behind, the next call would skip this commit for good.
+      fs.rmSync(path.join(control, '.to-auto'), { force: true });
+      throw error;
+    }
     return requireControl(repo);
   });
 }
@@ -503,7 +511,8 @@ export function verdict(repo, slug) {
     const target = runBranch(control, entry);
     const head = target ? commitOf(ws, target) : null;
     if (!head) throw new Refusal(`${slug} has no integration branch to review (worktrees.json run.branch)`);
-    if (commitOf(ws, v.head) !== head) throw new Refusal(`${last.path} read ${v.head}, but ${target} is at ${head.slice(0, 12)}; re-verify what landed since`);
+    // A commit id, never a name: `"head": "main"` resolves to the tip whatever the reviewer read.
+    if (!/^[0-9a-f]{7,40}$/.test(String(v.head)) || commitOf(ws, v.head) !== head) throw new Refusal(`${last.path} read ${v.head}, but ${target} is at ${head.slice(0, 12)}; re-verify what landed since`);
     const base = nowReviewBase(control, slug);
     const baseSha = base ? commitOf(ws, base) : null;
     if (!baseSha || !ancestorOf(ws, baseSha, head)) throw new Refusal(`NOW's review_base ${base} is not an ancestor of ${target}; the review must cover the whole run`);
@@ -584,12 +593,19 @@ export function resume(repo, slug) {
   });
 }
 
+// keep-going nudges only an id of this shape, so init and adopt refuse any other: the run would register and never be nudged.
+const AGENT_ID = /^[A-Za-z0-9._-]{1,128}$/;
+function assertAgentId(agent) {
+  if (!AGENT_ID.test(agent)) throw new UsageError(`--agent is a session id of letters, digits, . _ - (at most 128), got "${agent}"`);
+}
+
 /** A new session takes over a run (LEDGER.md re-entry): `agent` is who keep-going nudges and the guard releases. */
 export function adopt(repo, slug, { agent = null, harness = null } = {}) {
   assertSlug(slug);
   for (const [flag, value] of [['--agent', agent], ['--harness', harness]]) {
     if (typeof value !== 'string' || !value.trim()) throw new UsageError(`adopt needs ${flag}: \`goal.mjs adopt <slug> --agent <this session's id> --harness <harness name>\``);
   }
+  assertAgentId(agent);
   const control = requireControl(repo);
   return withLock(repo, 'registry', () => {
     refuseUncommittedSoleEdits(control, ['runs.json']);
@@ -763,6 +779,10 @@ export function init(repo, slug, objective, { agent = null, harness = null, work
   for (const [flag, value] of [['--agent', agent], ['--harness', harness]]) {
     if (typeof value !== 'string' || !value.trim()) throw new UsageError(`init needs ${flag}: \`goal.mjs init <slug> "<objective>" --agent <this session's id> --harness <harness name>\``);
   }
+  assertAgentId(agent);
+  // One line: the objective is written into ledger.md and bugs.md, where a `## NOW` on a line of its own is read as the run's state.
+  // Folded, never refused: `slug` takes a multi-paragraph objective, and the run it named must still register.
+  objective = String(objective ?? '').replace(/\s*[\r\n]+\s*/g, ' ').trim();
   if (BACKLOG.test(objective)) throw new Refusal(`"${objective}" is a backlog, not one run: snapshot the issue ids and split them into bounded batches, each its own /to-auto run, or hand the backlog to to-orc (BOOTSTRAP.md step 5)`);
   // The hand-back mode is config, read by `next`, never inferred from the objective's prose (CLOSE.md stage 9).
   mode ??= runtime.targetBranch ? 'supervisor' : 'branch';
@@ -1209,7 +1229,7 @@ export function checkAll(root, opts = {}) {
 // `check --all` STALE is the backstop. Upgrade: also count an in-flight ticket's live worker pid as progress.
 export function keepGoing(root, agent, sessions) {
   const stop = (reason) => ({ continue: false, reason });
-  if (!/^[A-Za-z0-9._-]{1,128}$/.test(agent ?? '')) return stop('no agent id');
+  if (!AGENT_ID.test(agent ?? '')) return stop('no agent id');
   const dirs = fs.existsSync(root) ? fs.readdirSync(root).map((d) => path.join(root, d)) : [];
   if (process.env.TO_AUTO_HOME) dirs.push(path.resolve(process.env.TO_AUTO_HOME));
   for (const dir of [...new Set(dirs)].filter(hasMarker).sort()) {
@@ -1271,7 +1291,8 @@ export function parseTicket(text) {
       if (part.trim()) problems.push(`unreadable claims part "${part.trim()}" (each ;-part starts with exclusive:, shared-regenerate: or guarded:; paths inside a part are comma-separated)`);
       continue;
     }
-    parsed[m[1]].push(...m[2].split(',').map((c) => c.trim()).filter(Boolean));
+    // `none` is the placeholder for an empty class, never a path: two tickets with `exclusive: none` do not overlap.
+    parsed[m[1]].push(...m[2].split(',').map((c) => c.trim()).filter((c) => c && c !== 'none'));
   }
   return { status, reason, blockers, claims: parsed, capability, fromReview, problems };
 }
@@ -1427,8 +1448,11 @@ export function setStatus(repo, feature, id, status, { reason = '', landed = nul
     if (reason) subject += `: ${reason}`;
     const waived = new Set(waivedCriteria(text));
     const ticked = status === 'done' ? text.replace(/^(\s*- )\[ \] (.+)$/gm, (line, lead, c) => (waived.has(c.trim()) ? line : `${lead}[x] ${c}`)) : text;
-    fs.writeFileSync(file, ticked.replace(STATUS_LINE, `**Status:** ${status}${reason ? `: ${reason}` : ''}`));
-    return commit(repo, `[${feature}] ticket ${want} ${subject}`, [path.relative(control, file)], { owner: 'status' });
+    return restoringOnThrow([file], () => {
+      // A function, never a string: `$&` or `$'` in a reason would splice the old line or the rest of the ticket in.
+      fs.writeFileSync(file, ticked.replace(STATUS_LINE, () => `**Status:** ${status}${reason ? `: ${reason}` : ''}`));
+      return commit(repo, `[${feature}] ticket ${want} ${subject}`, [path.relative(control, file)], { owner: 'status' });
+    });
   });
 }
 
@@ -1491,7 +1515,7 @@ export const MAX_AMENDMENTS = 2;
 // Paths a ticket may gain only through the objective's grant, never an amendment: CI workflows, migrations and any
 // top-level file. Broader than PLAN.md stage 6's planned `guarded` claims (top-level config): a top-level file a ticket
 // claimed at stage 6 is planned scope; one added later, or needed by a review fix, is a blocker.
-const GUARDED_CLASS = /^(?:\.github\/|\.gitlab-ci|\.circleci\/|[^/]+$)|(?:^|\/)migrations\//;
+const GUARDED_CLASS = /^(?:\.github\/|\.gitlab-ci|\.circleci\/|[^/]+$)|(?:^|\/)migrations(?:\/|$)/;
 
 /**
  * Widen an in-flight ticket's claims after its implementer reported a claims breach. Tracker issue,
@@ -1532,31 +1556,33 @@ export function amendClaims(repo, feature, id, kind, paths, why) {
     const contract = fs.existsSync(contractFile) ? fs.readFileSync(contractFile, 'utf8') : null;
     if (contract !== null && !contract.includes(oldLine)) throw new Refusal(`${contractRel} does not carry the ticket's Claims line verbatim; resync the contract first`);
 
-    const known = new Set(frontier(control, feature).conflicts.map((c) => JSON.stringify(c)));
-    fs.writeFileSync(file, before.replace(CLAIMS_LINE, () => `**Claims:** ${newLine}\n**Claims amended:** ${note}`));
-    const after = frontier(control, feature);
-    const added = after.conflicts.filter((c) => c.tickets.includes(want) && !known.has(JSON.stringify(c)));
-    if (added.length) {
-      fs.writeFileSync(file, before);
-      const [c] = added;
-      throw new Refusal(`the new claim overlaps ticket ${c.tickets.find((t) => t !== want)}'s ${c.claims.join(' / ')}; add a blocking edge or split the change into its own ticket`);
-    }
-    const changed = [path.relative(control, file)];
-    if (contract !== null) {
-      fs.writeFileSync(contractFile, contract.split(oldLine).join(newLine));
-      changed.push(contractRel);
-    }
-    const cross = after.cross_run.filter((c) => c.tickets[0] === want && fresh.some((p) => claimsOverlap(p, c.claims[0])));
-    const ledger = path.join('runs', feature, 'ledger.md');
-    // The ledger is shared with `event`, so its read-modify-write holds the control lock like every other ledger write.
-    const sha = withLock(repo, 'control', () => {
-      if (fs.existsSync(path.join(control, ledger))) {
-        appendEvent(path.join(control, ledger), 'claims', `${want} ${note}`);
-        changed.push(ledger);
+    return restoringOnThrow([file, contractFile], () => {
+      const known = new Set(frontier(control, feature).conflicts.map((c) => JSON.stringify(c)));
+      fs.writeFileSync(file, before.replace(CLAIMS_LINE, () => `**Claims:** ${newLine}\n**Claims amended:** ${note}`));
+      const after = frontier(control, feature);
+      const added = after.conflicts.filter((c) => c.tickets.includes(want) && !known.has(JSON.stringify(c)));
+      if (added.length) {
+        fs.writeFileSync(file, before);
+        const [c] = added;
+        throw new Refusal(`the new claim overlaps ticket ${c.tickets.find((t) => t !== want)}'s ${c.claims.join(' / ')}; add a blocking edge or split the change into its own ticket`);
       }
-      return commit(repo, `[${feature}] [claims] ${want} ${note}`, changed, { owner: 'claim' });
+      const changed = [path.relative(control, file)];
+      if (contract !== null) {
+        fs.writeFileSync(contractFile, contract.split(oldLine).join(newLine));
+        changed.push(contractRel);
+      }
+      const cross = after.cross_run.filter((c) => c.tickets[0] === want && fresh.some((p) => claimsOverlap(p, c.claims[0])));
+      const ledger = path.join('runs', feature, 'ledger.md');
+      // The ledger is shared with `event`, so its read-modify-write holds the control lock like every other ledger write.
+      const sha = withLock(repo, 'control', () => restoringOnThrow([path.join(control, ledger)], () => {
+        if (fs.existsSync(path.join(control, ledger))) {
+          appendEvent(path.join(control, ledger), 'claims', `${want} ${note}`);
+          changed.push(ledger);
+        }
+        return commit(repo, `[${feature}] [claims] ${want} ${note}`, changed, { owner: 'claim' });
+      }));
+      return { commit: sha, claims: newLine, cross_run: cross };
     });
-    return { commit: sha, claims: newLine, cross_run: cross };
   });
 }
 
@@ -1600,17 +1626,19 @@ export function waive(repo, feature, id, index, why, { carriedTo = null } = {}) 
       carried = ` (carried to ${to})`;
     }
     const note = `${criterion} — ${why.trim()}${carried}`;
-    fs.writeFileSync(file, `${before.replace(/\n*$/, '\n')}**Waived:** ${note}\n`);
-    const changed = [path.relative(control, file)];
-    const ledger = path.join('runs', feature, 'ledger.md');
-    const sha = withLock(repo, 'control', () => {
-      if (fs.existsSync(path.join(control, ledger))) {
-        appendEvent(path.join(control, ledger), 'waive', `${want} ${note}`);
-        changed.push(ledger);
-      }
-      return commit(repo, `[${feature}] [waive] ${want} ${note}`, changed, { owner: 'waive' });
+    return restoringOnThrow([file], () => {
+      fs.writeFileSync(file, `${before.replace(/\n*$/, '\n')}**Waived:** ${note}\n`);
+      const changed = [path.relative(control, file)];
+      const ledger = path.join('runs', feature, 'ledger.md');
+      const sha = withLock(repo, 'control', () => restoringOnThrow([path.join(control, ledger)], () => {
+        if (fs.existsSync(path.join(control, ledger))) {
+          appendEvent(path.join(control, ledger), 'waive', `${want} ${note}`);
+          changed.push(ledger);
+        }
+        return commit(repo, `[${feature}] [waive] ${want} ${note}`, changed, { owner: 'waive' });
+      }));
+      return { commit: sha, criterion };
     });
-    return { commit: sha, criterion };
   });
 }
 
@@ -2033,10 +2061,17 @@ export function mergeTicket(repo, feature, id, { check = null } = {}) {
     if (drift.length) throw new Refusal(`ticket ${want} does not land: ${drift.join('; ')}`);
     const checked = checkReceipt({ text: receipt, worktree: wt.path, base, ticketText: text });
     if (!checked.ok || checked.conclusion !== 'completed') throw new Refusal(`ticket ${want}'s receipt does not land: ${[...checked.problems, ...(checked.conclusion === 'completed' ? [] : [`conclusion is ${checked.conclusion}`])].join('; ')} (BUILD.md § Stuck detection, or § Claims amendment for claims-breach)`);
-    const touched = git(wt.path, ['diff', '--name-only', `${base}...HEAD`]).split('\n').filter(Boolean);
+    // --no-renames: a rename lists only its destination, so moving an unclaimed file into a claimed folder hid the deletion.
+    const touched = git(wt.path, ['diff', '--name-only', '--no-renames', `${base}...HEAD`]).split('\n').filter(Boolean);
     const breach = claimsBreach(text, touched);
     if (breach.unclaimed.length || breach.guarded.length) throw new Refusal(`ticket ${want} touched ${[...breach.unclaimed.map((f) => `${f} (unclaimed)`), ...breach.guarded.map((f) => `${f} (guarded)`)].join(', ')}: an unclaimed edit, so it does not land (BUILD.md step 5.1)`);
     if (git(run.path, ['status', '--porcelain'])) throw new Refusal(`the run worktree ${run.path} has uncommitted changes; commit or discard them before a merge`);
+    // In supervisor mode the run worktree is the owner's checkout: on another branch there, the fast-forward would land the ticket on it.
+    const on = git(run.path, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    if (on !== run.branch) throw new Refusal(`the run worktree ${run.path} is on ${on}, not ${run.branch}; switch it back before a merge`);
+    // Before the rebase: a refusal after it would leave a rebased head the receipt no longer names.
+    const command = check ?? discoverCheck(run.path, readRegistry(control).find((r) => r.slug === feature)?.objective ?? '').command;
+    if (!command) throw new Refusal(`no suite to run after the merge: pass --check <command> (NOW's commands: suite=…); nothing landed`);
     const before = git(run.path, ['rev-parse', 'HEAD']);
     const oldHead = git(wt.path, ['rev-parse', 'HEAD']);
     const oldPatch = patchId(wt.path, base, oldHead);
@@ -2044,8 +2079,6 @@ export function mergeTicket(repo, feature, id, { check = null } = {}) {
     if (rebase.status !== 0) throw new Refusal(`rebasing ${wt.branch} onto ${run.branch} conflicts; resolve it in ${wt.path} per BUILD.md § Merge conflicts, get a fresh receipt at the rebased head, then merge again:\n${(rebase.stdout + rebase.stderr).trim()}`);
     const head = git(wt.path, ['rev-parse', 'HEAD']);
     if (head !== oldHead && patchId(wt.path, before, head) !== oldPatch) throw new Refusal(`the rebase onto ${run.branch} changed ticket ${want}'s change; get a fresh receipt at ${head.slice(0, 12)} before it lands`);
-    const command = check ?? discoverCheck(run.path, readRegistry(control).find((r) => r.slug === feature)?.objective ?? '').command;
-    if (!command) throw new Refusal(`no suite to run after the merge: pass --check <command> (NOW's commands: suite=…); nothing landed`);
     git(run.path, ['merge', '--quiet', '--ff-only', wt.branch]);
     // --keep, never --hard: in supervisor mode the run worktree is the owner's checkout, and an edit made there while the
     // suite ran is theirs. A reset that would overwrite one refuses instead, and says so.
@@ -2463,6 +2496,23 @@ function writeAndCommit(repo, control, message, writes, opts) {
   });
 }
 
+/**
+ * Run `fn`, which edits these control files and commits them. A throw puts each file back: `commit` resets only the index
+ * when a guard refuses, and the edit left behind made every later call refuse the ticket as uncommitted.
+ */
+function restoringOnThrow(files, fn) {
+  const before = files.map((f) => [f, fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null]);
+  try {
+    return fn();
+  } catch (error) {
+    for (const [f, text] of before) {
+      if (text === null) fs.rmSync(f, { force: true });
+      else fs.writeFileSync(f, text);
+    }
+    throw error;
+  }
+}
+
 export function commit(repo, message, files, { owner = null } = {}) {
   if (!files.length) throw new Error('commit needs at least one file');
   const control = requireControl(repo);
@@ -2585,7 +2635,7 @@ export function preflight(repo) {
     fs.mkdirSync(path.dirname(state), { recursive: true });
     fs.accessSync(path.dirname(state), fs.constants.W_OK);
   } catch (error) {
-    problems.push(error.message.includes('inside the repo') ? error.message : `state directory is not writable: ${state ?? controlDir(repo)}`);
+    problems.push(error.message.includes('inside the repo') ? error.message : (state ? `state directory is not writable: ${state}` : `state directory cannot be resolved: ${error.message.split('\n')[0]}`));
   }
   if (problems.length) throw new Error(`to-auto cannot start:\n${problems.map((p) => `- ${p}`).join('\n')}`);
   const allow = checkAllow(repo);
@@ -2640,6 +2690,8 @@ export function supervise(repo) {
 
 export function land(repo, slug = null) {
   const control = requireControl(repo);
+  // Checked before runs/<slug>/landed.txt is built from it: `land ../../x` wrote outside runs/.
+  if (slug !== null) assertSlug(slug);
   const ws = readJson(path.join(control, 'workspace.json'));
   const saved = readJson(path.join(control, 'supervisor.json'));
   const workspace = ws.workspace || fs.realpathSync.native(repo);
@@ -2782,7 +2834,12 @@ function checkedOutAt(workspace, branch) {
   let wt = null;
   for (const line of git(workspace, ['worktree', 'list', '--porcelain']).split('\n')) {
     if (line.startsWith('worktree ')) wt = line.slice(9);
-    if (line === `branch refs/heads/${branch}`) return wt;
+    if (line === `branch refs/heads/${branch}`) {
+      if (fs.existsSync(wt)) return wt;
+      // Its folder was deleted by hand: git still lists it (prunable), and the branch cannot be checked out again until it is pruned.
+      git(workspace, ['worktree', 'prune']);
+      return null;
+    }
   }
   return null;
 }
@@ -2935,7 +2992,11 @@ export function worktreeReturn(repo, slug, id) {
           requireSlot(r.path, workspace);
           git(r.path, ['switch', '--quiet', '--detach']);
           const run = keepRootHead(workspace, () => spawnSync(treehouseBin() ?? 'treehouse', ['return', r.path], { encoding: 'utf8' }));
-          if (run.status !== 0) throw new Error(`treehouse return ${r.path} failed (exit ${run.status}): ${(run.stderr || run.error?.message || '').trim()}`);
+          if (run.status !== 0) {
+            // The record stays active, so the slot goes back on its branch: left detached, the next commit there is on no branch.
+            if (fs.existsSync(r.path)) git(r.path, ['switch', '--quiet', r.branch]);
+            throw new Error(`treehouse return ${r.path} failed (exit ${run.status}): ${(run.stderr || run.error?.message || '').trim()}`);
+          }
         } else {
           git(workspace, ['worktree', 'remove', r.path]);
         }
@@ -2986,7 +3047,7 @@ export function cleanup(repo) {
     const real = canon(wt);
     if (real === resolved || real.startsWith(resolved + path.sep)) git(repo, ['worktree', 'remove', wt]);
   }
-  fs.rmSync(resolved, { recursive: true, force: true });
+  removeTree(resolved);
   return `removed ${resolved}`;
 }
 
@@ -3139,10 +3200,12 @@ export function gc(repo, { apply = false, slots: destroySlots = false, staleHour
   const named = claimed(() => true);
   for (const wt of listed.filter((p) => fs.existsSync(p) && inside(path.join(control, 'worktrees'), p) && !inside(pool, p) && !named.has(canon(p)))) {
     // BOOTSTRAP's temp worktree (PIPELINE.md § worktrees) is in no record while its stage runs; its stage removes it.
-    const why = canon(wt) === canon(path.join(control, 'worktrees', 'bootstrap')) ? 'the bootstrap stage removes it' : heldWork(wt);
+    // A run whose worktrees.json cannot be read names no worktree, so any of these may be its live one.
+    const unknown = () => (broken.length ? `${broken.join(', ')}'s worktrees.json is unreadable, so this may be its worktree` : null);
+    const why = canon(wt) === canon(path.join(control, 'worktrees', 'bootstrap')) ? 'the bootstrap stage removes it' : unknown() ?? heldWork(wt);
     act({ what: 'unrecorded', path: wt, kb: why ? 0 : sizeKB(wt), action: why ? 'keep' : 'remove', ...(why && { why }) }, () => withLock(repo, 'worktrees', () => {
       if (claimed(() => true).has(canon(wt))) throw new Error('a run has recorded it since');
-      const held = heldWork(wt);
+      const held = unknown() ?? heldWork(wt);
       if (held) throw new Error(held);
       git(workspace, ['worktree', 'remove', wt]);
     }));
@@ -3193,9 +3256,10 @@ export function gcAll(root, opts = {}) {
 }
 
 function checkLine(text) {
-  const quoted = text.match(/(?:^|\s)check:\s+"([^"]+)"/);
+  // [ \t], never \s: a prose line ending in `check:` would take the next line as the command.
+  const quoted = text.match(/(?:^|\s)check:[ \t]+"([^"]+)"/);
   if (quoted) return quoted[1];
-  const line = text.match(/(?:^|\s)check:\s+(\S.*)$/m);
+  const line = text.match(/(?:^|\s)check:[ \t]+(\S.*)$/m);
   return line ? line[1].trim() : null;
 }
 
@@ -3433,7 +3497,10 @@ function main(argv) {
     return 0;
   }
   if (command === 'run' && rest[0] === '--') {
-    const { exit, output, log } = runLogged(process.cwd(), rest.slice(1).join(' '));
+    // The first word is the shell command as written (`run -- 'npm test && npm run lint'`). Each later word the shell would
+    // read as more than one plain word is quoted back, so `run -- sh -c 'a && b'` runs as typed instead of as `sh -c a && b`.
+    const words = rest.slice(1);
+    const { exit, output, log } = runLogged(process.cwd(), words.map((w, i) => (i === 0 || /^[\w@%+=:,./-]+$/.test(w) ? w : shq(w))).join(' '));
     // First and last: a harness that truncates long tool output keeps one end of it, and a receipt cannot cite a log without this line.
     console.log(`log: ${JSON.stringify(log)}`);
     process.stdout.write(output);

@@ -6,12 +6,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   init, next, tick, pin, take, frontier, prepareTicket, brief, mergeTicket, verdict, setRegistry, checkRun, checkContract,
   checkReceipt, commit, configure, prepare, worktreeGet, runLogged, scriptsPin, ownerDecisions, gc, MAX_BRIEF_BYTES,
-  adopt, controlDir, firstStageArgv, gcAll, stateDir,
+  adopt, controlDir, firstStageArgv, gcAll, stateDir, setStatus, amendClaims, discoverCheck, land, preflight,
+  ensureControl, cleanup, worktreeReturn,
 } from './goal.mjs';
+
+const GOAL = path.join(import.meta.dirname, 'goal.mjs');
 
 process.env.TO_AUTO_TREEHOUSE = ''; // plain git worktrees: a treehouse on PATH must not lease real pool slots
 const WHO = { agent: 'test-session', harness: 'test' };
@@ -598,4 +601,184 @@ test('a branch-mode run keeps goal/<slug> as its run branch after a later superv
   } finally {
     configure();
   }
+});
+
+// Review of 2026-11-09: each case below failed on the scripts as they were.
+test('ticket writes: a $ in a reason stays text, a refused commit leaves no edit behind, `none` is no path, a bare migrations folder is guarded', () => {
+  const { repo, control, read } = setup();
+  init(repo, 'x', 'X', WHO);
+  seedTicket(repo, control, '01-a.md', ticketText('blocked', 'exclusive: none'));
+  seedTicket(repo, control, '02-b.md', ticketText('ready-for-agent', 'exclusive: none'));
+  assert.deepEqual(frontier(control, 'x').conflicts, [], 'two tickets that claim nothing do not overlap');
+  setStatus(repo, 'x', '01', 'stuck', { reason: "cost $& and $' more" });
+  assert.match(read('tracker/x/issues/01-a.md'), /^\*\*Status:\*\* stuck: cost \$& and \$' more\n\*\*Blocked by:\*\* None$/m);
+  for (const dir of ['db/migrations', 'db/migrations/']) assert.throws(() => amendClaims(repo, 'x', '02', 'exclusive', [dir], 'schema'), /is guarded/, dir);
+  write(path.join(control, 'tracker/x/issues/03-c.md'), ticketText('blocked', 'exclusive: c/').replace('None', 'banana'));
+  rawCommit(control, '[x] fixture: a malformed ticket');
+  assert.throws(() => setStatus(repo, 'x', '03', 'stuck', { reason: 'x' }), /malformed/);
+  assert.equal(git(control, 'status', '--porcelain'), '', 'the refused status edit is not left for the next call to trip on');
+});
+
+test('merge reads the diff without rename folding: moving an unclaimed file into a claimed folder does not land', () => {
+  const { repo, control } = dispatched({ one: '- [ ] ok/b.txt exists\n', two: '- [ ] b.txt says B (Red at base)\n' });
+  fillIn(repo, control, '01');
+  amendClaims(repo, 'x', '01', 'exclusive', ['ok/'], 'the file moves here');
+  const wt = worktreeGet(repo, 'x', '01');
+  const base = git(wt, 'rev-parse', 'HEAD');
+  fs.mkdirSync(path.join(wt, 'ok'));
+  git(wt, 'mv', 'b.txt', 'ok/b.txt');
+  git(wt, 'commit', '-qm', 'Refs 01');
+  assert.equal(git(wt, 'diff', '--name-only', `${base}...HEAD`), 'ok/b.txt', 'git folds the rename, hiding the deleted b.txt');
+  const { log } = runLogged(wt, 'test -f ok/b.txt');
+  const receiptRel = 'runs/x/tickets/01.receipt.md';
+  write(path.join(control, receiptRel), JSON.stringify({
+    ticket: '01', conclusion: 'completed', ticket_base: base, head: git(wt, 'rev-parse', 'HEAD'), changed_files: ['ok/b.txt'],
+    criteria: [{ criterion: 'ok/b.txt exists', result: 'pass', evidence: 'test -f ok/b.txt exit 0' }],
+    validation: [{ command: 'test -f ok/b.txt', exit: 0, summary: '', log }],
+    review: { cited_fixed: 0, leads: [] }, not_validated: [], blockers: [], external_effects: [], worktree_clean: true,
+  }));
+  commit(repo, '[x] 01 receipt', [receiptRel]);
+  assert.throws(() => mergeTicket(repo, 'x', '01', { check: 'true' }), /touched b\.txt \(unclaimed\)/);
+});
+
+test('merge refuses a run worktree on another branch, and a missing suite before it rebases the ticket', () => {
+  const { repo, control, run } = dispatched({ one: '- [ ] a.txt says bye (Red at base)\n', two: '- [ ] b.txt says B (Red at base)\n' });
+  fillIn(repo, control, '01');
+  const wt = worktreeGet(repo, 'x', '01');
+  const base = git(wt, 'rev-parse', 'HEAD');
+  write(path.join(wt, 'a.txt'), 'bye\n');
+  git(wt, 'commit', '-qam', 'Refs 01');
+  const head = git(wt, 'rev-parse', 'HEAD');
+  const { log } = runLogged(wt, 'grep -c bye a.txt');
+  const receiptRel = 'runs/x/tickets/01.receipt.md';
+  write(path.join(control, receiptRel), JSON.stringify({
+    ticket: '01', conclusion: 'completed', ticket_base: base, head, changed_files: ['a.txt'],
+    criteria: [{ criterion: 'a.txt says bye (Red at base)', result: 'pass', evidence: 'grep -c bye a.txt exit 0' }],
+    validation: [{ command: 'grep -c bye a.txt', exit: 0, summary: '1', log }],
+    review: { cited_fixed: 0, leads: [] }, not_validated: [], blockers: [], external_effects: [], worktree_clean: true,
+  }));
+  commit(repo, '[x] 01 receipt', [receiptRel]);
+  // The run branch moves, so a merge would rebase the ticket; with no suite to run it must refuse before that.
+  write(path.join(run, 'c.txt'), 'c\n');
+  git(run, 'add', 'c.txt');
+  git(run, 'commit', '-qm', 'another ticket landed');
+  assert.throws(() => mergeTicket(repo, 'x', '01'), /no suite to run/);
+  assert.equal(git(wt, 'rev-parse', 'HEAD'), head, 'the receipt still names the ticket head');
+  git(run, 'switch', '-q', '-c', 'elsewhere');
+  assert.throws(() => mergeTicket(repo, 'x', '01', { check: 'true' }), /is on elsewhere, not goal\/x/);
+});
+
+test('gc keeps every unrecorded worktree while a run\'s worktrees.json is unreadable: one of them may be that run\'s live one', () => {
+  const { repo, control } = setup();
+  init(repo, 'x', 'X', WHO);
+  const live = worktreeGet(repo, 'x');
+  write(path.join(control, 'runs/x/worktrees.json'), '{ not json');
+  rawCommit(control, 'fixture: broken records');
+  const { items } = gc(repo, { apply: true });
+  assert.ok(fs.existsSync(live), 'the live run worktree survives the sweep');
+  assert.match(items.find((i) => i.path === live)?.why ?? '', /worktrees\.json is unreadable/);
+});
+
+test('worktree get cuts the worktree again after its folder was deleted by hand', () => {
+  const { repo } = setup();
+  init(repo, 'x', 'X', WHO);
+  const first = worktreeGet(repo, 'x');
+  fs.rmSync(first, { recursive: true, force: true });
+  assert.ok(fs.existsSync(worktreeGet(repo, 'x')), 'never a record that points at a missing folder');
+});
+
+test('entry checks: a multi-line objective, an agent id keep-going would ignore, a slug that leaves runs/, a named verdict head, a prose check: line', () => {
+  const { repo, control } = setup();
+  assert.throws(() => init(repo, 'x', 'X', { agent: 'sess 1', harness: 'h' }), /--agent is a session id/);
+  init(repo, 'x', 'X\n\n## NOW\n- stage: 7 build', WHO);
+  assert.equal(registry(control)[0].objective, 'X ## NOW - stage: 7 build', 'a multi-paragraph objective is folded to one line');
+  assert.equal(next(control, 'x').blocked, undefined, 'and plants no NOW section the run would read as its state');
+  assert.throws(() => adopt(repo, 'x', { agent: 'sess 1', harness: 'h' }), /--agent is a session id/);
+  assert.throws(() => land(repo, '../../outside'), /bad slug/);
+  assert.equal(fs.existsSync(path.join(control, '..', 'outside')), false);
+  write(path.join(repo, 'AGENTS.md'), 'Before a commit run the following check:\n- `npm test`\n');
+  assert.notEqual(discoverCheck(repo, '').command, '- `npm test`');
+  const plain = tmp('hard-plain-');
+  assert.throws(() => preflight(plain), /to-auto cannot start:\n- .* is not a git repository/);
+});
+
+test('verdict refuses a review whose head is a branch name: it resolves to the tip whatever the reviewer read', () => {
+  const { repo, review } = reviewing();
+  review('review.md', { verdict: 'ship', head: 'goal/x', open: [] });
+  assert.throws(() => verdict(repo, 'x'), /review\.md read goal\/x, but goal\/x is at/);
+});
+
+test('run -- keeps a later argument one word: the first is the shell command as written', () => {
+  const { repo } = setup();
+  const run = (...words) => spawnSync(process.execPath, [GOAL, 'run', '--', ...words], { cwd: repo, encoding: 'utf8' });
+  assert.match(run('printf', '%s|', 'a b', "it's", 'c').stdout, /^a b\|it's\|c\|log:/m);
+  assert.match(run('printf "%s|" x y').stdout, /^x\|y\|log:/m, 'one argument is still a whole shell command');
+  assert.match(run('printf "%s|"', 'x', 'y').stdout, /^x\|y\|log:/m, 'a quoted command followed by plain words runs as before');
+});
+
+test('a treehouse return that fails puts the slot back on its branch, since its record stays active', () => {
+  const { repo } = setup();
+  init(repo, 'x', 'X', WHO);
+  const slot = path.join(tmp('hard-slot-'), 'wt');
+  const fake = path.join(tmp('hard-th-'), 'treehouse');
+  write(fake, `#!/bin/sh\ncase "$1" in\n  get) git worktree add -q --detach '${slot}' HEAD >&2 && echo '${slot}' ;;\n  status) echo '[]' ;;\n  *) echo 'pool is locked' >&2; exit 1 ;;\nesac\n`);
+  fs.chmodSync(fake, 0o755);
+  process.env.TO_AUTO_TREEHOUSE = fake;
+  try {
+    worktreeGet(repo, 'x');
+    const branch = git(slot, 'rev-parse', '--abbrev-ref', 'HEAD');
+    assert.notEqual(branch, 'HEAD');
+    assert.throws(() => worktreeReturn(repo, 'x'), /treehouse return .* failed \(exit 1\): pool is locked/);
+    assert.equal(git(slot, 'rev-parse', '--abbrev-ref', 'HEAD'), branch);
+  } finally {
+    process.env.TO_AUTO_TREEHOUSE = '';
+  }
+});
+
+test('the pre-commit hook is written under a temp name of its own: a pre-commit.new another copy left never blocks it', () => {
+  const { repo, control } = setup();
+  const hooks = path.join(control, '.git', 'hooks');
+  fs.rmSync(path.join(hooks, 'pre-commit'));
+  fs.mkdirSync(path.join(hooks, 'pre-commit.new'));
+  init(repo, 'x', 'X', WHO);
+  assert.match(fs.readFileSync(path.join(hooks, 'pre-commit'), 'utf8'), /guard-staged/);
+  assert.deepEqual(fs.readdirSync(hooks).filter((f) => /^pre-commit\.\d+\.new$/.test(f)), []);
+});
+
+test('a control plane whose first commit fails is not marked initialized: the next call makes that commit', () => {
+  const repo = tmp('hard-repo-');
+  git(repo, 'init', '-q', '-b', 'main');
+  git(repo, 'config', 'user.email', 't@t');
+  git(repo, 'config', 'user.name', 't');
+  write(path.join(repo, 'a.txt'), 'a\n');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-qm', 'init');
+  configure();
+  const control = process.env.TO_AUTO_HOME = tmp('hard-state-');
+  const hooks = tmp('hard-hooks-');
+  write(path.join(hooks, 'pre-commit'), '#!/bin/sh\necho "hook says no" >&2\nexit 1\n');
+  fs.chmodSync(path.join(hooks, 'pre-commit'), 0o755);
+  Object.assign(process.env, { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: hooks });
+  try {
+    assert.throws(() => ensureControl(repo), /hook says no/);
+  } finally {
+    for (const k of ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0']) delete process.env[k];
+  }
+  assert.equal(fs.existsSync(path.join(control, '.to-auto')), false, 'no marker without the commit');
+  ensureControl(repo);
+  assert.equal(git(control, 'log', '--format=%s'), 'Init to-auto control plane');
+});
+
+test('cleanup removes a control plane that holds a read-only folder', () => {
+  const { repo, control } = setup();
+  const venv = path.join(control, 'cache', 'venv');
+  write(path.join(venv, 'lib', 'x.py'), 'x\n');
+  fs.chmodSync(path.join(venv, 'lib'), 0o500);
+  fs.chmodSync(venv, 0o500);
+  try {
+    assert.match(cleanup(repo), /^removed /);
+  } finally {
+    if (fs.existsSync(venv)) for (const d of [venv, path.join(venv, 'lib')]) fs.chmodSync(d, 0o700);
+  }
+  assert.equal(fs.existsSync(control), false);
 });

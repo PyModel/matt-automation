@@ -2175,9 +2175,10 @@ export function checkReceipt({ text, worktree = null, base = null, ticketText = 
       problems.push(`ticket_base ${r.ticket_base} is not the dispatch base ${base}`);
     }
     if (base !== null && strings(r.changed_files)) {
-      const actual = git(worktree, ['diff', '--name-only', `${base}...HEAD`]).split('\n').filter(Boolean).sort();
+      // --no-renames, as the claims gate reads it: a rename is its old path deleted and its new one added, whatever diff.renames says.
+      const actual = git(worktree, ['diff', '--name-only', '--no-renames', `${base}...HEAD`]).split('\n').filter(Boolean).sort();
       const claimed = [...new Set(r.changed_files)].sort();
-      if (actual.join('\n') !== claimed.join('\n')) problems.push(`changed_files [${claimed.join(', ')}] differ from git diff ${base}...HEAD [${actual.join(', ')}]`);
+      if (actual.join('\n') !== claimed.join('\n')) problems.push(`changed_files [${claimed.join(', ')}] differ from git diff --name-only --no-renames ${base}...HEAD [${actual.join(', ')}]`);
     }
     const dirty = git(worktree, ['status', '--porcelain']) !== '';
     if (typeof r.worktree_clean === 'boolean' && r.worktree_clean === dirty) problems.push(`worktree_clean is ${r.worktree_clean} but git status says the worktree is ${dirty ? 'dirty' : 'clean'}`);

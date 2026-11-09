@@ -632,7 +632,7 @@ test('merge reads the diff without rename folding: moving an unclaimed file into
   const { log } = runLogged(wt, 'test -f ok/b.txt');
   const receiptRel = 'runs/x/tickets/01.receipt.md';
   write(path.join(control, receiptRel), JSON.stringify({
-    ticket: '01', conclusion: 'completed', ticket_base: base, head: git(wt, 'rev-parse', 'HEAD'), changed_files: ['ok/b.txt'],
+    ticket: '01', conclusion: 'completed', ticket_base: base, head: git(wt, 'rev-parse', 'HEAD'), changed_files: ['b.txt', 'ok/b.txt'],
     criteria: [{ criterion: 'ok/b.txt exists', result: 'pass', evidence: 'test -f ok/b.txt exit 0' }],
     validation: [{ command: 'test -f ok/b.txt', exit: 0, summary: '', log }],
     review: { cited_fixed: 0, leads: [] }, not_validated: [], blockers: [], external_effects: [], worktree_clean: true,
@@ -781,4 +781,15 @@ test('cleanup removes a control plane that holds a read-only folder', () => {
     if (fs.existsSync(venv)) for (const d of [venv, path.join(venv, 'lib')]) fs.chmodSync(d, 0o700);
   }
   assert.equal(fs.existsSync(control), false);
+});
+
+test('a receipt lists a renamed file under both names: the checker reads the diff without rename folding', () => {
+  const { repo } = setup();
+  const base = git(repo, 'rev-parse', 'HEAD');
+  git(repo, 'mv', 'b.txt', 'c.txt');
+  git(repo, 'commit', '-qm', 'rename');
+  const head = git(repo, 'rev-parse', 'HEAD');
+  const about = (changed_files) => checkReceipt({ text: JSON.stringify({ ticket: '01', conclusion: 'partial', ticket_base: base, head, changed_files }), worktree: repo, base }).problems.filter((p) => /changed_files/.test(p));
+  assert.match(String(about(['c.txt'])[0]), /differ from git diff --name-only --no-renames/);
+  assert.deepEqual(about(['b.txt', 'c.txt']), []);
 });

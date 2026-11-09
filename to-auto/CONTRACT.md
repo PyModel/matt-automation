@@ -84,7 +84,7 @@ The implementer's final message ends with exactly one fenced `json` block, the r
   "conclusion": "completed",
   "ticket_base": "<full sha from the contract>",
   "head": "<git rev-parse HEAD in the ticket worktree>",
-  "changed_files": ["<git diff --name-only ticket_base...HEAD>"],
+  "changed_files": ["<git diff --name-only --no-renames ticket_base...HEAD>"],
   "criteria": [{ "criterion": "<ticket checkbox text, verbatim>", "result": "pass", "evidence": "<command, exit code, test id>" }],
   "validation": [{ "command": "<command>", "exit": 0, "summary": "<one line>", "log": { "path": "<from goal.mjs run>", "sha256": "<from goal.mjs run>" } }],
   "repairs": [],

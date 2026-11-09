@@ -67,7 +67,7 @@ else {
   }
   if (runDir && isStr(os.flags)) {
     const model = lockedModel(runDir);
-    if (model && !os.flags.includes(`--model ${model}`)) bad(`orchestration_summary.flags must record "--model ${model}" as ${path.join(runDir, "run.json")} fixed it`);
+    if (model && !os.flags.split(/\s+/).some((word, i, all) => word === "--model" && all[i + 1] === model)) bad(`orchestration_summary.flags must record "--model ${model}" as ${path.join(runDir, "run.json")} fixed it`);
   }
   if (!isStr(os.flags) || /[<>]/.test(os.flags)) bad("orchestration_summary.flags must record the real worker flags (e.g. \"--model my-provider/my-model:high\"), not a template placeholder");
   if (!STATUSES.includes(os.status)) bad(`orchestration_summary.status must be one of ${STATUSES.join(", ")}`);

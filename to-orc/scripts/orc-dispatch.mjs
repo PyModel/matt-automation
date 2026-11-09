@@ -451,13 +451,15 @@ function restoreWorkspace(repo, pin, before) {
       ? gitRun(root, ["ls-tree", "-r", "-z", "--name-only", pin.tree, "--", ...changed]).split("\0").filter(Boolean)
       : []);
     const back = changed.filter((p) => inBefore.has(p));
-    if (back.length) gitRun(root, ["restore", `--source=${pin.tree}`, "--worktree", "--pathspec-from-file=-", "--pathspec-file-nul", "--"], { input: `${back.join("\0")}\0` });
+    // Added paths go first: a worker that swapped a tracked file for a folder (or a folder for a file) left the old
+    // path occupied, and restoring into it threw before the index came back.
     for (const p of changed.filter((p) => !inBefore.has(p))) {
-      fs.rmSync(path.join(root, p), { force: true });
+      fs.rmSync(path.join(root, p), { force: true, recursive: true });
       for (let dir = path.dirname(path.join(root, p)); dir.startsWith(`${root}${path.sep}`); dir = path.dirname(dir)) {
         try { fs.rmdirSync(dir); } catch { break; }
       }
     }
+    if (back.length) gitRun(root, ["restore", `--source=${pin.tree}`, "--worktree", "--pathspec-from-file=-", "--pathspec-file-nul", "--"], { input: `${back.join("\0")}\0` });
     // The index last, byte for byte, so staged state and flags come back exactly.
     if (pin.indexCopy) fs.copyFileSync(pin.indexCopy, pin.indexFile);
     else fs.rmSync(pin.indexFile, { force: true });
@@ -663,7 +665,9 @@ if (opts.maxCost !== undefined && !(opts.maxCost > 0)) usageError("--max-cost mu
 
 const timeout = opts.timeout || policy.timeout;
 // The relay's grammar (pi-delegate relay.mjs parseDuration): integer h/m/s parts, in that order.
-if (!/^(?=\d)(\d+h)?(\d+m)?(\d+s)?$/.test(timeout)) usageError(`--timeout must look like 45m, 2h, 90s or 1h30m (got ${timeout})`);
+// The relay also refuses a zero or a timer past setTimeout's 2^31-1 ms, by then with the old evidence already moved.
+const timeoutMs = [...timeout.matchAll(/(\d+)([hms])/g)].reduce((ms, [, n, unit]) => ms + Number(n) * { h: 3600e3, m: 60e3, s: 1e3 }[unit], 0);
+if (!/^(?=\d)(\d+h)?(\d+m)?(\d+s)?$/.test(timeout) || !(timeoutMs > 0 && timeoutMs <= 2147483647)) usageError(`--timeout must look like 45m, 2h, 90s or 1h30m (got ${timeout})`);
 
 ctx.phase = opts.phase;
 ctx.task = opts.task;
@@ -698,8 +702,10 @@ ctx.out = path.join(runDir, opts.task);
 // as writes and every no-write phase fails forever. Validate BEFORE checking brief or writing status!
 const canonRepo = canonicalPath(repo);
 const canonRunDir = canonicalPath(runDir);
-const rel = path.relative(canonRepo, canonRunDir);
-const isInside = rel === "" || (!rel.startsWith(".." + path.sep) && rel !== ".." && !path.isAbsolute(rel));
+// The fingerprint covers the whole git toplevel, which is wider than --repo when --repo is a folder inside it.
+const insideOf = (dir) => { const rel = path.relative(dir, canonRunDir); return rel === "" || (!rel.startsWith(".." + path.sep) && rel !== ".." && !path.isAbsolute(rel)); };
+const toplevel = spawnSync("git", ["-C", repo, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+const isInside = insideOf(canonRepo) || (toplevel.status === 0 && insideOf(canonicalPath(toplevel.stdout.trim())));
 if (isInside) {
   finish({ ...ctx, out: null }, "PRECONDITION_FAILED", `--run-dir is inside the workspace (${runDir}); artifacts would register as writes — put it outside the repo`);
 }
@@ -730,7 +736,8 @@ if (policy.after) {
 // provisional status, never a cycle.
 const own = (() => { try { return JSON.parse(fs.readFileSync(path.join(ctx.out, "orc-status.json"), "utf8")); } catch { return null; } })();
 const prior = [...priorDispatches(runDir, opts.task), ...(own && own.orcStatus !== "RUNNING" && !opts.childOfBackground ? [own] : [])];
-const priorExecuted = prior.filter((p) => p.orcStatus !== "PRECONDITION_FAILED");
+// RUNTIME_UNAVAILABLE too: pi or the relay was missing, so no worker ran and nothing was spent.
+const priorExecuted = prior.filter((p) => !["PRECONDITION_FAILED", "RUNTIME_UNAVAILABLE"].includes(p.orcStatus));
 // A cycle is an implement or repair that ran to an end. TIMEOUT and ABORTED leave a partial tree that
 // DELEGATION.md says to re-run fresh, so they spend budget (--max-cost) but not a cycle.
 const PARTIAL = new Set(["TIMEOUT", "ABORTED"]);
@@ -740,8 +747,9 @@ const totalCycles = implementations + repairs;
 
 // --- cycle cap: `cycles` implement→verify rounds means cycles-1 repairs
 if (opts.phase === "implement") {
-  if (implementations >= opts.cycles) {
-    finish(ctx, "PRECONDITION_FAILED", `cycle limit reached: ${implementations} implementation(s) already ran and --cycles is ${opts.cycles} — a second implementation requires a new run or higher budget`);
+  // Repairs count: implement, repair, implement was three build passes under --cycles 2.
+  if (totalCycles >= opts.cycles) {
+    finish(ctx, "PRECONDITION_FAILED", `cycle limit reached: ${implementations} implementation(s) and ${repairs} repair(s) already ran and --cycles is ${opts.cycles} — a second implementation requires a new run or higher budget`);
   }
 }
 
@@ -798,7 +806,9 @@ if (fs.existsSync(statusFile) && !opts.childOfBackground) {
   const alive = (pid) => { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
   const live = prior?.orcStatus === "RUNNING" ? [prior.pid, prior.relayPid].find(alive) : undefined;
   if (live) finish({ ...ctx, out: null }, "PRECONDITION_FAILED", `the dispatch under this --task is still running (pid ${live}); poll it with --poll, or let it finish, before dispatching again — --force never overwrites a live dispatch`);
-  if (!opts.force) finish({ ...ctx, out: null }, "PRECONDITION_FAILED", `${statusFile} already exists — pick a new --task or pass --force to overwrite the evidence`);
+  // A refusal before any worker ran left only this file: DELEGATION.md says fix what `reason` names and dispatch again.
+  const refusedOnly = ["PRECONDITION_FAILED", "RUNTIME_UNAVAILABLE"].includes(prior?.orcStatus) && !fs.existsSync(path.join(ctx.out, "result.json"));
+  if (!opts.force && !refusedOnly) finish({ ...ctx, out: null }, "PRECONDITION_FAILED", `${statusFile} already exists — pick a new --task or pass --force to overwrite the evidence`);
 }
 
 // --- run lock: worker, cycles and budget are fixed by the run's first dispatch
@@ -876,6 +886,7 @@ if (opts.background) {
 // The pre-dispatch fingerprint and, for a no-write phase, the pinned workspace (§ restore).
 let before = null;
 let pin = null;
+let spendRecorded = false;
 
 // A terminal status must exist however this process ends.
 for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
@@ -899,6 +910,13 @@ for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
       }
     }
     if (finalWritten) process.exit(EXIT.ABORTED);
+    // What the worker cost before the signal still counts against --max-cost: aborts used to leave the ledger at $0.
+    if (!spendRecorded) {
+      try {
+        const spent = JSON.parse(fs.readFileSync(path.join(ctx.out, "result.json"), "utf8"))?.usage?.cost?.total;
+        if (typeof spent === "number" && Number.isFinite(spent) && spent > 0) recordSpend(runDir, { task: opts.task, phase: opts.phase, costUsd: spent, at: new Date().toISOString(), sessionId: null });
+      } catch { /* no result.json yet: nothing known to record */ }
+    }
     const partial = diffFingerprints(before, fingerprint(repo));
     const changeSetOut = { verified: partial.verified, pathsChanged: partial.pathsChanged, detail: partial.detail };
     undoWrites(changeSetOut);
@@ -987,6 +1005,7 @@ if (!result || typeof result !== "object" || Array.isArray(result)) {
 }
 
 const cost = typeof result.usage?.cost?.total === "number" && Number.isFinite(result.usage.cost.total) && result.usage.cost.total >= 0 ? result.usage.cost.total : 0;
+spendRecorded = true;
 const runTotalUsd = recordSpend(runDir, {
   task: opts.task, phase: opts.phase, costUsd: cost,
   at: new Date().toISOString(), sessionId: result.sessionId ?? null,

@@ -83,6 +83,10 @@ switch (mode) {
     fs.rmSync(path.join(repo, "staged.txt"));
     write(base); break;
   case "slow": spawnSync(process.execPath, ["-e", "setTimeout(()=>{},60000)"]); write(base); break;
+  case "spent-slow": write(base); spawnSync(process.execPath, ["-e", "setTimeout(()=>{},60000)"]); break;
+  case "swap":
+    fs.rmSync(path.join(repo, "README.md")); fs.mkdirSync(path.join(repo, "README.md"));
+    fs.writeFileSync(path.join(repo, "README.md", "inner.txt"), "x"); write(base); break;
   default: throw new Error("unknown STUB_MODE " + mode);
 }
 `);
@@ -389,6 +393,43 @@ check("the cycle cap stops a second repair", () => {
   if (!/cycle limit/.test(r.status.reason)) throw new Error("reason does not name the cycle limit");
 });
 
+check("repairs count toward the implement cap: implement, repair, implement is three passes under --cycles 2", () => {
+  const repo = newRepo("cap-mixed");
+  const { runDir, brief } = newRun("cap-mixed", { accept: ["scout", "research", "implement", "verify"] });
+  eq(dispatch({ phase: "implement", task: "I1", runDir, brief, repo, extra: ["--cycles", "2"] }).exit, 0, "implement");
+  eq(dispatch({ phase: "repair", task: "R1", runDir, brief, repo, extra: ["--session", "sess-ok"] }).exit, 0, "repair");
+  const r = dispatch({ phase: "implement", task: "I2", runDir, brief, repo });
+  eq(r.exit, 77, "a second implement after implement + repair under --cycles 2");
+  if (!/cycle limit/.test(r.status.reason)) throw new Error(`reason does not name the cycle limit: ${r.status.reason}`);
+});
+
+check("a task refused before any worker ran can be dispatched again once the cause is fixed", () => {
+  const repo = newRepo("retry-refused");
+  const { runDir, brief } = newRun("retry-refused", { accept: ["scout"] });
+  eq(dispatch({ phase: "implement", task: "X", runDir, brief, repo }).exit, 77, "implement without an accepted research");
+  fs.writeFileSync(path.join(runDir, "accepted", "research.md"), "accepted by selftest\n");
+  eq(dispatch({ phase: "implement", task: "X", runDir, brief, repo }).exit, 0, "the same task after the acceptance exists");
+});
+
+check("a run dir inside the git toplevel is refused even when --repo is a folder below it", () => {
+  const top = newRepo("mono");
+  fs.mkdirSync(path.join(top, "sub"));
+  const runDir = path.join(top, "runs", "R");
+  fs.mkdirSync(path.join(runDir, "accepted"), { recursive: true });
+  const brief = path.join(root, "mono-brief.txt");
+  fs.writeFileSync(brief, "do the thing\n");
+  const r = dispatch({ phase: "scout", task: "S1", runDir, brief, repo: path.join(top, "sub") });
+  eq(r.exit, 77, "run dir under the toplevel");
+  if (!/inside the workspace/.test(r.stderr)) throw new Error(`refusal does not name the run dir: ${r.stderr}`);
+});
+
+check("a zero --timeout is refused as usage, before any evidence moves", () => {
+  const repo = newRepo("timeout-zero");
+  const { runDir, brief } = newRun("timeout-zero");
+  const r = dispatch({ phase: "scout", task: "S1", runDir, brief, repo, extra: ["--timeout", "0s"] });
+  if (r.exit === 0 || !/--timeout must look like/.test(r.stderr)) throw new Error(`exit ${r.exit}: ${r.stderr}`);
+});
+
 check("--force over a finished implement still counts it: forcing a task never resets the cycle cap", () => {
   const repo = newRepo("r22f");
   const { runDir, brief } = newRun("run22f", { accept: ["scout", "research"] });
@@ -431,6 +472,33 @@ check("repair refuses to resume a timed-out session", () => {
   const r = dispatch({ phase: "repair", task: "R1", runDir, brief, repo, extra: ["--session", "sess-timeout"] });
   eq(r.exit, 77, "exit");
   if (!/undefined/.test(r.status.reason)) throw new Error("reason does not explain the undefined session state");
+});
+
+check("a no-write phase that swaps a tracked file for a folder gets the file back", () => {
+  const repo = newRepo("swap"); const { runDir, brief } = newRun("swap");
+  const r = dispatch({ mode: "swap", phase: "scout", task: "P1", runDir, brief, repo });
+  eq(r.exit, 72, "exit"); eq(r.status.changeSet.restore?.verified, true, `restore.verified (${r.status.changeSet.restore?.error})`);
+  eq(fs.statSync(path.join(repo, "README.md")).isFile() && fs.readFileSync(path.join(repo, "README.md"), "utf8"), "hello\n", "README.md");
+});
+
+check("an unavailable runtime spends no cycle: the next implement runs under --cycles 1", () => {
+  const repo = newRepo("cap-unavail");
+  const { runDir, brief } = newRun("cap-unavail", { accept: ["scout", "research"] });
+  eq(dispatch({ mode: "pi-unavailable", phase: "implement", task: "I1", runDir, brief, repo, extra: ["--cycles", "1"] }).exit, 71, "unavailable runtime");
+  eq(dispatch({ phase: "implement", task: "I2", runDir, brief, repo }).exit, 0, "implement once the runtime is back");
+});
+
+check("a signalled dispatch records what its worker had already spent", () => {
+  const repo = newRepo("abort-spend"); const { runDir, brief } = newRun("abort-spend");
+  eq(dispatch({ mode: "spent-slow", phase: "scout", task: "P1", runDir, brief, repo, extra: ["--background"] }).exit, 0, "background exit");
+  const nap = () => spawnSync(process.execPath, ["-e", "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)"]);
+  for (let i = 0; i < 400 && !fs.existsSync(path.join(runDir, "P1", "result.json")); i += 1) nap();
+  const { pid } = JSON.parse(fs.readFileSync(path.join(runDir, "P1", "orc-status.json"), "utf8"));
+  process.kill(pid, "SIGTERM");
+  for (let i = 0; i < 400; i += 1) { try { process.kill(pid, 0); } catch { break; } nap(); }
+  eq(waitForTerminal(runDir, "P1").orcStatus, "ABORTED", "orcStatus");
+  const ledger = JSON.parse(fs.readFileSync(path.join(runDir, "spend.json"), "utf8"));
+  eq(ledger.entries.length, 1, "entries"); eq(ledger.entries[0].costUsd, 0.01, "costUsd");
 });
 
 check("the budget stops a dispatch once the run has spent its cap", () => {
@@ -711,6 +779,16 @@ check("validator --run-dir rejects flags that omit the run's model", () => {
   const v = structuredClone(validRevise); v.orchestration_summary.flags = "--thinking max";
   fs.writeFileSync(f, JSON.stringify(v));
   eq(spawnSync(process.execPath, [VALIDATOR, f, "--run-dir", runDir]).status, 1, "exit");
+});
+check("validator --run-dir rejects a --model that only starts with the run's model", () => {
+  const repo = newRepo("verdict-prefix"); const { runDir, brief } = newRun("verdict-prefix");
+  dispatch({ phase: "scout", task: "P1", runDir, brief, repo });
+  const f = path.join(root, "verdict-prefix.json");
+  const v = structuredClone(validRevise); v.orchestration_summary.flags = `${validRevise.orchestration_summary.flags}imum`;
+  fs.writeFileSync(f, JSON.stringify(v));
+  eq(spawnSync(process.execPath, [VALIDATOR, f, "--run-dir", runDir]).status, 1, "exit");
+  fs.writeFileSync(f, JSON.stringify(validRevise));
+  eq(spawnSync(process.execPath, [VALIDATOR, f, "--run-dir", runDir]).status, 0, "the exact model still passes");
 });
 check("validator --help prints usage instead of reading a file", () => {
   eq(spawnSync(process.execPath, [VALIDATOR, "--help"]).status, 0, "exit");

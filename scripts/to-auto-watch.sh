@@ -9,6 +9,10 @@ STATE="${XDG_STATE_HOME:-$HOME/.local/state}"
 mkdir -p "$STATE"
 out=$(node "$GOAL" check --all 2>>"$STATE/to-auto-watch.err")
 rc=$?
+# The same sweep names a skill link a harness lost (install.mjs --check), as rows of the same `<where> <name> <CODE>` shape.
+# A sweep that could not run (no node, a crash with nothing on stdout) is a problem of its own, never "0 problem(s)".
+[ "$rc" -le 1 ] || [ -n "$out" ] || out="$STATE to-auto-watch SWEEP_FAILED goal.mjs check --all exited $rc; see $STATE/to-auto-watch.err"
+[ "$rc" -gt 1 ] || out=$(printf '%s\n%s' "$out" "$(node "$(dirname "$GOAL")/install.mjs" --check 2>>"$STATE/to-auto-watch.err")")
 
 case "$1" in
   hook)
@@ -35,12 +39,14 @@ case "$1" in
     keys=$(printf '%s\n' "$out" | awk 'NF { print $1, $2, $3 }')
     # A crashed sweep (exit 2+) saw no runs, so it keeps the last set beside its error and recovery is not news.
     [ "$rc" -le 1 ] || keys=$({ cat "$last" 2>/dev/null; printf '%s\n' "$keys"; } | awk 'NF && !seen[$0]++')
+    seen=$(cat "$last" 2>/dev/null)
     printf '%s\n' "$keys" > "$last"
     if [ -n "$new" ]; then
       n=$(printf '%s\n' "$new" | grep -c .)
       open=$(printf '%s\n' "$out" | grep -c .)
       first=$(printf '%s\n' "$new" | head -1 | awk '{ $1 = ""; print substr($0, 2) }' | tr -d '\\"' | cut -c1-180)
-      osascript -e "display notification \"$first\" with title \"to-auto: $n new run problem(s)\" subtitle \"goal.mjs check --all: $open open\""
+      osascript -e "display notification \"$first\" with title \"to-auto: $n new run problem(s)\" subtitle \"goal.mjs check --all: $open open\"" ||
+        printf '%s\n' "$seen" > "$last"   # not shown (no GUI session, notifications denied): still news next sweep
     fi
     exit 0
     ;;

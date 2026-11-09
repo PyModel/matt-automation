@@ -1380,3 +1380,38 @@ test('keep-going continues an active run only while the run itself commits, and 
   assert.equal(goal(ctx, ['stop', 'k', 'done here']).status, 0);
   assert.equal(keep('test-session').continue, false, 'a stopped run lets the session end');
 });
+
+test('to-auto-watch.sh notify announces a sweep that could not run, and a notification that was not shown is news again', () => {
+  const home = tmp('guards-home-');
+  const calls = path.join(home, 'osascript.log');
+  const dead = path.join(home, 'dead');
+  fs.mkdirSync(dead);
+  fs.writeFileSync(path.join(dead, 'node'), '#!/bin/sh\nexit 3\n', { mode: 0o755 });
+  const osascript = (exit) => fs.writeFileSync(path.join(home, 'osascript'), `#!/bin/sh\necho "$*" >> "${calls}"\nexit ${exit}\n`, { mode: 0o755 });
+  const notify = () => {
+    const env = { ...process.env, HOME: home, NVM_DIR: '', XDG_STATE_HOME: '', TO_AUTO_HOME: '', PATH: [dead, home, process.env.PATH].join(path.delimiter) };
+    assert.equal(spawnSync('sh', [path.join(path.dirname(GOAL), 'to-auto-watch.sh'), 'notify'], { encoding: 'utf8', env }).status, 0);
+  };
+  const fired = () => fs.readFileSync(calls, 'utf8').trim().split('\n');
+  osascript(1);
+  notify();
+  assert.match(fired()[0], /SWEEP_FAILED goal\.mjs check --all exited 3/);
+  osascript(0);
+  notify();
+  assert.equal(fired().length, 2, 'the first notification failed, so the problem is still news');
+  notify();
+  assert.equal(fired().length, 2, 'shown once, it is not announced again');
+});
+
+test('to-auto-watch.sh notify names a skill a harness lost, from install.mjs --check', () => {
+  const home = tmp('guards-home-');
+  const skills = path.join(home, '.agents', 'skills');
+  fs.mkdirSync(skills, { recursive: true });
+  const root = path.dirname(path.dirname(GOAL));
+  for (const name of ['to-auto', 'to-bug', 'to-orc']) fs.symlinkSync(path.join(root, name), path.join(skills, name));
+  const calls = path.join(home, 'osascript.log');
+  fs.writeFileSync(path.join(home, 'osascript'), `#!/bin/sh\necho "$*" >> "${calls}"\n`, { mode: 0o755 });
+  const env = { ...process.env, HOME: home, NVM_DIR: '', XDG_STATE_HOME: '', TO_AUTO_HOME: '', PATH: `${home}${path.delimiter}${process.env.PATH}` };
+  assert.equal(spawnSync('sh', [path.join(path.dirname(GOAL), 'to-auto-watch.sh'), 'notify'], { encoding: 'utf8', env }).status, 0);
+  assert.match(fs.readFileSync(calls, 'utf8'), /to-new NOT_INSTALLED no link/);
+});

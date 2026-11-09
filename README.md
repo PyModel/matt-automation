@@ -41,7 +41,16 @@ cd matt-automation
 node scripts/matt.mjs check        # prints "ok"
 ```
 
-Symlink `to-auto`, `to-bug`, `to-new` and `to-orc` into your harness's skills directory (for example `~/.agents/skills/` or `~/.claude/skills/`), then:
+Link `to-auto`, `to-bug`, `to-new` and `to-orc` into your harnesses' skills folders (`~/.agents/skills`, `~/.pi/agent/skills`, `~/.claude/skills`; `--home <dir>` for another):
+
+```sh
+node scripts/install.mjs           # replaces its own links, refuses a real folder
+node scripts/install.mjs --check   # names a skill a harness lost; the to-auto-watch job runs it
+```
+
+With autoharness installed, add `scripts/skill-create-guard.mjs` as a Claude Code `PreToolUse` hook on `mcp__plugin_autoharness_stage_skill__stage_skill`: it denies a `create` over a skill autoharness did not make (0.5.3 has no such check and rewrote `to-auto` through its link).
+
+Then:
 
 ```text
 /to-auto add rate limiting to the public API

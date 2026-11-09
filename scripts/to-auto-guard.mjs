@@ -28,8 +28,9 @@ const MARK_TTL_MS = 30 * 864e5;
 const INACTIVE = new Set(['done', 'dry-run', 'stopped']);
 
 // Shell quoting that splits a word (`pus""h`, `pu\sh`, `'push'`) is removed first, so the rules see the plain spelling.
-// A quoted commit message is prose, dropped before that: `commit -m "never git push from CI"` is no push.
-const plain = (command) => command.replace(/(\s(?:-m|--message)[=\s]\s*)(?:"(?:[^"\\]|\\.)*"|'[^']*')/g, '$1MSG').replace(/["'\\]/g, '');
+// A quoted commit message is prose, dropped before that: `commit -m "never git push from CI"` is no push. A double-quoted
+// one holding `$` or a backtick stays: the shell runs `-m "$(git push)"`.
+const plain = (command) => command.replace(/(\s(?:-m|--message)[=\s]\s*)(?:"(?:[^"\\$`]|\\.)*"|'[^']*')/g, '$1MSG').replace(/["'\\]/g, '');
 // `git [global options] <subcommand>`: the subcommand is the first non-option word, so `git stash push` and `git log --grep=push` pass.
 const GIT = String.raw`\bgit\s+(?:(?:-[Cc]|--(?:git-dir|work-tree|namespace))\s+\S+\s+|--?\S+\s+)*`;
 const RAW_WORKTREE = new RegExp(GIT + String.raw`worktree\s+add\b`);

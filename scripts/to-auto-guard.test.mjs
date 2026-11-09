@@ -220,6 +220,6 @@ test('prose in a commit message, a branch listing and a sibling skill are not th
   assert.equal(w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto-ticket-lifecycle explain take' }), null, 'another skill does not mark the session');
   assert.equal(w.bash(INCIDENT), 'allow');
   w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto x' });
-  for (const command of ['git commit -m "docs: we never git push from CI"', "git commit -m '[x] drop the hand-typed git worktree add'", 'git commit --message="gh pr create is stage 9"', 'git branch | head', 'git branch 2>&1', 'git branch > /tmp/b']) assert.equal(w.bash(command), 'allow', command);
-  for (const command of ['git commit -m "x" && git push', 'git --work-tree /x push origin main', 'git --git-dir /x/.git push', 'git checkout -t origin/foo', 'git checkout --track origin/foo', 'git branch 2fa-login']) assert.equal(w.bash(command), 'deny', command);
+  for (const command of ['git commit -m "docs: we never git push from CI"', 'git commit -m "$(cat <<\'EOF\'\nfix the thing\nEOF\n)"', 'git commit -m "costs \\$5, no git push"', "git commit -m '[x] drop the hand-typed git worktree add'", 'git commit --message="gh pr create is stage 9"', 'git branch | head', 'git branch 2>&1', 'git branch > /tmp/b']) assert.equal(w.bash(command), 'allow', command);
+  for (const command of ['git commit -m "$(git push origin main)"', 'git commit -m "`git push`"', 'git commit -m "x" && git push', 'git --work-tree /x push origin main', 'git --git-dir /x/.git push', 'git checkout -t origin/foo', 'git checkout --track origin/foo', 'git branch 2fa-login']) assert.equal(w.bash(command), 'deny', command);
 });

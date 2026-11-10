@@ -1492,6 +1492,9 @@ export function setStatus(repo, feature, id, status, { reason = '', landed = nul
       const { frontier: ready, malformed, conflicts } = frontier(control, feature);
       if (malformed.length || conflicts.length) throw new Refusal(`tracker ${feature} fails the claims gate; run \`goal.mjs frontier ${feature}\``);
       if (!ready.includes(want)) throw new Refusal(`ticket ${want} is not on the frontier (ready-for-agent with every blocker done); dispatch it with \`goal.mjs take\``);
+      const entry = readRegistry(control).find((r) => r.slug === feature);
+      const diverged = entry ? targetDrift(control, entry) : null;
+      if (diverged) throw new Refusal(diverged.message);
     }
     if (status === 'in-flight' && from === 'needs-human') subject = '→ in-flight (resumed)';
     if (status === 'done') {
@@ -2042,11 +2045,13 @@ export function prepareTicket(repo, feature, id) {
     '- Rules: BUILD.md § The implementer brief, rules 1–8',
     `- Owner decisions: ${decisions.length ? '' : 'none'}`, ...decisions.map((d) => `  ${d}`),
     '', '## Context',
+    `- State folder: ${control} (every runs/… path here is under it, not in your worktree)`,
     `- Spec: runs/${feature}/spec.md   Notes: runs/${feature}/notes/   Glossary: GLOSSARY.md`,
     `- Commands: ${nowField(control, feature, 'commands')}`,
     `- Per-worktree: ${nowField(control, feature, 'per-worktree')} (NN = ${want}, run_id = ${entry?.run_id ?? '?'})`,
     `- Budget: ${nowField(control, feature, 'budgets')}`,
     `- Status file: runs/${feature}/tickets/${want}.status.md   Ledger: runs/${feature}/ledger.md   Decisions: runs/${feature}/log.md`,
+    `- Heartbeat (rule 8): write the status file, then \`node ${path.join(ROOT, 'scripts', 'goal.mjs')} commit -m "[${feature}] t${want} status" ${path.join(control, 'runs', feature, 'tickets', `${want}.status.md`)}\``,
     '',
   ].join('\n');
   fs.mkdirSync(path.dirname(path.join(control, rel)), { recursive: true });
@@ -2110,7 +2115,8 @@ export function brief(repo, feature, id) {
 export function mergeTicket(repo, feature, id, { check = null } = {}) {
   assertSlug(feature);
   const control = requireControl(repo);
-  return withLock(repo, 'integration', () => {
+  // Its own lock name: runs take `integration` for their suites, and a landing queued behind a 30-minute suite timed out.
+  return withLock(repo, 'merge', () => {
     const { want, file, text } = inFlightTicket(control, feature, id);
     const records = readJson(path.join(control, 'runs', feature, 'worktrees.json'));
     const run = records.run;
@@ -3677,7 +3683,9 @@ function main(argv) {
     console.log(commit(repo, rest[1], rest.slice(2)));
     return 0;
   }
-  console.error(USAGE);
+  // A known command typed wrong gets its own lines: the whole list buried what was wrong with the call.
+  const forms = USAGE.split('\n').map((line) => line.trim()).filter((line) => line === command || line.startsWith(`${command} `));
+  console.error(forms.length ? forms.map((line) => `usage: goal.mjs ${line}`).join('\n') : USAGE);
   return 2;
 }
 

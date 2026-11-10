@@ -122,6 +122,7 @@ test('TARGET_DIVERGED: the target moving under files the run changed or claims i
   assert.match(problem.message, /main took 2 commit\(s\) since goal\/x left it .* changing 1 file\(s\) this run changed or claims \(a\.txt\)/);
   seedTicket(repo, control, '01-b.md', ticketText('ready-for-agent', 'exclusive: b.txt'));
   assert.throws(() => take(repo, 'x', 1), /main took 2 commit\(s\)/);
+  assert.throws(() => setStatus(repo, 'x', '01', 'in-flight'), /main took 2 commit\(s\)/, 'taking one chosen ticket meets the same refusal');
   git(wt, 'merge', '-q', '--no-edit', 'main');
   assert.deepEqual(codes(control), []);
   write(path.join(repo, 'b.txt'), 'B\n');
@@ -212,6 +213,9 @@ test('prepare-ticket drafts every file-decided field verbatim, contract refuses 
   assert.match(text, new RegExp(`^- Ticket base: ${git(wt, 'rev-parse', 'HEAD')}$`, 'm'));
   assert.match(text, /^- Worktree \/ branch: .* on goal\/x-t01$/m);
   assert.match(text, /^- Claims: exclusive: a\.txt; a needed path outside them/m);
+  const statusFile = path.join(control, 'runs/x/tickets/01.status.md');
+  assert.ok(text.includes(`- State folder: ${control} (every runs/… path here is under it, not in your worktree)`), 'the implementer is told where runs/ is');
+  assert.ok(text.includes(`node ${GOAL} commit -m "[x] t01 status" ${statusFile}`), 'and the exact command that commits its heartbeat');
   assert.match(text, /^- \[ \] `grep -n hello a\.txt` still matches \(Invariant: present at base\)$/m, 'criteria byte for byte, backticks and all');
   assert.match(text, /^ {2}- D1 \[grill\] Q: q\? → A: a \(source: owner\)$/m, 'owner decisions ride in every contract');
   assert.equal(prepareTicket(repo, 'x', '01').drafted, false, 'a re-dispatch keeps the contract');
@@ -257,7 +261,9 @@ test('merge lands a ticket: receipt and claims checked, suite run on the result,
   const before = git(run, 'rev-parse', 'HEAD');
   assert.throws(() => mergeTicket(repo, 'x', '01', { check: 'false' }), /suite failed on the merged run branch .* stays in flight/);
   assert.equal(git(run, 'rev-parse', 'HEAD'), before, 'a red suite resets the run branch');
-  const landed = mergeTicket(repo, 'x', '01', { check: 'true' });
+  // A run names its own locks for its suites (`with-lock integration -- make test-integration`): a landing must not queue behind one.
+  const locks = path.join(control, 'locks');
+  const landed = mergeTicket(repo, 'x', '01', { check: `test -d ${locks}/merge && test ! -e ${locks}/integration` });
   assert.equal(landed.landed, `${before}..${head}`);
   assert.equal(git(run, 'rev-parse', 'HEAD'), head);
   assert.match(fs.readFileSync(path.join(control, 'tracker/x/issues/01-a.md'), 'utf8'), /^\*\*Status:\*\* done$/m);
@@ -548,6 +554,17 @@ test('guarded: a criterion that needs a path its own ticket lists as guarded is 
   }));
   commit(m.repo, '[x] 01 receipt', ['runs/x/tickets/01.receipt.md']);
   assert.throws(() => mergeTicket(m.repo, 'x', '01', { check: 'true' }), /touched b\.txt \(guarded\): an unclaimed edit.*`guarded` in a Claims line means off limits.*claimed `exclusive`.*goal\.mjs status x 01 stuck/);
+});
+
+test('a call goal.mjs cannot read prints the usage of that command, not of all forty', () => {
+  const { repo } = setup();
+  const bad = spawnSync(process.execPath, [GOAL, 'commit', 'x', 'a message with no -m'], { cwd: repo, encoding: 'utf8' });
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /^usage: goal\.mjs commit -m <msg> <file>\.\.\.$/m);
+  assert.doesNotMatch(bad.stderr, /preflight|worktree get/);
+  const unknown = spawnSync(process.execPath, [GOAL, 'no-such-command'], { cwd: repo, encoding: 'utf8' });
+  assert.match(unknown.stderr, /preflight/, 'an unknown command still gets the whole list');
+  assert.notEqual(fs.statSync(GOAL).mode & 0o111, 0, 'goal.mjs runs as a command: `$G check` word-splits in no shell');
 });
 
 test('a worktree of the clone prepare made resolves to that state, and its to-orc runs count as a ticket worker', () => {

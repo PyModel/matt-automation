@@ -180,14 +180,14 @@ test('an open decision in log.md blocks every tick until it is answered; owner a
 });
 
 /** A run worktree plus ticket 01 (claims a.txt) and 02 (claims b.txt) in flight, with contracts drafted. */
-function dispatched({ one, two }) {
+function dispatched({ one, two, claims = 'exclusive: a.txt' }) {
   const ctx = setup();
   const { repo, control } = ctx;
   init(repo, 'x', 'X', WHO);
   fs.appendFileSync(path.join(control, 'runs/x/log.md'), '- D1 [grill] Q: q? → A: a (source: owner)\n');
   commit(repo, '[x] D1', ['runs/x/log.md']);
   const run = worktreeGet(repo, 'x');
-  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt', `\n${one}`));
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', claims, `\n${one}`));
   seedTicket(repo, control, '02-b.md', ticketText('ready-for-agent', 'exclusive: b.txt', `\n${two}`));
   assert.deepEqual(take(repo, 'x', 2), ['01', '02']);
   const drafted = prepareTicket(repo, 'x', '01');
@@ -495,6 +495,59 @@ test('TICKET_IDLE: a goal.mjs run or with-lock in the ticket worktree is a worke
   aged(liveOf(runWt), later - 60 * 1000);
   aged(liveOf(wt), later - 45 * 60 * 1000);
   assert.deepEqual(idle(), ['TICKET_IDLE']);
+});
+
+test('TICKET_IDLE names the newest sign, and a ticket whose completed receipt is waiting is told to land it', () => {
+  const { repo, control } = setup();
+  init(repo, 'x', 'X', WHO);
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt'));
+  take(repo, 'x', 1);
+  const later = Date.now() + 45 * 60 * 1000;
+  const message = () => checkRun(control, 'x', { now: later, staleHours: 24 }).problems.find((p) => p.code === 'TICKET_IDLE').message;
+  assert.match(message(), /for 45m \(last sign: a ticket commit;/);
+  assert.match(message(), /if no worker owns it, kill any recorded pid and re-dispatch it/);
+  const flight = path.join(control, 'runs/x/tickets/01.status.md');
+  write(flight, 'heartbeat: then\n');
+  fs.utimesSync(flight, (later - 40 * 60 * 1000) / 1000, (later - 40 * 60 * 1000) / 1000);
+  assert.match(message(), /for 40m \(last sign: a heartbeat in tickets\/01\.status\.md;/);
+  write(path.join(control, 'runs/x/tickets/01.receipt.md'), `done\n\n${JSON.stringify({ ticket: '01', conclusion: 'completed' })}\n`);
+  commit(repo, '[x] 01 receipt', ['runs/x/tickets/01.receipt.md']);
+  assert.match(message(), /its committed receipt says completed: land it with `goal\.mjs merge x 01`/);
+  assert.doesNotMatch(message(), /kill any recorded pid/, 'a finished worker is not a dead one');
+});
+
+test('guarded: a criterion that needs a path its own ticket lists as guarded is refused before dispatch, and merge says what guarded means', () => {
+  const needs = '- [ ] `git grep -c CHECK -- db/migrations/001.sql` counts 3 (Red at base: no such file)\n';
+  const { repo, control } = setup();
+  init(repo, 'x', 'X', WHO);
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt ; guarded: db/migrations/', `\n${needs}`));
+  const gate = frontier(control, 'x');
+  assert.deepEqual(gate.frontier, []);
+  assert.match(gate.malformed[0].problems[0], /needs db\/migrations\/001\.sql, which its Claims line lists as guarded \(off limits.*claimed exclusive/);
+  assert.throws(() => take(repo, 'x', 1), /claims gate/);
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt, db/migrations/001.sql ; guarded: .github/', `\n${needs}`));
+  assert.deepEqual(frontier(control, 'x').malformed, [], 'the granted path is an exclusive claim');
+  // A ticket already dispatched is past this gate: one such ticket must not close the tracker for the rest of a live run.
+  write(path.join(control, 'tracker/x/issues/02-b.md'), ticketText('in-flight', 'exclusive: b.txt ; guarded: db/migrations/', `\n${needs}`));
+  rawCommit(control, '[x] fixture: a ticket dispatched by an older goal.mjs');
+  assert.deepEqual(frontier(control, 'x').malformed, []);
+
+  const m = dispatched({ one: '- [ ] a.txt says bye (Red at base)\n', two: '- [ ] b.txt says B (Red at base)\n', claims: 'exclusive: a.txt ; guarded: b.txt' });
+  fillIn(m.repo, m.control, '01');
+  const wt = worktreeGet(m.repo, 'x', '01');
+  const base = git(wt, 'rev-parse', 'HEAD');
+  write(path.join(wt, 'a.txt'), 'bye\n');
+  write(path.join(wt, 'b.txt'), 'B\n');
+  git(wt, 'commit', '-qam', 'Refs 01');
+  const { log } = runLogged(wt, 'grep -c bye a.txt');
+  write(path.join(m.control, 'runs/x/tickets/01.receipt.md'), JSON.stringify({
+    ticket: '01', conclusion: 'completed', ticket_base: base, head: git(wt, 'rev-parse', 'HEAD'), changed_files: ['a.txt', 'b.txt'],
+    criteria: [{ criterion: 'a.txt says bye (Red at base)', result: 'pass', evidence: 'grep -c bye a.txt exit 0' }],
+    validation: [{ command: 'grep -c bye a.txt', exit: 0, summary: '1', log }],
+    review: { cited_fixed: 0, leads: [] }, not_validated: [], blockers: [], external_effects: [], worktree_clean: true,
+  }));
+  commit(m.repo, '[x] 01 receipt', ['runs/x/tickets/01.receipt.md']);
+  assert.throws(() => mergeTicket(m.repo, 'x', '01', { check: 'true' }), /touched b\.txt \(guarded\): an unclaimed edit.*`guarded` in a Claims line means off limits.*claimed `exclusive`.*goal\.mjs status x 01 stuck/);
 });
 
 test('a worktree of the clone prepare made resolves to that state, and its to-orc runs count as a ticket worker', () => {

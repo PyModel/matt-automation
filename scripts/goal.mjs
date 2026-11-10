@@ -1157,16 +1157,21 @@ function ticketProblems(control, entry, now, idleMinutes) {
     if (t.status !== 'in-flight') continue;
     const branch = records[`t${id}`]?.branch ?? `goal/${entry.slug}-t${id}`;
     const signs = [
-      lastCommitAt(control, ['--', path.relative(control, t.file), `:(glob)runs/${entry.slug}/tickets/${id}.*`]),
-      fs.existsSync(flight) ? newestMtime(flight) : 0,
-      newestMtime(t.file),
-      ws && fs.existsSync(ws) ? lastCommitAt(ws, [`refs/heads/${branch}`, '--']) : 0,
-      common ? newestMtime(path.join(common, 'to-orc', entry.slug, `t${id}`)) : 0,
-      records[`t${id}`]?.state === 'active' ? liveSign(records[`t${id}`].path, now) : 0,
+      ['a ticket commit', Math.max(lastCommitAt(control, ['--', path.relative(control, t.file), `:(glob)runs/${entry.slug}/tickets/${id}.*`]), newestMtime(t.file))],
+      [`a heartbeat in tickets/${id}.status.md`, fs.existsSync(flight) ? newestMtime(flight) : 0],
+      [`a commit on ${branch}`, ws && fs.existsSync(ws) ? lastCommitAt(ws, [`refs/heads/${branch}`, '--']) : 0],
+      ['to-orc status', common ? newestMtime(path.join(common, 'to-orc', entry.slug, `t${id}`)) : 0],
+      ['a goal.mjs run or with-lock in its worktree', records[`t${id}`]?.state === 'active' ? liveSign(records[`t${id}`].path, now) : 0],
     ];
-    const idle = now / 1000 - Math.max(...signs);
+    const [last, at] = signs.reduce((newest, sign) => (sign[1] > newest[1] ? sign : newest));
+    const idle = now / 1000 - at;
     if (idle > idleMinutes * 60) {
-      out.push({ code: 'TICKET_IDLE', message: `ticket ${id} is in flight but nothing shows a worker on it for ${Math.round(idle / 60)}m (no commit on ${branch}, no heartbeat in tickets/${id}.status.md, no to-orc status, no ticket commit, no goal.mjs run or with-lock in its worktree; limit ${idleMinutes}m): if no worker owns it, kill any recorded pid and re-dispatch it (BUILD.md § Stuck detection), or \`goal.mjs status ${entry.slug} ${id} stuck -- <why>\`` });
+      // A worker that returned is not a dead one: its receipt waits on the orchestrator, and killing or re-dispatching would redo finished work.
+      const returned = /"conclusion":\s*"completed"/.test(committedText(control, path.join('runs', entry.slug, 'tickets', `${id}.receipt.md`)) ?? '');
+      const act = returned
+        ? `its committed receipt says completed: land it with \`goal.mjs merge ${entry.slug} ${id}\`, or send it back if a later dispatch superseded that receipt`
+        : `if no worker owns it, kill any recorded pid and re-dispatch it (BUILD.md § Stuck detection), or \`goal.mjs status ${entry.slug} ${id} stuck -- <why>\``;
+      out.push({ code: 'TICKET_IDLE', message: `ticket ${id} is in flight but nothing shows a worker on it for ${Math.round(idle / 60)}m (last sign: ${last}; limit ${idleMinutes}m): ${act}` });
     }
   }
   return out;
@@ -1363,6 +1368,8 @@ export function frontier(control, feature) {
   for (const [id, t] of tickets) {
     for (const b of t.blockers) if (!tickets.has(b)) t.problems.push(`blocked by unknown ticket ${b}`);
     if (t.fromReview && !tickets.has(t.fromReview)) t.problems.push(`from the review of unknown ticket ${t.fromReview}`);
+    // Only before dispatch, when the Claims line can still be corrected: a dispatched ticket meets this at `contract` and `merge`.
+    if (['ready-for-agent', 'blocked'].includes(t.status)) t.problems.push(...guardedCriteria(fs.readFileSync(t.file, 'utf8')));
     if (t.problems.length) malformed.push({ id, file: t.file, problems: t.problems });
   }
   const ready = [...tickets].filter(([, t]) => t.status === 'ready-for-agent' && t.blockers.every((b) => tickets.get(b)?.status === 'done')).map(([id]) => id);
@@ -1718,6 +1725,17 @@ function claimsOverlap(a, b) {
   return claimCovers(a, claimRoot(b)) || claimCovers(b, claimRoot(a));
 }
 
+/**
+ * Criteria that need a path the ticket's own Claims line lists as guarded. `guarded` is off limits (`merge` lands no edit
+ * under it), so such a ticket asks for work that cannot land: a path the objective grants is claimed `exclusive`.
+ */
+export function guardedCriteria(ticketText) {
+  const off = parseTicket(ticketText).claims.guarded;
+  const paths = (criterion) => criterion.split(/[\s`'"()]+/).map((word) => word.replace(/^(?:\.\/)+/, '').replace(/[,.;:]+$/, '')).filter((word) => word.includes('/'));
+  const hits = ticketCriteria(ticketText).flatMap((c) => paths(c).filter((p) => off.some((g) => claimCovers(g, p))).map((p) => `criterion "${c.length > 90 ? `${c.slice(0, 90)}…` : c}" needs ${p}, which its Claims line lists as guarded (off limits: \`merge\` lands no edit there); a path the objective grants is claimed exclusive (PLAN.md stage 6)`));
+  return [...new Set(hits)];
+}
+
 export function claimsBreach(ticketText, touched) {
   const { claims } = parseTicket(ticketText);
   const covered = (list, file) => list.some((c) => claimCovers(c, file));
@@ -1795,6 +1813,7 @@ export function checkContract({ text, ticketText, worktree }) {
   const claims = ticketText.match(CLAIMS_LINE)?.[1];
   if (!claims) problems.push('the ticket has no **Claims:** line');
   else if (!text.includes(`- Claims: ${claims}`)) problems.push(`the contract's Claims line is not the ticket's verbatim: "${claims}"`);
+  problems.push(...guardedCriteria(ticketText));
   const have = new Set(ticketCriteria(text).map(norm));
   const want = ticketCriteria(ticketText);
   for (const c of want) if (!have.has(norm(c))) problems.push(`criterion missing or not verbatim: "${c}"`);
@@ -2015,7 +2034,7 @@ export function prepareTicket(repo, feature, id) {
     '', '## Execution order', '<fill: the shortest seam-first path: which seam\'s test goes red first, then what>',
     '', '## Completion criteria', ...ticketCriteria(text).map((c) => `- [ ] ${c}`),
     '', '## Constraints',
-    `- Claims: ${text.match(CLAIMS_LINE)[1]}; a needed path outside them → stop before editing it, return \`claims-breach\` naming every forced path (BUILD.md § The implementer brief, rule 5)`,
+    `- Claims: ${text.match(CLAIMS_LINE)[1]}; a needed path outside them, or under \`guarded\` (off limits), → stop before editing it, return \`claims-breach\` naming every forced path (BUILD.md § The implementer brief, rule 5)`,
     `- Capability: ${ticket.capability}; defensive tier: <fill: 0–3, from the ticket>`,
     '- Seams: <fill: agreed seams from the spec\'s Testing Decisions>; no test at an unagreed seam',
     '- Commit on the ticket branch only; no push, PR, merge, tracker edit, or other external effect unless listed here: <fill: grants from the objective, or none>',
@@ -2111,7 +2130,7 @@ export function mergeTicket(repo, feature, id, { check = null } = {}) {
     // --no-renames: a rename lists only its destination, so moving an unclaimed file into a claimed folder hid the deletion.
     const touched = git(wt.path, ['diff', '--name-only', '--no-renames', `${base}...HEAD`]).split('\n').filter(Boolean);
     const breach = claimsBreach(text, touched);
-    if (breach.unclaimed.length || breach.guarded.length) throw new Refusal(`ticket ${want} touched ${[...breach.unclaimed.map((f) => `${f} (unclaimed)`), ...breach.guarded.map((f) => `${f} (guarded)`)].join(', ')}: an unclaimed edit, so it does not land (BUILD.md step 5.1)`);
+    if (breach.unclaimed.length || breach.guarded.length) throw new Refusal(`ticket ${want} touched ${[...breach.unclaimed.map((f) => `${f} (unclaimed)`), ...breach.guarded.map((f) => `${f} (guarded)`)].join(', ')}: an unclaimed edit, so it does not land (BUILD.md step 5.1)${breach.guarded.length ? `; \`guarded\` in a Claims line means off limits, so a path the objective grants is claimed \`exclusive\`: if it does, \`goal.mjs status ${feature} ${want} stuck -- <why>\`, correct the Claims line in the ticket and its contract and commit them, then \`status\` ready-for-agent, in-flight, \`contract\` and \`merge\` again; if it does not, the edit is a blocker` : ''}`);
     if (git(run.path, ['status', '--porcelain'])) throw new Refusal(`the run worktree ${run.path} has uncommitted changes; commit or discard them before a merge`);
     // In supervisor mode the run worktree is the owner's checkout: on another branch there, the fast-forward would land the ticket on it.
     const on = git(run.path, ['rev-parse', '--abbrev-ref', 'HEAD']);

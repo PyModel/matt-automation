@@ -60,7 +60,7 @@ Drafted at dispatch to `runs/<slug>/tickets/<NN>.goal.md` by `goal.mjs prepare-t
 - [ ] <each ticket criterion, verbatim>
 
 ## Constraints
-- Claims: <the ticket's Claims line, verbatim>; a needed path outside them → stop before editing it, return `claims-breach` naming every forced path (BUILD.md § The implementer brief, rule 5)
+- Claims: <the ticket's Claims line, verbatim>; a needed path outside them, or under `guarded` (off limits), → stop before editing it, return `claims-breach` naming every forced path (BUILD.md § The implementer brief, rule 5)
 - Capability: <tier/intensity>; defensive tier: <0–3>
 - Seams: <agreed seams from the spec's Testing Decisions>; no test at an unagreed seam
 - Commit on the ticket branch only; no push, PR, merge, tracker edit, or other external effect unless listed here: <grants from the objective, or none>

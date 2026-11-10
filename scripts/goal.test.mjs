@@ -840,6 +840,9 @@ test('contract: base, claims and criteria must match the worktree and the ticket
   const problems = checkContract({ text: contract(head, claims, ['a is exported', 'suite green', 'extra']), ticketText: tk, worktree: repo }).problems.join(' | ');
   assert.match(problems, /missing.*a is exported \(Red/);
   assert.match(problems, /not in the ticket.*extra/);
+  const off = 'exclusive: src/a.ts ; guarded: db/migrations/';
+  const needs = '`git grep -c X -- db/migrations/1.sql` counts 1 (Red at base: absent)';
+  assert.match(checkContract({ text: contract(head, off, [needs]), ticketText: `${ticket('in-flight', 'None', off)}\n- [ ] ${needs}\n`, worktree: repo }).problems.join(' | '), /needs db\/migrations\/1\.sql, which its Claims line lists as guarded/);
   const cli = spawnSync('node', [GOAL, 'contract', '/dev/null', '--worktree', repo, '--ticket', '/dev/null'], { encoding: 'utf8' });
   assert.equal(cli.status, 1);
 });

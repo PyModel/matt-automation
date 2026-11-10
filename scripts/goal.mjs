@@ -2152,7 +2152,7 @@ export function prepareTicket(repo, feature, id) {
   const decisions = fs.existsSync(logFile) ? ownerDecisions(fs.readFileSync(logFile, 'utf8')) : [];
   const branch = git(worktree, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const body = [
-    `# Goal: ${want} ${text.match(/^# (.+)$/m)?.[1]?.trim() ?? `ticket ${want}`}`,
+    `# Goal: ${want} ${text.match(/^# (.+)$/m)?.[1]?.trim().replace(new RegExp(`^${want}[:.)]?\\s+`), '') ?? `ticket ${want}`}`,
     '', '## Outcome', '<fill: one bounded outcome, from the ticket\'s "What to build">',
     '', '## Current state',
     `- Ticket: ${file}`,
@@ -2165,8 +2165,9 @@ export function prepareTicket(repo, feature, id) {
     '', '## Completion criteria', ...ticketCriteria(text).map((c) => `- [ ] ${c}`),
     '', '## Constraints',
     `- Claims: ${text.match(CLAIMS_LINE)[1]}; a needed path outside them, or under \`guarded\` (off limits), → stop before editing it, return \`claims-breach\` naming every forced path (BUILD.md § The implementer brief, rule 5)`,
-    `- Capability: ${ticket.capability}; defensive tier: <fill: 0–3, from the ticket>`,
-    '- Seams: <fill: agreed seams from the spec\'s Testing Decisions>; no test at an unagreed seam',
+    // Copied when the ticket states them (`**Tier:** N`, `**Seam:** …`), never retyped: a run filled these by script and truncated them.
+    `- Capability: ${ticket.capability}; defensive tier: ${text.match(/^\*\*(?:Defensive )?Tier:\*\* ([0-3])\b/mi)?.[1] ?? '<fill: 0–3, from the ticket>'}`,
+    `- Seams: ${text.match(/^\*\*Seams?:\*\* (.+)$/mi)?.[1].trim() ?? '<fill: agreed seams from the spec\'s Testing Decisions>'}; no test at an unagreed seam`,
     '- Commit on the ticket branch only; no push, PR, merge, tracker edit, or other external effect unless listed here: <fill: grants from the objective, or none>',
     '- Leave the worktree clean at return: every change committed, nothing stray',
     '- Rules: BUILD.md § The implementer brief, rules 1–8',

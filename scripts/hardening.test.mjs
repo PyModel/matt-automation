@@ -744,6 +744,23 @@ test('next lists each in-flight ticket with its last sign, and check warns when 
   assert.match(spent[0].message, /9\.0h since the run started, past its wall-clock budget of 8h/);
 });
 
+test('prepare-ticket copies the tier and seam a ticket states, and writes the ticket number once', () => {
+  const { repo, control } = setup();
+  init(repo, 'x', 'X', WHO);
+  worktreeGet(repo, 'x');
+  write(path.join(control, 'tracker/x/issues/01-a.md'), '# 01: Say bye\n\n**Tier:** 2\n\n**Seam:** the CLI, through its exit code\n\n**Status:** ready-for-agent\n**Blocked by:** None\n**Claims:** exclusive: a.txt\n\n- [ ] a.txt says bye (Red at base)\n');
+  commit(repo, '[x] seed 01', ['tracker/x/issues/01-a.md']);
+  seedTicket(repo, control, '02-b.md', ticketText('ready-for-agent', 'exclusive: b.txt', '\n- [ ] b.txt says B (Red at base)\n'));
+  take(repo, 'x', 2);
+  const stated = fs.readFileSync(prepareTicket(repo, 'x', '01').contract, 'utf8');
+  assert.match(stated, /^# Goal: 01 Say bye$/m, 'not "01 01: Say bye"');
+  assert.match(stated, /; defensive tier: 2$/m);
+  assert.match(stated, /^- Seams: the CLI, through its exit code; no test at an unagreed seam$/m);
+  const silent = fs.readFileSync(prepareTicket(repo, 'x', '02').contract, 'utf8');
+  assert.match(silent, /defensive tier: <fill: 0–3, from the ticket>/, 'a ticket that states neither leaves both to be filled');
+  assert.match(silent, /^- Seams: <fill: /m);
+});
+
 test('a worktree of the clone prepare made resolves to that state, and its to-orc runs count as a ticket worker', () => {
   const { repo, control } = setup();
   const clone = path.join(control, 'clone');

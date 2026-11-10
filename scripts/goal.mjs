@@ -879,7 +879,7 @@ export function next(control, slug) {
   const entry = readRegistry(control).find((r) => r.slug === slug);
   if (!entry) return at;
   const warnings = runWarnings(control, entry, { now: Date.now() });
-  return { ...at, mode: runMode(control, entry), target: entry.target ?? runBranch(control, entry), ...(warnings.length && { warnings }) };
+  return { ...at, mode: runMode(control, entry), target: entry.target ?? runBranch(control, entry), ...(at.tickets?.['in-flight']?.length && { in_flight: flightRows(control, slug) }), ...(entry.grants?.length && { grants: entry.grants }), ...(warnings.length && { warnings }) };
 }
 
 /** The hand-back mode: the registry's, or for a run from before it was recorded, supervisor when supervise saved a target. */
@@ -1054,6 +1054,9 @@ function runWarnings(control, entry, { now, idleMinutes = TICKET_IDLE_MINUTES })
   const diverged = targetDrift(control, entry);
   if (diverged) out.push({ code: diverged.code, message: diverged.message });
   out.push(...ticketProblems(control, entry, now, idleMinutes));
+  const hours = nowField(control, entry.slug, 'budgets').match(/\bwall-clock\s*[:=]?\s*(\d+(?:\.\d+)?)\s*h\b/)?.[1];
+  const ran = (now - Date.parse(entry.started)) / 3600000;
+  if (hours && ran > Number(hours)) out.push({ code: 'BUDGET_SPENT', message: `${ran.toFixed(1)}h since the run started, past its wall-clock budget of ${hours}h (NOW budgets:): wrap up as references/run-budget.md says, or log a raise with its source; the orchestrator never raises a budget on its own judgment` });
   return out;
 }
 
@@ -1139,42 +1142,56 @@ function newestMtime(dir) {
  * when the flight record carries a status line, since the tracker's **Status:** is the one ticket state.
  */
 function ticketProblems(control, entry, now, idleMinutes) {
-  const issues = path.join(control, 'tracker', entry.slug, 'issues');
+  const out = [];
+  for (const f of flight(control, entry.slug, now)) {
+    // An open ticket only: a finished ticket's flight record is history nobody resumes from.
+    if (!['done', 'stuck'].includes(f.status) && fs.existsSync(f.record) && /^(\*\*Status:\*\*|status:)/im.test(fs.readFileSync(f.record, 'utf8'))) {
+      out.push({ code: 'STATUS_COPY', message: `runs/${entry.slug}/tickets/${f.id}.status.md has a status line; the tracker's **Status:** (\`goal.mjs status\`) is the one ticket state, so the flight record keeps only heartbeat, slice, commit and suite lines` });
+    }
+    if (f.status !== 'in-flight' || f.idle <= idleMinutes * 60) continue;
+    // A worker that returned is not a dead one: its receipt waits on the orchestrator, and killing or re-dispatching would redo finished work.
+    const act = f.receipt === 'completed'
+      ? `its committed receipt says completed: land it with \`goal.mjs merge ${entry.slug} ${f.id}\`, or send it back if a later dispatch superseded that receipt`
+      : `if no worker owns it, kill any recorded pid and re-dispatch it (BUILD.md § Stuck detection), or \`goal.mjs status ${entry.slug} ${f.id} stuck -- <why>\``;
+    out.push({ code: 'TICKET_IDLE', message: `ticket ${f.id} is in flight but nothing shows a worker on it for ${Math.round(f.idle / 60)}m (last sign: ${f.last}; limit ${idleMinutes}m): ${act}` });
+  }
+  return out;
+}
+
+/**
+ * Every ticket of the local tracker with what shows a worker on it: the newest of its control-plane commits, its status
+ * file, its branch's commits, its to-orc run directory and a `goal.mjs run` or `with-lock` in its worktree. Read-only.
+ */
+function flight(control, slug, now) {
+  const issues = path.join(control, 'tracker', slug, 'issues');
   if (!fs.existsSync(issues)) return [];
   const info = readJson(path.join(control, 'workspace.json'));
   const ws = info.workspace;
-  const records = readJson(path.join(control, 'runs', entry.slug, 'worktrees.json'));
+  const records = readJson(path.join(control, 'runs', slug, 'worktrees.json'));
   // to-orc writes under the git dir of the repo `dispatch` was given (orcRunDir), which is the user's repo even when runs commit in a clone.
   const orcRepo = info.returnTo ?? ws;
   const common = orcRepo && fs.existsSync(orcRepo) ? spawnSync('git', ['-C', orcRepo, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' }).stdout?.trim() : null;
-  const out = [];
-  for (const [id, t] of readTickets(issues).tickets) {
-    const flight = path.join(control, 'runs', entry.slug, 'tickets', `${id}.status.md`);
-    // An open ticket only: a finished ticket's flight record is history nobody resumes from.
-    if (!['done', 'stuck'].includes(t.status) && fs.existsSync(flight) && /^(\*\*Status:\*\*|status:)/im.test(fs.readFileSync(flight, 'utf8'))) {
-      out.push({ code: 'STATUS_COPY', message: `runs/${entry.slug}/tickets/${id}.status.md has a status line; the tracker's **Status:** (\`goal.mjs status\`) is the one ticket state, so the flight record keeps only heartbeat, slice, commit and suite lines` });
-    }
-    if (t.status !== 'in-flight') continue;
-    const branch = records[`t${id}`]?.branch ?? `goal/${entry.slug}-t${id}`;
+  return [...readTickets(issues).tickets].map(([id, t]) => {
+    const record = path.join(control, 'runs', slug, 'tickets', `${id}.status.md`);
+    if (t.status !== 'in-flight') return { id, status: t.status, record };
+    const branch = records[`t${id}`]?.branch ?? `goal/${slug}-t${id}`;
+    const wt = records[`t${id}`]?.state === 'active' ? records[`t${id}`].path : null;
     const signs = [
-      ['a ticket commit', Math.max(lastCommitAt(control, ['--', path.relative(control, t.file), `:(glob)runs/${entry.slug}/tickets/${id}.*`]), newestMtime(t.file))],
-      [`a heartbeat in tickets/${id}.status.md`, fs.existsSync(flight) ? newestMtime(flight) : 0],
+      ['a ticket commit', Math.max(lastCommitAt(control, ['--', path.relative(control, t.file), `:(glob)runs/${slug}/tickets/${id}.*`]), newestMtime(t.file))],
+      [`a heartbeat in tickets/${id}.status.md`, fs.existsSync(record) ? newestMtime(record) : 0],
       [`a commit on ${branch}`, ws && fs.existsSync(ws) ? lastCommitAt(ws, [`refs/heads/${branch}`, '--']) : 0],
-      ['to-orc status', common ? newestMtime(path.join(common, 'to-orc', entry.slug, `t${id}`)) : 0],
-      ['a goal.mjs run or with-lock in its worktree', records[`t${id}`]?.state === 'active' ? liveSign(records[`t${id}`].path, now) : 0],
+      ['to-orc status', common ? newestMtime(path.join(common, 'to-orc', slug, `t${id}`)) : 0],
+      ['a goal.mjs run or with-lock in its worktree', liveSign(wt, now)],
     ];
     const [last, at] = signs.reduce((newest, sign) => (sign[1] > newest[1] ? sign : newest));
-    const idle = now / 1000 - at;
-    if (idle > idleMinutes * 60) {
-      // A worker that returned is not a dead one: its receipt waits on the orchestrator, and killing or re-dispatching would redo finished work.
-      const returned = /"conclusion":\s*"completed"/.test(committedText(control, path.join('runs', entry.slug, 'tickets', `${id}.receipt.md`)) ?? '');
-      const act = returned
-        ? `its committed receipt says completed: land it with \`goal.mjs merge ${entry.slug} ${id}\`, or send it back if a later dispatch superseded that receipt`
-        : `if no worker owns it, kill any recorded pid and re-dispatch it (BUILD.md § Stuck detection), or \`goal.mjs status ${entry.slug} ${id} stuck -- <why>\``;
-      out.push({ code: 'TICKET_IDLE', message: `ticket ${id} is in flight but nothing shows a worker on it for ${Math.round(idle / 60)}m (last sign: ${last}; limit ${idleMinutes}m): ${act}` });
-    }
-  }
-  return out;
+    const receipt = (committedText(control, path.join('runs', slug, 'tickets', `${id}.receipt.md`)) ?? '').match(/"conclusion":\s*"([a-z-]+)"/)?.[1] ?? null;
+    return { id, status: t.status, record, branch, last, idle: now / 1000 - at, live: Boolean(liveWriter(wt, { own: true })), receipt };
+  });
+}
+
+/** One row per in-flight ticket for `next`: what last showed a worker on it and how long ago, whether a command of its is running, and its receipt's conclusion. */
+export function flightRows(control, slug, now = Date.now()) {
+  return flight(control, slug, now).filter((f) => f.status === 'in-flight').map((f) => ({ id: f.id, branch: f.branch, last_sign: f.last, idle_min: Math.round(f.idle / 60), live: f.live, receipt: f.receipt }));
 }
 
 /** Where the `goal.mjs run` and `with-lock` processes of `cwd`'s worktree mark themselves: its own git dir, so no worktree gets dirty and nothing is tracked. */
@@ -1210,6 +1227,7 @@ export function markedLive(cwd, fn) {
     fs.writeFileSync(path.join(dir, `.${process.pid}.tmp`), startedAt(process.pid));
     fs.renameSync(path.join(dir, `.${process.pid}.tmp`), path.join(dir, String(process.pid)));
     mark = path.join(dir, String(process.pid));
+    process.env.GOAL_LIVE_PIDS = [process.env.GOAL_LIVE_PIDS, process.pid].filter(Boolean).join(',');
   } catch { /* no git dir to write under: the command runs unmarked */ }
   try {
     return fn();
@@ -1217,6 +1235,19 @@ export function markedLive(cwd, fn) {
     if (mark) fs.rmSync(mark, { force: true });
   }
 }
+
+/**
+ * The pid of a `goal.mjs run` or `with-lock` alive in the worktree at `wt`, or null. The process asking and the marked
+ * commands it runs under are not counted (`with-lock x -- goal.mjs worktree return` marks the worktree it stands in).
+ */
+function liveWriter(wt, { own = false } = {}) {
+  const dir = wt && fs.existsSync(wt) ? liveDir(wt) : null;
+  if (!dir || !fs.existsSync(dir)) return null;
+  const mine = new Set(own ? [] : [String(process.pid), ...(process.env.GOAL_LIVE_PIDS ?? '').split(',')]);
+  const mark = liveMarks(dir).find((m) => m.alive && !mine.has(path.basename(m.file)));
+  return mark ? path.basename(mark.file) : null;
+}
+const busyWith = (pid) => `a live goal.mjs run or with-lock in it (pid ${pid})`;
 
 /** When a `goal.mjs run` or `with-lock` last showed in the worktree at `wt` (seconds): `now` while one runs, else when the last one started or ended, else 0. Read-only. */
 function liveSign(wt, now) {
@@ -1367,11 +1398,16 @@ function readTickets(issues) {
 export function frontier(control, feature) {
   const { tickets, duplicates } = readTickets(path.join(control, 'tracker', feature, 'issues'));
   const malformed = [...duplicates];
+  const holds = grantedPaths(control, feature);
   for (const [id, t] of tickets) {
     for (const b of t.blockers) if (!tickets.has(b)) t.problems.push(`blocked by unknown ticket ${b}`);
     if (t.fromReview && !tickets.has(t.fromReview)) t.problems.push(`from the review of unknown ticket ${t.fromReview}`);
     // Only before dispatch, when the Claims line can still be corrected: a dispatched ticket meets this at `contract` and `merge`.
-    if (['ready-for-agent', 'blocked'].includes(t.status)) t.problems.push(...guardedCriteria(fs.readFileSync(t.file, 'utf8')));
+    if (['ready-for-agent', 'blocked'].includes(t.status)) {
+      t.problems.push(...guardedCriteria(fs.readFileSync(t.file, 'utf8')));
+      const bare = [...t.claims.exclusive, ...t.claims['shared-regenerate']].filter((c) => GRANT_CLASS.test(claimRoot(c)) && !granted(holds, c));
+      if (bare.length) t.problems.push(`claims ${bare.join(', ')}, a guarded-class path (CI, migrations) the run holds no grant for: ${grantHint(feature, bare)}`);
+    }
     if (t.problems.length) malformed.push({ id, file: t.file, problems: t.problems });
   }
   const ready = [...tickets].filter(([, t]) => t.status === 'ready-for-agent' && t.blockers.every((b) => tickets.get(b)?.status === 'done')).map(([id]) => id);
@@ -1400,7 +1436,11 @@ export function frontier(control, feature) {
     if (['done', 'stuck'].includes(t.status)) continue;
     malformed.push({ id, file: t.file, problems: [`fix ticket ${id} is past the run's review→fix budget of ${budget} (one per planned ticket): its findings go to NOW leads: for a follow-up run, and the ticket is closed with \`goal.mjs status ${feature} ${id} stuck -- fix budget spent\` (BUILD.md step 6)`] });
   }
-  return { feature, frontier: malformed.length ? [] : ready, malformed, conflicts, capability, cross_run: crossRun(control, feature, open) };
+  // After a landing: the blocked tickets every blocker of which is done (with why they still say blocked), and the ones a stuck blocker will never free.
+  const state = (b) => tickets.get(b)?.status;
+  const releasable = [...tickets].filter(([, t]) => t.status === 'blocked' && t.blockers.length && t.blockers.every((b) => state(b) === 'done')).map(([id, t]) => ({ id, reason: t.reason }));
+  const unreachable = [...tickets].filter(([, t]) => ['blocked', 'ready-for-agent'].includes(t.status) && t.blockers.some((b) => state(b) === 'stuck')).map(([id, t]) => ({ id, behind: t.blockers.filter((b) => state(b) === 'stuck') }));
+  return { feature, frontier: malformed.length ? [] : ready, malformed, conflicts, ...(releasable.length && { releasable }), ...(unreachable.length && { unreachable }), capability, cross_run: crossRun(control, feature, open) };
 }
 
 const FINISHED_RUNS = new Set(['done', 'stopped', 'dry-run']);
@@ -1426,6 +1466,13 @@ function crossRun(control, feature, open) {
 }
 
 /** Under the frontier lock, so two orchestrators never take the same ticket. */
+/** NOW's concurrency budget (`concurrent N` or `max_concurrent_tickets N` in `budgets:`), or null when the run set none. */
+function concurrencyCap(control, feature) {
+  const n = nowField(control, feature, 'budgets').match(/\b(?:max_concurrent_tickets|concurrent)\s*[:=]?\s*(\d+)/)?.[1];
+  return n ? Number(n) : null;
+}
+const inFlightIds = (control, feature) => ticketsByStatus(control, feature)?.['in-flight'] ?? [];
+
 export function take(repo, feature, max) {
   const control = requireControl(repo);
   return withLock(repo, `frontier-${feature}`, () => {
@@ -1434,7 +1481,10 @@ export function take(repo, feature, max) {
     const entry = readRegistry(control).find((r) => r.slug === feature);
     const diverged = entry && ready.length && max > 0 ? targetDrift(control, entry) : null;
     if (diverged) throw new Refusal(diverged.message);
-    const taken = ready.slice(0, Math.max(0, max));
+    // `take <feature> 22` once meant ticket 22 and took the whole frontier: the count never passes the run's free slots.
+    const cap = concurrencyCap(control, feature);
+    const free = cap === null ? Infinity : Math.max(0, cap - inFlightIds(control, feature).length);
+    const taken = ready.slice(0, Math.max(0, Math.min(max, free)));
     for (const id of taken) setStatus(repo, feature, id, 'in-flight');
     // BUILD.md writes each taken ticket's contract to runs/<feature>/tickets/<NN>.goal.md.
     if (taken.length) fs.mkdirSync(path.join(control, 'runs', feature, 'tickets'), { recursive: true });
@@ -1497,6 +1547,9 @@ export function setStatus(repo, feature, id, status, { reason = '', landed = nul
       const entry = readRegistry(control).find((r) => r.slug === feature);
       const diverged = entry ? targetDrift(control, entry) : null;
       if (diverged) throw new Refusal(diverged.message);
+      const cap = concurrencyCap(control, feature);
+      const flying = inFlightIds(control, feature);
+      if (cap !== null && flying.length >= cap) throw new Refusal(`no free slot: ${flying.length} of concurrent ${cap} in flight (${flying.join(', ')}); land or park one first (NOW budgets: is the run's own limit, PIPELINE.md § Budgets)`);
     }
     if (status === 'in-flight' && from === 'needs-human') subject = '→ in-flight (resumed)';
     if (status === 'done') {
@@ -1575,6 +1628,45 @@ export const MAX_AMENDMENTS = 2;
 // top-level file. Broader than PLAN.md stage 6's planned `guarded` claims (top-level config): a top-level file a ticket
 // claimed at stage 6 is planned scope; one added later, or needed by a review fix, is a blocker.
 const GUARDED_CLASS = /^(?:\.github\/|\.gitlab-ci|\.circleci\/|[^/]+$)|(?:^|\/)migrations(?:\/|$)/;
+// CI workflows and migrations: a ticket claims, gains or lands one only under a grant the run recorded from the owner's
+// words (`goal.mjs grant`). Moving a path from `guarded` to `exclusive` in a ticket is not a grant.
+const GRANT_CLASS = /^(?:\.github\/|\.gitlab-ci|\.circleci\/)|(?:^|\/)migrations(?:\/|$)/;
+function grantedPaths(control, slug) {
+  try { return (readRegistry(control).find((r) => r.slug === slug)?.grants ?? []).flatMap((g) => g.paths); } catch { return []; }
+}
+const granted = (holds, file) => holds.some((g) => claimCovers(g, claimRoot(file)));
+const grantHint = (slug, paths) => `if the objective grants it, record the owner's words with \`goal.mjs grant ${slug} ${paths.join(' ')} -- "<verbatim from the objective or an owner decision in log.md>"\`; if it does not, it is a blocker`;
+
+/**
+ * Record that the owner's words authorize `paths` for this run: the quote must stand verbatim in the registered objective
+ * or in an owner decision of log.md, so authority is copied, never typed. `next` returns every grant for the hand-back.
+ */
+export function grant(repo, slug, paths, quote) {
+  assertSlug(slug);
+  paths = paths.map((p) => p.replace(/^(?:\.\/)+/, ''));
+  const outside = paths.filter((p) => !p || path.isAbsolute(p) || p.split('/').includes('..') || /[\r\n,;]/.test(p));
+  if (!paths.length || outside.length) throw new UsageError(`grant takes repo-relative paths inside the repo${outside.length ? `, got ${outside.join(', ')}` : ''}`);
+  const squeeze = (text) => text.replace(/\s+/g, ' ').trim();
+  const said = squeeze(quote);
+  if (said.length < 20) throw new UsageError('a grant quotes at least 20 characters of the owner\'s words');
+  const control = requireControl(repo);
+  return withLock(repo, 'registry', () => withLock(repo, 'control', () => {
+    refuseUncommittedSoleEdits(control, ['runs.json']);
+    const runs = readRegistry(control);
+    const entry = runs.find((r) => r.slug === slug);
+    if (!entry) throw new Refusal(`no run ${slug} in runs.json`);
+    const decisions = ownerDecisions(committedText(control, path.join('runs', slug, 'log.md')) ?? '');
+    if (![entry.objective ?? '', ...decisions].some((source) => squeeze(source).includes(said))) {
+      throw new Refusal(`those words are in neither the registered objective nor an owner decision in runs/${slug}/log.md (\`- D<n> … (source: owner)\`); a grant quotes the owner verbatim, and a path nobody granted is a blocker`);
+    }
+    entry.grants = [...(entry.grants ?? []), { paths, quote: said, at: new Date().toISOString() }];
+    const writes = { 'runs.json': `${JSON.stringify(runs, null, 2)}\n` };
+    const ledger = path.join('runs', slug, 'ledger.md');
+    if (fs.existsSync(path.join(control, ledger))) writes[ledger] = withEvent(fs.readFileSync(path.join(control, ledger), 'utf8'), 'grant', `${paths.join(', ')}: "${said}"`);
+    writeAndCommit(repo, control, `[${slug}] grant ${paths.join(', ')}`.slice(0, 120), writes, { owner: 'registry' });
+    return `granted ${paths.join(', ')} to ${slug}`;
+  }));
+}
 
 /**
  * Widen an in-flight ticket's claims after its implementer reported a claims breach. Tracker issue,
@@ -1601,8 +1693,9 @@ export function amendClaims(repo, feature, id, kind, paths, why) {
     const fresh = paths.filter((p) => !ticket.claims[kind].some((c) => claimCovers(c, claimRoot(p))));
     if (!fresh.length) return { commit: 'already claimed', claims: before.match(CLAIMS_LINE)[1], cross_run: [] };
     const declared = [...files.values()].flatMap((f) => parseTicket(fs.readFileSync(f, 'utf8')).claims.guarded);
-    const guarded = fresh.filter((p) => GUARDED_CLASS.test(p) || declared.some((g) => claimsOverlap(g, p)));
-    if (guarded.length) throw new Refusal(`${guarded.join(', ')} is guarded; only the objective's grant authorizes it, so it becomes a blocker, never an amendment`);
+    const holds = grantedPaths(control, feature);
+    const guarded = fresh.filter((p) => (GUARDED_CLASS.test(p) || declared.some((g) => claimsOverlap(g, p))) && !granted(holds, p));
+    if (guarded.length) throw new Refusal(`${guarded.join(', ')} is guarded; only the objective's grant authorizes it: ${grantHint(feature, guarded)}`);
     const amended = (before.match(AMENDED) ?? []).length;
     if (amended >= MAX_AMENDMENTS) throw new Refusal(`ticket ${want} already had ${amended} claims amendments, so it is mis-scoped: stop it and split it at PLAN.md 6b`);
 
@@ -1747,7 +1840,7 @@ export function claimsBreach(ticketText, touched) {
   const covered = (list, file) => list.some((c) => claimCovers(c, file));
   return {
     unclaimed: touched.filter((f) => !covered(claims.exclusive, f) && !covered(claims['shared-regenerate'], f) && !covered(claims.guarded, f)),
-    guarded: touched.filter((f) => covered(claims.guarded, f)),
+    guarded: touched.filter((f) => covered(claims.guarded, f) && !covered(claims.exclusive, f) && !covered(claims['shared-regenerate'], f)),
   };
 }
 
@@ -1953,7 +2046,7 @@ const ORC_DISPATCH = path.join(path.dirname(fileURLToPath(import.meta.url)), '..
 export const orcRunDir = (repo, feature, id) => path.join(git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']), 'to-orc', feature, `t${ticketId(String(id))}`);
 
 /**
- * The only way a pi worker gets a ticket (BUILD.md § Worker): the ticket is in flight through take/status, its committed
+ * The only way a pi worker gets a ticket (BUILD.md § Implementer backend): the ticket is in flight through take/status, its committed
  * contract passes the contract check and the since-dispatch check, and to-orc runs in the ticket's own run directory,
  * so its cycle cap is the ticket's repair budget. `--poll` only reads, so it skips the checks.
  */
@@ -2086,6 +2179,15 @@ export function brief(repo, feature, id) {
   const contract = committedText(control, rel);
   if (contract === null) throw new Refusal(`ticket ${want} has no committed contract; \`goal.mjs prepare-ticket ${feature} ${want}\` drafts it`);
   const worktree = readJson(path.join(control, 'runs', feature, 'worktrees.json'))[`t${want}`]?.path;
+  // Recover first, never resend: a worker still on the ticket, or a receipt that already lands, is not answered by a second worker.
+  const busy = liveWriter(worktree);
+  if (busy) throw new Refusal(`ticket ${want}'s worktree has ${busyWith(busy)}: a worker is still on it, and a second worker would write beside it (BUILD.md § Stuck detection)`);
+  const receipt = committedText(control, path.join('runs', feature, 'tickets', `${want}.receipt.md`));
+  const base = contract.match(TICKET_BASE)?.[1];
+  if (receipt && base && worktree && fs.existsSync(worktree)) {
+    const back = checkReceipt({ text: receipt, worktree, base, ticketText: text });
+    if (back.ok && back.conclusion === 'completed') throw new Refusal(`ticket ${want} has a committed receipt that passes: land it with \`goal.mjs merge ${feature} ${want}\`, never dispatch it again`);
+  }
   const checked = worktree && fs.existsSync(worktree) ? checkContract({ text: contract, ticketText: text, worktree }) : { problems: [`ticket ${want} has no active worktree`] };
   if (checked.problems.length) throw new Refusal(`ticket ${want}'s contract does not pass: ${checked.problems.join('; ')}`);
   const implement = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'matt.mjs'), 'resolve', 'implement'], { encoding: 'utf8' });
@@ -2126,6 +2228,9 @@ export function mergeTicket(repo, feature, id, { check = null } = {}) {
     const wt = records[`t${want}`];
     if (run?.state !== 'active' || !run.path || !fs.existsSync(run.path)) throw new Refusal(`${feature} has no active run worktree (gc returns a stopped or stale run's clean worktrees); \`goal.mjs worktree get ${feature}\` cuts it again from its branch`);
     if (wt?.state !== 'active' || !wt.path || !fs.existsSync(wt.path)) throw new Refusal(`ticket ${want} has no active worktree; \`goal.mjs prepare-ticket ${feature} ${want}\` cuts it again from its branch and keeps the contract`);
+    // ponytail: checked once, before the rebase; a command started in the ticket worktree while the suite runs is not seen.
+    const busy = liveWriter(wt.path);
+    if (busy) throw new Refusal(`ticket ${want}'s worktree has ${busyWith(busy)}: its worker is still validating, so a receipt is not its last word; land it when that ends`);
     const contract = committedText(control, path.join('runs', feature, 'tickets', `${want}.goal.md`));
     const base = contract?.match(TICKET_BASE)?.[1];
     if (!base) throw new Refusal(`ticket ${want} has no committed contract with a Ticket base`);
@@ -2139,7 +2244,9 @@ export function mergeTicket(repo, feature, id, { check = null } = {}) {
     // --no-renames: a rename lists only its destination, so moving an unclaimed file into a claimed folder hid the deletion.
     const touched = git(wt.path, ['diff', '--name-only', '--no-renames', `${base}...HEAD`]).split('\n').filter(Boolean);
     const breach = claimsBreach(text, touched);
-    if (breach.unclaimed.length || breach.guarded.length) throw new Refusal(`ticket ${want} touched ${[...breach.unclaimed.map((f) => `${f} (unclaimed)`), ...breach.guarded.map((f) => `${f} (guarded)`)].join(', ')}: an unclaimed edit, so it does not land (BUILD.md step 5.1)${breach.guarded.length ? `; \`guarded\` in a Claims line means off limits, so a path the objective grants is claimed \`exclusive\`: if it does, \`goal.mjs status ${feature} ${want} stuck -- <why>\`, correct the Claims line in the ticket and its contract and commit them, then \`status\` ready-for-agent, in-flight, \`contract\` and \`merge\` again; if it does not, the edit is a blocker` : ''}`);
+    if (breach.unclaimed.length || breach.guarded.length) throw new Refusal(`ticket ${want} touched ${[...breach.unclaimed.map((f) => `${f} (unclaimed)`), ...breach.guarded.map((f) => `${f} (guarded)`)].join(', ')}: an unclaimed edit, so it does not land (BUILD.md step 5.1)${breach.guarded.length ? `; \`guarded\` in a Claims line means off limits: ${grantHint(feature, breach.guarded)}; then \`goal.mjs claim ${feature} ${want} exclusive ${breach.guarded.join(' ')} -- <why>\` and merge again` : ''}`);
+    const bare = touched.filter((f) => GRANT_CLASS.test(f) && !granted(grantedPaths(control, feature), f));
+    if (bare.length) throw new Refusal(`ticket ${want} touched ${bare.join(', ')}, a guarded-class path (CI, migrations) the run holds no grant for, so it does not land: ${grantHint(feature, bare)}; then merge again`);
     if (git(run.path, ['status', '--porcelain'])) throw new Refusal(`the run worktree ${run.path} has uncommitted changes; commit or discard them before a merge`);
     // In supervisor mode the run worktree is the owner's checkout: on another branch there, the fast-forward would land the ticket on it.
     const on = git(run.path, ['rev-parse', '--abbrev-ref', 'HEAD']);
@@ -2602,7 +2709,12 @@ export function commit(repo, message, files, { owner = null } = {}) {
     return fromCwd;
   });
   return withLock(repo, 'control', () => {
-    git(control, ['add', '--', ...files]);
+    // A path whose deletion is already staged is in neither the folder nor the index, and `git add` refuses the whole call for it.
+    const known = (f, args) => spawnSync('git', ['-C', control, ...args, f], { encoding: 'utf8' }).stdout.trim() !== '';
+    const here = files.filter((f) => fs.existsSync(path.join(control, f)) || known(f, ['ls-files', '--']));
+    const gone = files.filter((f) => !here.includes(f) && !known(f, ['ls-tree', '-r', '--name-only', 'HEAD', '--']));
+    if (gone.length) throw new Refusal(`${gone.join(', ')} is no file in the state folder ${control}, tracked or new; name paths under it`);
+    if (here.length) git(control, ['add', '--', ...here]);
     // Guarded as git names what it staged, never as typed: `./runs.json` or a glob pathspec meets the guards `runs.json` does.
     const staged = git(control, ['diff', '--cached', '--name-only', '--no-renames', '--', ...files]).split('\n').filter(Boolean);
     try {
@@ -3056,6 +3168,8 @@ export function worktreeReturn(repo, slug, id) {
     if (r.state === 'returned') return `already returned ${r.path}`;
     let left = '';
     if (r.backend !== 'borrowed' && fs.existsSync(r.path)) {
+      const busy = liveWriter(r.path);
+      if (busy) throw new Refusal(`${r.path} has ${busyWith(busy)}: returning it now would kill that command; wait for it, or stop it first`);
       const workspace = workspaceOf(repo, control);
       const lent = lentAway(workspace, r, slug);
       if (lent) {
@@ -3275,7 +3389,7 @@ export function gc(repo, { apply = false, slots: destroySlots = false, staleHour
   const listed = [...git(workspace, ['worktree', 'list', '--porcelain']).matchAll(/^worktree (.*)$/gm)].map((m) => m[1]);
   const named = claimed(() => true);
   for (const wt of listed.filter((p) => fs.existsSync(p) && inside(path.join(control, 'worktrees'), p) && !inside(pool, p) && !named.has(canon(p)))) {
-    // BOOTSTRAP's temp worktree (PIPELINE.md § worktrees) is in no record while its stage runs; its stage removes it.
+    // BOOTSTRAP's temp worktree (PIPELINE.md § Isolation) is in no record while its stage runs; its stage removes it.
     // A run whose worktrees.json cannot be read names no worktree, so any of these may be its live one.
     const unknown = () => (broken.length ? `${broken.join(', ')}'s worktrees.json is unreadable, so this may be its worktree` : null);
     const why = canon(wt) === canon(path.join(control, 'worktrees', 'bootstrap')) ? 'the bootstrap stage removes it' : unknown() ?? heldWork(wt);
@@ -3384,7 +3498,7 @@ function sleep(ms) {
 
 const TAKES_VALUE = new Set(['--repo', '--state-dir', '--allow', '--base', '--target-branch', '--status-file', '--worker-model']);
 
-const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--mode branch|supervisor|pr] [--worker-model <model>] [--no-helpers] | next <slug> | pin <slug> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] [--idle-minutes <n>] | keep-going --agent <id> | worktree get|return <slug> [NN] | worktree status <slug> | gc [--delete-clean [--slots]] [--stale-hours <n>] [--all [--state-root <dir>]] | stop <slug> <reason> | resume <slug> | adopt <slug> --agent <id> --harness <name> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | prepare-ticket <feature> <id> | brief <feature> <id> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | merge <feature> <id> [--check <command>] | verdict <slug> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
+const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--mode branch|supervisor|pr] [--worker-model <model>] [--no-helpers] | next <slug> | pin <slug> | grant <slug> <path>... -- <owner words, verbatim> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] [--idle-minutes <n>] | keep-going --agent <id> | worktree get|return <slug> [NN] | worktree status <slug> | gc [--delete-clean [--slots]] [--stale-hours <n>] [--all [--state-root <dir>]] | stop <slug> <reason> | resume <slug> | adopt <slug> --agent <id> --harness <name> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | prepare-ticket <feature> <id> | brief <feature> <id> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | merge <feature> <id> [--check <command>] | verdict <slug> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
 
 function main(argv) {
   configure();
@@ -3505,6 +3619,11 @@ function main(argv) {
   }
   if (command === 'pin' && rest.length === 1) {
     console.log(pin(repo, rest[0]));
+    return 0;
+  }
+  if (command === 'grant' && rest.indexOf('--') >= 2 && rest.indexOf('--') < rest.length - 1) {
+    const cut = rest.indexOf('--');
+    console.log(grant(repo, rest[0], rest.slice(1, cut), rest.slice(cut + 1).join(' ')));
     return 0;
   }
   if (command === 'prepare-ticket' && rest.length === 2) {

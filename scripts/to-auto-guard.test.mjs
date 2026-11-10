@@ -101,6 +101,7 @@ test('with a run active, a push needs a push:<remote> grant and a PR write a pr 
   w.goal('grant', 'x', 'push:lab', '--', 'push the branch to the lab remote');
   assert.equal(w.bash('git push lab HEAD:refs/heads/goal/x'), 'allow');
   assert.equal(w.bash('git push origin HEAD'), 'deny', 'the grant names one remote');
+  assert.deepEqual(fs.readFileSync(path.join(w.env.TO_AUTO_SESSIONS, 's1.effects.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l).targets.join()), ['pr', 'push:lab'], 'what the guard let through is on record for the hand-back');
   assert.equal(w.bash('git push lab HEAD && git push origin HEAD'), 'deny', 'every push in the command needs its grant');
 });
 

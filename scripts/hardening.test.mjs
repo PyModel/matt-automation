@@ -12,7 +12,7 @@ import {
   checkReceipt, commit, configure, prepare, worktreeGet, runLogged, scriptsPin, ownerDecisions, gc, MAX_BRIEF_BYTES,
   adopt, controlDir, firstStageArgv, gcAll, stateDir, setStatus, amendClaims, discoverCheck, land, preflight,
   ensureControl, cleanup, worktreeReturn, grant, flightRows, markedLive, parseTodo, dismissedBugs, unresolvedBugs,
-  probe, sinceDispatch,
+  probe, sinceDispatch, handback, handbackText, event,
 } from './goal.mjs';
 
 const GOAL = path.join(import.meta.dirname, 'goal.mjs');
@@ -550,6 +550,38 @@ test('run --at, --mutation and --script make that evidence without a dirty tree 
   const kept = [`sh ${script}`, runLogged(wt, `sh ${script}`, { script })];
   assert.match(fs.readFileSync(kept[1].log.path, 'utf8'), /^goal\.mjs run --script proof\.sh \(sha256 [0-9a-f]{64}\):\ngrep -c bye a\.txt\n/);
   assert.equal(checked(plain, mutant, early, kept), '');
+});
+
+// A run's hand-back was one free-text event line: it left out the two pushes the run had made and cited its grant by id.
+test('the hand-back is written from state: grants with the owner\'s words, pushes the guard allowed, tickets not done, extra gates', () => {
+  const { repo, control, read } = setup();
+  ownerSays('/to-auto X and push the branch to the lab remote');
+  init(repo, 'x', 'X', WHO);
+  grant(repo, 'x', ['push:lab'], 'push the branch to the lab remote');
+  fs.writeFileSync(path.join(process.env.TO_AUTO_SESSIONS, `${WHO.agent}.effects.jsonl`), `${JSON.stringify({ at: '2026-01-01T00:00:00.000Z', targets: ['push:lab'], command: 'git push lab HEAD' })}\n`);
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt'));
+  setStatus(repo, 'x', '01', 'stuck', { reason: 'parked for the next run' });
+  event(repo, 'x', 'gate', 'external review: escalate, no defect named');
+  event(repo, 'x', 'side', 'owner asked to run the dev app');
+  handback(repo, 'x');
+  const text = read('runs/x/handback.md');
+  assert.match(text, /^# Hand-back: X\n\n- mode: branch /);
+  assert.match(text, /## Grants[^\n]*\n- push:lab: "push the branch to the lab remote" \(owner 2026-01-01T00:00:00\.000Z\)/);
+  assert.match(text, /## Pushes and PR writes the guard allowed\n- 2026-01-01T00:00:00\.000Z push:lab: `git push lab HEAD`/);
+  assert.match(text, /## Tickets not done\n- 01 stuck: parked for the next run/);
+  assert.match(text, /## Guarded files changed[^\n]*\n- none/);
+  assert.match(text, /\[gate\] external review: escalate, no defect named/);
+  assert.match(text, /\[side\] owner asked to run the dev app/);
+  // The orchestrator's judgment goes below the line and survives a refresh; state that moved makes the file stale.
+  fs.appendFileSync(path.join(control, 'runs/x/handback.md'), 'Judgment: the stuck ticket is safe to leave.\n');
+  commit(repo, '[x] hand-back notes', ['runs/x/handback.md']);
+  assert.equal(read('runs/x/handback.md').startsWith(handbackText(repo, control, 'x')), true);
+  event(repo, 'x', 'gate', 'second gate: pass');
+  assert.equal(read('runs/x/handback.md').startsWith(handbackText(repo, control, 'x')), false, 'stale: the tick of 9 refuses it');
+  handback(repo, 'x');
+  assert.match(read('runs/x/handback.md'), /second gate: pass[\s\S]*Judgment: the stuck ticket is safe to leave\.\n$/);
+  fs.rmSync(path.join(process.env.TO_AUTO_SESSIONS, `${WHO.agent}.effects.jsonl`));
+  ownerSays();
 });
 
 test('TARGET_DIVERGED: a supervisor run registered before init recorded its target is not diffed against main', () => {

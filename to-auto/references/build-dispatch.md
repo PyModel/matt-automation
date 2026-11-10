@@ -31,7 +31,7 @@
 
 ## Environment
 - Payload dirs in pool worktrees (`node_modules`, `.cache`, build output) must be real directories: pre-clone with `cp -cR`, then `diff -rq` against the owner checkout.
-- Probe nesting before fan-out. With no Agent tool, run flat: implementers review inline, the orchestrator reviews after merge, and reviewer briefs run agent-spawning skill passes inline.
+- Probe nesting before fan-out. With no Agent tool, run flat: implementers review inline, a fresh subagent reviews each ticket after merge, and reviewer briefs run agent-spawning skill passes inline.
 - Carry helper scripts from the prior run's `notes/scripts/` into this run's `notes/`, `sed -i ''` every run value, and require `grep -n '<old-slug>\|pool/<old>/'` to print nothing.
 - Copy the baseline's counting scope from the prior ledger `- baseline:` line.
 - Write each Agent prompt to `runs/<slug>/notes/dispatch-<NN>.txt` before sending it.

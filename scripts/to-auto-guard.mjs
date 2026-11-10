@@ -171,6 +171,7 @@ async function main() {
       fs.rmSync(marker, { force: true });
       // The words go with the mark: what the owner said for a finished run grants nothing to the next one.
       fs.rmSync(`${marker}.owner.jsonl`, { force: true });
+      fs.rmSync(`${marker}.effects.jsonl`, { force: true });
       return;
     }
   } catch (e) {
@@ -189,6 +190,8 @@ async function main() {
     const command = input.tool_name === 'Bash' ? String(input.tool_input?.command ?? '') : '';
     const wanted = [...pushRemotes(command).map((remote) => `push:${remote}`), ...(PR_WRITE.test(plain(command)) ? ['pr'] : [])];
     const missing = wanted.filter((target) => !granted(target) && !(target.startsWith('push:') && granted('push:*')));
+    // What the guard let through goes on record for the hand-back (`goal.mjs handback`).
+    if (wanted.length && !missing.length) fs.appendFileSync(`${marker}.effects.jsonl`, `${JSON.stringify({ at: new Date().toISOString(), targets: wanted, command: command.replace(/\s+/g, ' ').slice(0, 200) })}\n`);
     if (missing.length) deny(`to-auto: ${missing.join(', ')} has no grant in run ${mine[0].slug}. Pushing and opening or merging a PR need the owner's own words, whatever the run's mode: \`goal.mjs grant ${mine[0].slug} ${missing.join(' ')} -- "<their words>"\` records them (an owner side task is granted from the message that asked for it); without them it is a blocker for the hand-back (CORE.md, Autonomous).`);
     return;
   }

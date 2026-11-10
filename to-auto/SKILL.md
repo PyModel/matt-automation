@@ -66,4 +66,4 @@ Each rule set has one copy, loaded by path when its cue matches:
 
 ## Final report
 
-One message, outcome first: what shipped, the run branch and worktree path (or PR URL), commit hashes, review_base, where the spec and tickets live, the ledger path, budget used, blockers in one sentence each, review leads left unacted, any `wizard` script awaiting the user, and the retro path.
+One message, outcome first: what shipped, the run branch and worktree path (or PR URL), commit hashes, review_base, where the spec and tickets live, the ledger path, budget used, the hand-back (`runs/<slug>/handback.md`), blockers in one sentence each, review leads left unacted, any `wizard` script awaiting the user, and the retro path.

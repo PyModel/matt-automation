@@ -828,6 +828,11 @@ const reviewBase = (ctx) => {
   const ledger = path.join(ctx.state, 'runs/x/ledger.md');
   fs.writeFileSync(ledger, fs.readFileSync(ledger, 'utf8').replace('## NOW\n', '## NOW\n- review_base: 1234567\n'));
 };
+const nowAdd = (ctx, lines) => {
+  const ledger = path.join(ctx.state, 'runs/x/ledger.md');
+  fs.writeFileSync(ledger, fs.readFileSync(ledger, 'utf8').replace('## NOW\n', `## NOW\n${lines}`));
+};
+const logAdd = (ctx, line) => fs.appendFileSync(path.join(ctx.state, 'runs/x/log.md'), `${line}\n`);
 const tick = (ctx, ...args) => goal(ctx, ['tick', 'x', ...args]);
 const ticked = (ctx, ...args) => {
   const r = tick(ctx, ...args);
@@ -856,20 +861,39 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   assert.deepEqual([planned.registry, planned.next], ['planning', '0d']);
   assert.equal(nowOf(ctx), '0d');
   assert.equal(git(ctx.state, 'log', '-1', '--format=%s'), '[x] tick 0c: done; status planning');
+  assert.match(JSON.parse(goal(ctx, ['next', 'x']).stdout).tick_checks, /baseline\.txt is committed and NOW carries commands:/, 'next prints what the tick will check');
+  // A tick checks what its stage must leave behind, not only that the stage before it was ticked.
+  refused(ctx, /stage 0d is not finished: runs\/x\/baseline\.txt is missing.*NOW has no commands:, budgets:, baseline:, nested:, worker:/, '0d');
+  put(ctx, 'runs/x/baseline.txt', 't1 pass\n');
+  nowAdd(ctx, '- commands: suite=`true`\n- budgets: concurrent 3\n- baseline: suite green\n- env: nested: yes   worker: subagent\n');
   ticked(ctx, '0d');
   refused(ctx, /runs\/x\/findings\.md is missing/, '1');
   put(ctx, 'runs/x/findings.md', '# f\n');
+  refused(ctx, /log\.md has no decision tagged \[1\]/, '1');
+  logAdd(ctx, '- D1 [1] Q: route? → A: feature (source: findings)');
   ticked(ctx, '1');
   for (const id of ['2', '3', '4', '4b']) ticked(ctx, id, '--skipped', 'ready source');
   assert.match(todoOf(ctx), /^- \[x\] 4b challenge \(skipped: ready source\)$/m);
   refused(ctx, /runs\/x\/spec\.md is missing/, '5');
   put(ctx, 'runs/x/spec.md', '# s\n');
   assert.equal(ticked(ctx, '5').registry, 'planning');
+  // The reconcile gate closes on its own last note: no item open, or each one ruled on by kun. Never on the orchestrator's word.
+  refused(ctx, /stage 5b is not finished: runs\/x\/notes\/ has no reconcile-<n>\.md/, '5b');
+  put(ctx, 'runs/x/notes/reconcile-1.md', '- X1: the 30 s timeout became "reasonable"\n- X2: the ordering guarantee is gone\n');
+  put(ctx, 'runs/x/notes/reconcile-2.md', '- X2: the ordering guarantee is gone\n');
+  refused(ctx, /reconcile-2\.md still lists X2 with no `\(source: kun\)` ruling/, '5b');
+  logAdd(ctx, '- D2 [5b] Q: X2, ordering dropped? → A: fixed it myself (source: findings)');
+  refused(ctx, /reconcile-2\.md still lists X2/, '5b');
+  logAdd(ctx, '- D3 [5b] Q: X2, ordering dropped? → A: accepted divergence, the queue is single-consumer (source: kun)');
   assert.equal(ticked(ctx, '5b').registry, 'specced');
   ticked(ctx, '6');
   refused(ctx, /no tickets in tracker\/x\/issues/, '6b');
-  const ticket = (status) => put(ctx, 'tracker/x/issues/01-a.md', `# a\n\n**Status:** ${status}\n**Blocked by:** none\n**Claims:** a.txt (exclusive)\n\n- [ ] works\n`);
+  const ticket = (status, claims = 'exclusive: a.txt') => put(ctx, 'tracker/x/issues/01-a.md', `# a\n\n**Status:** ${status}\n**Blocked by:** none\n**Claims:** ${claims}\n\n- [ ] works\n`);
+  ticket('in-flight', 'a.txt (exclusive)');
+  refused(ctx, /stage 6b is not finished: `goal\.mjs frontier x` reports 1 malformed ticket\(s\) and 0 overlap\(s\); todo\.md has no ticket table/, '6b');
   ticket('in-flight');
+  const todo = path.join(ctx.state, 'runs/x/todo.md');
+  fs.writeFileSync(todo, `${fs.readFileSync(todo, 'utf8')}| 01 | none | a.txt | in-flight |\n`);
   assert.equal(ticked(ctx, '6b').registry, 'building');
   assert.match(git(ctx.state, 'log', '-1', '--format=%s'), /status ticketed → building$/);
   assert.equal(goal(ctx, ['check', 'x']).status, 0, 'a ticked run is in step with its registry');
@@ -890,6 +914,9 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   assert.equal(v.status, 0, v.stderr);
   assert.equal(JSON.parse(v.stdout).review_head, tip);
   ticked(ctx, '8');
+  refused(ctx, /stage 9 is not finished: runs\/x\/handback\.md is not committed: `goal\.mjs handback x` writes it/, '9');
+  assert.equal(goal(ctx, ['handback', 'x']).status, 0);
+  assert.match(fs.readFileSync(path.join(ctx.state, 'runs/x/handback.md'), 'utf8'), /^# Hand-back: X\n\n- mode: branch .*\n- verdict: ship @ [0-9a-f]{12}/);
   ticked(ctx, '9');
   refused(ctx, /runs\/x\/retro\.md is missing/, '10');
   put(ctx, 'runs/x/retro.md', '# r\n');
@@ -911,8 +938,43 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   assert.equal(fs.existsSync(wt), false);
   assert.equal(git(ctx.repo, 'branch', '--list', 'goal/x'), 'goal/x');
   assert.equal(nowOf(ctx), 'done');
+  assert.match(fs.readFileSync(path.join(ctx.state, 'runs/x/ledger.md'), 'utf8'), /^- next: nothing; the hand-back is runs\/x\/handback\.md$/m, 'a closed run points at its hand-back, not at a stage 8 step');
   assert.equal(JSON.parse(goal(ctx, ['next', 'x']).stdout).done, true);
   refused(ctx, /x is done/, '10');
+});
+
+// A run's per-ticket review in flat mode was one diff of the source paths read by the session that wrote the tickets,
+// logged as "review clean", and its tickets were drafted while the spec was still being reconciled.
+test('tick 7 needs a review on record per dispatched ticket in flat mode; tick 6b refuses tickets older than the reconciled spec', () => {
+  const ctx = run();
+  forceStatus(ctx, 'building');
+  tickBefore(ctx, 'x', '7');
+  put(ctx, 'tracker/x/issues/01-a.md', '# a\n\n**Status:** done\n**Blocked by:** none\n**Claims:** exclusive: a.txt\n\n- [x] works\n');
+  put(ctx, 'runs/x/tickets/01.goal.md', '# Goal: 01\n');
+  setNow(ctx, 'x', '7 build');
+  fixtureCommit(ctx, '[x] fixture: ticket landed');
+  refused(ctx, /stage 7 is not finished: ticket\(s\) 01 are done with no review on record.*tickets\/<NN>\.review\.md.*A diff the orchestrator read is not a review/, '7');
+  put(ctx, 'runs/x/tickets/01.review.md', 'range abc..def; files read: a.txt, a.test.txt; findings: none\n');
+  fixtureCommit(ctx, '[x] fixture: review saved');
+  assert.equal(ticked(ctx, '7').registry, 'reviewing');
+
+  const early = run();
+  forceStatus(early, 'planning');
+  tickBefore(early, 'x', '5b');
+  put(early, 'runs/x/spec.md', '# s\n');
+  put(early, 'runs/x/notes/reconcile-1.md', 'none\n');
+  put(early, 'tracker/x/issues/01-a.md', '# a\n\n**Status:** ready-for-agent\n**Blocked by:** none\n**Claims:** exclusive: a.txt\n\n- [ ] works\n');
+  const todo = path.join(early.state, 'runs/x/todo.md');
+  fs.writeFileSync(todo, `${fs.readFileSync(todo, 'utf8')}| 01 | none | a.txt | ready-for-agent |\n`);
+  setNow(early, 'x', '5b reconcile');
+  fixtureCommit(early, '[x] fixture: a ticket drafted during the reconcile rounds');
+  const tickOf = (...args) => goal(early, ['tick', 'x', ...args]);
+  assert.equal(tickOf('5b').status, 0, tickOf('5b').stderr);
+  assert.equal(tickOf('6').status, 0);
+  assert.match(tickOf('6b').stderr, /ticket\(s\) 01 were last committed before the spec was reconciled \(the tick of 5b\)/);
+  put(early, 'tracker/x/issues/01-a.md', '# a\n\n**Status:** ready-for-agent\n**Blocked by:** none\n**Claims:** exclusive: a.txt\n\n- [ ] works as the final spec says\n');
+  fixtureCommit(early, '[x] fixture: ticket checked against the final spec');
+  assert.equal(tickOf('6b').status, 0, tickOf('6b').stderr);
 });
 
 test('re-ticking a ticked stage commits nothing; bad input is a usage error', () => {

@@ -614,6 +614,24 @@ test('guarded: a red-at-base criterion naming a path its own ticket lists as gua
   assert.throws(() => mergeTicket(m.repo, 'x', '01', { check: 'true' }), /touched b\.txt \(guarded\): an unclaimed edit.*`guarded` in a Claims line means off limits.*goal\.mjs grant x b\.txt -- objective`.*goal\.mjs claim x 01 exclusive b\.txt/);
 });
 
+test('commit writes the run prefix itself when every path names one run, and still refuses a subject no path explains', () => {
+  const { repo, control } = setup();
+  init(repo, 'x', 'X', WHO);
+  const cli = (...args) => spawnSync(process.execPath, [GOAL, 'commit', ...args], { cwd: repo, encoding: 'utf8' });
+  fs.appendFileSync(path.join(control, 'runs/x/log.md'), 'a\n');
+  write(path.join(control, 'runs/x/tickets/01.status.md'), 'slice 1\n');
+  // Workers typed their own subject on heartbeat after heartbeat: three refusals in one live run.
+  const beat = cli('-m', 't01 status: slice 1', path.join(control, 'runs/x/tickets/01.status.md'), 'runs/x/log.md');
+  assert.equal(beat.status, 0, beat.stderr);
+  assert.equal(git(control, 'log', '-1', '--format=%s'), '[x] t01 status: slice 1');
+  fs.appendFileSync(path.join(control, 'runs/x/log.md'), 'b\n');
+  write(path.join(control, 'runs/y/notes.md'), 'n\n');
+  assert.match(cli('-m', 'two runs', 'runs/x/log.md', 'runs/y/notes.md').stderr, /commit subject must start with \[<slug>\]/);
+  assert.equal(cli('-m', 'registry', 'runs.json').status, 2, 'a path outside any run names no run');
+  assert.equal(cli('-m', '[x] typed in full', 'runs/x/log.md').status, 0);
+  assert.equal(git(control, 'log', '-1', '--format=%s'), '[x] typed in full');
+});
+
 test('a call goal.mjs cannot read prints the usage of that command, not of all forty', () => {
   const { repo } = setup();
   const bad = spawnSync(process.execPath, [GOAL, 'commit', 'x', 'a message with no -m'], { cwd: repo, encoding: 'utf8' });

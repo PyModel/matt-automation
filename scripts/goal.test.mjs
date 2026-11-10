@@ -707,10 +707,10 @@ test('frontier reports exclusive-claim overlaps with other active runs, ignoring
   assert.deepEqual(result.frontier, ['01']);
 });
 
-test('CLI commit refuses a subject without the [<slug>] prefix', () => {
+test('CLI commit refuses a subject without the [<slug>] prefix when its paths name no one run', () => {
   const { repo, control } = repoWithControl();
-  write(path.join(control, 'runs/x/tickets/01.status.md'), 'x');
-  const r = spawnSync(process.execPath, [GOAL, '--repo', repo, 'commit', '-m', 't01: status', 'runs/x/tickets/01.status.md'], { encoding: 'utf8' });
+  write(path.join(control, 'notes.md'), 'x');
+  const r = spawnSync(process.execPath, [GOAL, '--repo', repo, 'commit', '-m', 't01: status', 'notes.md'], { encoding: 'utf8' });
   assert.equal(r.status, 2);
   assert.match(r.stderr, /\[<slug>\]/);
 });

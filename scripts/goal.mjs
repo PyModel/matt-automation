@@ -3856,8 +3856,15 @@ function main(argv) {
     return 0;
   }
   if (command === 'commit' && rest[0] === '-m' && rest.length >= 3) {
-    if (!/^\[[a-z0-9][a-z0-9-]*\] \S/.test(rest[1])) throw new UsageError(`commit subject must start with [<slug>] (e.g. "[${'my-run'}] t01 status"), got "${rest[1]}"`);
-    console.log(commit(repo, rest[1], rest.slice(2)));
+    let subject = rest[1];
+    if (!/^\[[a-z0-9][a-z0-9-]*\] \S/.test(subject)) {
+      // Files of one run name their run, so the prefix is written, not demanded: workers typed their own subject on
+      // heartbeat after heartbeat and each refusal cost a round trip.
+      const slugs = new Set(rest.slice(2).map((f) => f.match(/(?:^|\/)(?:runs|tracker)\/([a-z0-9][a-z0-9-]*)\//)?.[1] ?? ''));
+      if (slugs.size !== 1 || slugs.has('') || !subject.trim()) throw new UsageError(`commit subject must start with [<slug>] (e.g. "[${'my-run'}] t01 status"), got "${subject}"`);
+      subject = `[${[...slugs][0]}] ${subject.trim()}`;
+    }
+    console.log(commit(repo, subject, rest.slice(2)));
     return 0;
   }
   // A known command typed wrong gets its own lines: the whole list buried what was wrong with the call.

@@ -1664,32 +1664,30 @@ export const MAX_AMENDMENTS = 2;
 // Paths a ticket may gain only through the objective's grant, never an amendment: CI workflows, migrations and any
 // top-level file. Broader than PLAN.md stage 6's planned `guarded` claims (top-level config): a top-level file a ticket
 // claimed at stage 6 is planned scope; one added later, or needed by a review fix, is a blocker.
-const GUARDED_CLASS = /^(?:\.github\/|\.gitlab-ci|\.circleci\/|[^/]+$)|(?:^|\/)migrations(?:\/|$)/;
+// ponytail: migration folders as the common frameworks name them (Rails db/migrate, Flyway migration, EF Core Migrations,
+// Alembic); a project that keeps schema changes elsewhere is not matched, and would need its own pattern in NOW.
+const CI_PATHS = String.raw`^(?:\.github\/|\.gitlab-ci|\.circleci\/)`;
+const MIGRATION_PATHS = String.raw`(?:^|\/)(?:migrations?|migrate|alembic\/versions)(?:\/|$)`;
+const GUARDED_CLASS = new RegExp(`${CI_PATHS}|^[^/]+$|${MIGRATION_PATHS}`, 'i');
 // CI workflows and migrations: what `next` lists for the hand-back when the run branch changed one (`guardedChanges`).
-// ponytail: folder names of the common frameworks (Rails db/migrate, Flyway migration, EF Core Migrations, Alembic); a
-// project that keeps schema changes elsewhere is not listed, and would need its own pattern in NOW.
-const HANDBACK_CLASS = /^(?:\.github\/|\.gitlab-ci|\.circleci\/)|(?:^|\/)(?:migrations?|migrate|alembic\/versions)\//i;
+const HANDBACK_CLASS = new RegExp(`${CI_PATHS}|${MIGRATION_PATHS}`, 'i');
 const grantFor = (entry, file) => (entry?.grants ?? []).find((g) => g.paths.some((p) => claimCovers(p, claimRoot(file))));
 const grantHint = (slug, paths) => `if the objective or an answered owner decision grants it, record which with \`goal.mjs grant ${slug} ${paths.join(' ')} -- objective\` (or \`-- D<n>\`); if neither does, it is a blocker`;
 
 /**
- * CI and migration files the run branch changed since it left its target, each with the source of the grant covering it
- * or `none`. Read from the branch, never the Claims lines, so no relabelled claim hides one. goal.mjs cannot tell whether
- * the owner's words cover a path (every file it reads, the orchestrator wrote): the owner judges this list at hand-back.
+ * CI and migration files the run's own commits changed (first-parent, no merges, since the recorded base: the target merged
+ * into the run branch adds none, and a target fast-forwarded to the run head hides none), each with the source of the
+ * grant covering it or `none`. Read from the branch, never the Claims lines, so no relabelled claim hides one. goal.mjs
+ * cannot tell whether the owner's words cover a path (every file it reads, the orchestrator wrote): the owner judges this
+ * list at hand-back.
  */
 function guardedChanges(control, entry) {
   const record = readJson(path.join(control, 'runs', entry.slug, 'worktrees.json')).run;
   const ws = readJson(path.join(control, 'workspace.json')).workspace;
-  if (!record?.branch || !ws || !fs.existsSync(ws)) return [];
-  const out = (args) => {
-    const r = spawnSync('git', ['-C', ws, ...args], { encoding: 'utf8', maxBuffer: 1 << 28 });
-    return r.status === 0 ? r.stdout.trim() : null;
-  };
-  const target = entry.target && entry.target !== record.branch ? entry.target : null;
-  const from = (target && out(['merge-base', record.branch, target])) ?? record.base;
-  if (!from) return [];
-  return (out(['diff', '--name-only', '--no-renames', from, record.branch]) ?? '').split('\n')
-    .filter((f) => HANDBACK_CLASS.test(f)).map((f) => ({ path: f, grant: grantFor(entry, f)?.source ?? 'none' }));
+  if (!record?.branch || !record.base || !ws || !fs.existsSync(ws)) return [];
+  const log = spawnSync('git', ['-C', ws, 'log', '--first-parent', '--no-merges', '--no-renames', '--name-only', '--format=', `${record.base}..${record.branch}`], { encoding: 'utf8', maxBuffer: 1 << 28 });
+  if (log.status !== 0) return [];
+  return [...new Set(log.stdout.split('\n').filter((f) => HANDBACK_CLASS.test(f)))].sort().map((f) => ({ path: f, grant: grantFor(entry, f)?.source ?? 'none' }));
 }
 
 /**

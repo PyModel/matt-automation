@@ -663,6 +663,9 @@ test('grant: a guarded path joins a ticket after planning only under a grant tha
   assert.deepEqual(registry(control)[0].grants[1], { paths: ['.github/'], source: 'D1', quote: d1, at: registry(control)[0].grants[1].at });
   const cli = spawnSync(process.execPath, [GOAL, 'grant', 'x', 'db/migrations/', '--', 'the', 'owner', 'said', 'so'], { cwd: repo, encoding: 'utf8' });
   assert.equal(cli.status, 2, 'typed words are a usage error at the command line');
+  const cited = spawnSync(process.execPath, [GOAL, 'grant', 'x', 'docs/a.md', 'docs/b.md', '--', 'objective'], { cwd: repo, encoding: 'utf8' });
+  assert.equal(cited.status, 0, cited.stderr);
+  assert.deepEqual(registry(control)[0].grants.at(-1).paths, ['docs/a.md', 'docs/b.md'], 'the command every refusal names records the grant');
 });
 
 test('next lists every CI and migration file the run branch changed, with the grant that covers it or none', () => {
@@ -690,6 +693,16 @@ test('next lists every CI and migration file the run branch changed, with the gr
   assert.deepEqual(listed(), ['Schema/Migrations/Init.cs none', 'alembic/versions/a1.py none', 'db/migrate/002.rb none', 'db/migrations/001.sql none'], 'read from the run branch, so no Claims line hides it; each framework spells the folder its own way');
   grant(m.repo, 'x', ['db/migrations/'], 'D1');
   assert.deepEqual(listed().at(-1), 'db/migrations/001.sql D1');
+  // The list is the run's own commits: the target merged into the run branch adds nothing to it, and the target
+  // fast-forwarded to the run head (local main following each landing) takes nothing from it.
+  const target = git(m.repo, 'rev-parse', '--abbrev-ref', 'HEAD');
+  write(path.join(m.repo, 'ops/migrations/zz.sql'), 'x\n');
+  git(m.repo, 'add', '-A');
+  git(m.repo, 'commit', '-qm', 'someone else, on the target');
+  git(m.run, 'merge', '-q', '--no-edit', target);
+  assert.equal(listed().length, 4, listed().join());
+  git(m.repo, 'merge', '-q', '--ff-only', 'goal/x');
+  assert.equal(listed().length, 4, 'a target that caught up with the run hides nothing');
 });
 
 const started = (pid) => spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }).stdout.trim();
@@ -992,7 +1005,7 @@ test('ticket writes: a $ in a reason stays text, a refused commit leaves no edit
   assert.deepEqual(frontier(control, 'x').conflicts, [], 'two tickets that claim nothing do not overlap');
   setStatus(repo, 'x', '01', 'stuck', { reason: "cost $& and $' more" });
   assert.match(read('tracker/x/issues/01-a.md'), /^\*\*Status:\*\* stuck: cost \$& and \$' more\n\*\*Blocked by:\*\* None$/m);
-  for (const dir of ['db/migrations', 'db/migrations/']) assert.throws(() => amendClaims(repo, 'x', '02', 'exclusive', [dir], 'schema'), /is guarded/, dir);
+  for (const dir of ['db/migrations', 'db/migrations/', 'db/migrate/20260101_x.rb', 'Schema/Migrations/Init.cs', 'alembic/versions/a1.py', '.GitHub/workflows/ci.yml']) assert.throws(() => amendClaims(repo, 'x', '02', 'exclusive', [dir], 'schema'), /is guarded/, dir);
   write(path.join(control, 'tracker/x/issues/03-c.md'), ticketText('blocked', 'exclusive: c/').replace('None', 'banana'));
   rawCommit(control, '[x] fixture: a malformed ticket');
   assert.throws(() => setStatus(repo, 'x', '03', 'stuck', { reason: 'x' }), /malformed/);

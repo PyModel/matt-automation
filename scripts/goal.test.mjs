@@ -34,7 +34,7 @@ function repoWithControl() {
 }
 
 function todo(ticked) {
-  return STAGES.map((s) => `- [${ticked.includes(s.id) ? 'x' : ' '}] ${s.id} ${s.name}`).join('\n');
+  return `## Stages\n${STAGES.map((s) => `- [${ticked.includes(s.id) ? 'x' : ' '}] ${s.id} ${s.name}`).join('\n')}`;
 }
 
 function ticket(status, blockedBy, claims) {

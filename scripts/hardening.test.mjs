@@ -11,7 +11,7 @@ import {
   init, next, tick, pin, take, frontier, prepareTicket, brief, mergeTicket, verdict, setRegistry, checkRun, checkContract,
   checkReceipt, commit, configure, prepare, worktreeGet, runLogged, scriptsPin, ownerDecisions, gc, MAX_BRIEF_BYTES,
   adopt, controlDir, firstStageArgv, gcAll, stateDir, setStatus, amendClaims, discoverCheck, land, preflight,
-  ensureControl, cleanup, worktreeReturn, grant, flightRows, markedLive,
+  ensureControl, cleanup, worktreeReturn, grant, flightRows, markedLive, parseTodo,
 } from './goal.mjs';
 
 const GOAL = path.join(import.meta.dirname, 'goal.mjs');
@@ -1203,4 +1203,21 @@ test('a receipt lists a renamed file under both names: the checker reads the dif
   const about = (changed_files) => checkReceipt({ text: JSON.stringify({ ticket: '01', conclusion: 'partial', ticket_base: base, head, changed_files }), worktree: repo, base }).problems.filter((p) => /changed_files/.test(p));
   assert.match(String(about(['c.txt'])[0]), /differ from git diff --name-only --no-renames/);
   assert.deepEqual(about(['b.txt', 'c.txt']), []);
+});
+
+test("a line under todo.md's Tickets heading is never read as a stage line: ticket 10 is not stage 10", () => {
+  const todo = (ten, ticket) => `# to-auto todo: x\n\n## Stages\n- [x] 9 hand back\n- [${ten}] 10 retro\n\n## Tickets (stage 7)\n${ticket}\n`;
+  assert.equal(parseTodo(todo('x', '- [ ] 10: web screens: the page reads the phase')).get('10'), true);
+  assert.equal(parseTodo(todo(' ', '- [x] 10 web screens')).get('10'), false);
+  assert.equal(parseTodo(todo('x', '| 10 | web screens | none | done | removed | 1a2b3c4 |')).get('9'), true);
+  assert.equal(parseTodo('- [x] 10 retro\n').size, 0, 'a file without the Stages heading has no stage lines');
+  // Through the commit guard: ticking the ticket line by hand is no stage tick, and `next` still reads the stages.
+  const { repo, control } = setup();
+  init(repo, 'x', 'X', WHO);
+  const file = path.join(control, 'runs/x/todo.md');
+  fs.appendFileSync(file, '- [ ] 10: web screens\n');
+  commit(repo, '[x] ticket list', ['runs/x/todo.md']);
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('- [ ] 10: web', '- [x] 10: web'));
+  commit(repo, '[x] ticket 10 landed', ['runs/x/todo.md']);
+  assert.equal(next(repo, 'x').stage, '00');
 });

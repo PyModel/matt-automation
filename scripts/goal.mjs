@@ -625,10 +625,14 @@ export function adopt(repo, slug, { agent = null, harness = null } = {}) {
 
 // ---------------------------------------------------------------- next
 
-/** The todo.md stage lines: `- [x] 0b setup` or `- [ ] 7 build`, one per line. Maps stage id → ticked. */
+/**
+ * The todo.md stage lines: `- [x] 0b setup` or `- [ ] 7 build`, one per line under `## Stages`. Maps stage id → ticked.
+ * Only that section is read: a checkbox line for ticket 10 under `## Tickets` was taken for stage 10.
+ */
 export function parseTodo(text) {
   const tickedById = new Map();
-  for (const line of text.split('\n')) {
+  const stages = text.split(/^## /m).find((section) => /^Stages\b/.test(section)) ?? '';
+  for (const line of stages.split('\n')) {
     const m = line.match(/^- \[( |x)\] (\S+)\b/);
     if (m && STAGES.some((s) => s.id === m[2])) tickedById.set(m[2], m[1] === 'x');
   }

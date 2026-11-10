@@ -50,7 +50,7 @@ This skill lives in the matt-automations repo, which vendors Matt Pocock's skill
 Each rule set has one copy, loaded by path when its cue matches:
 
 - **Run budgets and stop conditions** ([references/run-budget.md](references/run-budget.md)): log `budget: <old> -> <new> (source: <who>)` and commit it with the ledger's wall-clock line in one `goal.mjs commit` before any ticket runs under the new limit; never cut a registered item — the stop conditions decide what stays open.
-- **Build dispatch** ([references/build-dispatch.md](references/build-dispatch.md)): pass absolute paths to `goal.mjs`; get worktrees only from `goal.mjs worktree get` or `prepare-ticket`; `test -e` every claimed path before dispatch; `goal.mjs contract` runs every grep criterion at the ticket base.
+- **Build dispatch** ([references/build-dispatch.md](references/build-dispatch.md)): pass absolute paths to `goal.mjs`; get worktrees only from `goal.mjs worktree get` or `prepare-ticket`; `test -e` every claimed path before dispatch; `goal.mjs probe` runs every grep criterion before any take.
 - **Grilling rounds via kun** ([references/grilling-rounds.md](references/grilling-rounds.md)): the answerer gets bare questions and options; recommendations go only to the challenger. Accepting every recommendation is a failure signal: re-ask blind.
 - **Ticket lifecycle** (the `to-auto-ticket-lifecycle` skill, which autoharness maintains outside git): load it when goal.mjs refuses a transition, a ticket returns claims-breach, a run goes STALE or a ticket TICKET_IDLE, or a Stop hook blocks ending a turn.
 

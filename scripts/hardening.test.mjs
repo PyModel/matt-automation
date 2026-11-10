@@ -12,6 +12,7 @@ import {
   checkReceipt, commit, configure, prepare, worktreeGet, runLogged, scriptsPin, ownerDecisions, gc, MAX_BRIEF_BYTES,
   adopt, controlDir, firstStageArgv, gcAll, stateDir, setStatus, amendClaims, discoverCheck, land, preflight,
   ensureControl, cleanup, worktreeReturn, grant, flightRows, markedLive, parseTodo, dismissedBugs, unresolvedBugs,
+  probe, sinceDispatch,
 } from './goal.mjs';
 
 const GOAL = path.join(import.meta.dirname, 'goal.mjs');
@@ -242,7 +243,7 @@ test('prepare-ticket drafts every file-decided field verbatim, contract refuses 
   assert.deepEqual(ok.problems, []);
   assert.deepEqual(ok.probes.map((p) => [p.exit, p.lines]), [[0, 1]]);
   const bad = checkContract({ text: fillIn(repo, control, '02'), ticketText: ticket('02-b.md'), worktree: worktreeGet(repo, 'x', '02') }).problems.join('\n');
-  assert.match(bad, /`grep -n nosuchline b\.txt` matches nothing at the ticket base/);
+  assert.match(bad, /`grep -n nosuchline b\.txt` matches nothing at the base/);
   assert.match(bad, /`grep -n x missing\.txt` fails at the ticket base \(exit 2/);
 });
 
@@ -463,7 +464,92 @@ test('contract probes run the search alone as argv: no shell, no pipeline tail, 
   const checked = checkContract({ text, ticketText: fs.readFileSync(path.join(control, 'tracker/x/issues/01-a.md'), 'utf8'), worktree: drafted.worktree });
   assert.equal(fs.existsSync(victim), false, 'a pipeline tail is never run');
   assert.deepEqual(checked.probes.map((p) => [p.command.split(' ')[0], p.exit]), [['grep', 0], ['grep', 1]], 'rg --pre and git grep -O, bundled or abbreviated, are not probed');
-  assert.match(checked.problems.join('\n'), /`grep -c nosuch a\.txt` matches nothing at the ticket base/, 'a count of 0 is no match');
+  assert.match(checked.problems.join('\n'), /`grep -c nosuch a\.txt` matches nothing at the base/, 'a count of 0 is no match');
+});
+
+// A run's ticket failed the contract probe on wording alone ("totals 0" was in no word list), after the take that froze its
+// criteria; the way back was stuck, then ready-for-agent, with no record of what the re-plan changed.
+test('probe runs before any take; an untouched ticket goes back to ready-for-agent, and a re-plan is put on record', () => {
+  const { repo, control, read } = setup();
+  init(repo, 'x', 'X', WHO);
+  worktreeGet(repo, 'x');
+  const first = '- [ ] `grep -c nosuch a.txt` totals 0\n- [ ] `grep -n hello a.txt` still matches\n';
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt', `\n${first}`));
+  seedTicket(repo, control, '02-b.md', ticketText('blocked', 'exclusive: b.txt', '\n- [ ] b.txt says B (Red at base)\n').replace('None', '01'));
+  const before = probe(repo, 'x');
+  assert.deepEqual([before.ok, before.tickets.map((t) => t.id)], [false, ['01', '02']], 'every ticket not yet dispatched is probed, on the run head');
+  assert.match(before.tickets[0].problems[0], /matches nothing at the base and the criterion declares neither `\(Red at base: …\)` nor `\(Absent: …\)`/);
+  // The note decides, never the wording.
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt', `\n${first.replace('totals 0', 'totals 0 (Absent: the marker is gone)')}`));
+  assert.equal(probe(repo, 'x', '01').ok, true);
+
+  assert.deepEqual(take(repo, 'x', 1), ['01']);
+  prepareTicket(repo, 'x', '01');
+  assert.throws(() => setStatus(repo, 'x', '01', 'ready-for-agent'), /needs its reason/);
+  setStatus(repo, 'x', '01', 'ready-for-agent', { reason: 'not dispatched: criterion 2 names the wrong word' });
+  assert.equal(fs.existsSync(path.join(control, 'runs/x/tickets/01.goal.md')), false, 'the contract drafted from the old criteria is gone');
+  assert.equal(JSON.parse(read('runs/x/worktrees.json')).t01.state, 'returned');
+  assert.match(git(control, 'log', '-1', '--format=%s', '--', 'tracker/x/issues/01-a.md'), /ticket 01 → ready-for-agent: not dispatched: criterion 2/);
+  seedTicket(repo, control, '01-a.md', read('tracker/x/issues/01-a.md').replace('`grep -n hello a.txt` still matches', '`grep -n hello a.txt` matches once'));
+  assert.deepEqual(take(repo, 'x', 1), ['01']);
+  assert.match(read('tracker/x/issues/01-a.md'), /^\*\*Re-planned:\*\* criteria changed since the dispatch at [0-9a-f]{8}: \+"`grep -n hello a\.txt` matches once", -"`grep -n hello a\.txt` still matches"$/m);
+  assert.deepEqual(next(control, 'x').replanned.map((r) => r.id), ['01'], 'the hand-back lists it');
+  assert.deepEqual(sinceDispatch(path.join(control, 'tracker/x/issues/01-a.md')), [], 'the new dispatch is the baseline');
+
+  // A ticket a worker has been on never goes back this way.
+  prepareTicket(repo, 'x', '01');
+  write(path.join(control, 'runs/x/tickets/01.status.md'), 'heartbeat: now\n');
+  commit(repo, '[x] t01 status', ['runs/x/tickets/01.status.md']);
+  assert.throws(() => setStatus(repo, 'x', '01', 'ready-for-agent', { reason: 'not dispatched' }), /it has a status file.*a worker has been on it/);
+});
+
+// Workers proved "green at an intermediate commit" and "the test kills this mutant" with hand-rolled exports and scripts in
+// the run's tmp folder, which cleanup then deleted under the receipts that cite them.
+test('run --at, --mutation and --script make that evidence without a dirty tree or a script cleanup deletes', () => {
+  const kinds = '- [ ] a.txt says bye (Red at base)\n- [ ] the check fails when a.txt loses bye (Mutation: the line is dropped)\n- [ ] the first commit alone says bye (At commit: the first)\n';
+  const { repo, control } = dispatched({ one: kinds, two: '- [ ] b.txt says B (Red at base)\n' });
+  fillIn(repo, control, '01');
+  const wt = worktreeGet(repo, 'x', '01');
+  const base = git(wt, 'rev-parse', 'HEAD');
+  write(path.join(wt, 'a.txt'), 'bye\n');
+  git(wt, 'commit', '-qam', 'Refs 01 first');
+  const first = git(wt, 'rev-parse', 'HEAD');
+  write(path.join(wt, 'a.txt'), 'bye\nbye again\n');
+  git(wt, 'commit', '-qam', 'Refs 01 second');
+  write(path.join(wt, 'a.txt'), 'hi\n');
+  const patch = path.join(tmp('hard-patch-'), 'drop.patch');
+  write(patch, `${git(wt, 'diff')}\n`);
+  git(wt, 'checkout', '--', 'a.txt');
+  const ticketText = fs.readFileSync(path.join(control, 'tracker/x/issues/01-a.md'), 'utf8');
+  const checked = (...runs) => checkReceipt({
+    worktree: wt, base, ticketText,
+    text: JSON.stringify({
+      ticket: '01', conclusion: 'completed', ticket_base: base, head: git(wt, 'rev-parse', 'HEAD'), changed_files: ['a.txt'],
+      criteria: kinds.trim().split('\n').map((c) => ({ criterion: c.slice(6), result: 'pass', evidence: 'the logs below' })),
+      validation: runs.map(([command, r]) => ({ command, exit: r.exit, summary: '', log: r.log })),
+      review: { cited_fixed: 0, leads: [] }, not_validated: [], blockers: [], external_effects: [], worktree_clean: true,
+    }),
+  }).problems.join(' | ');
+  const plain = ['grep -c bye a.txt', runLogged(wt, 'grep -c bye a.txt')];
+  assert.match(checked(plain), /`\(Mutation: …\)` criterion but no validation is a `goal\.mjs run --mutation.*`\(At commit: …\)` criterion but no validation is a `goal\.mjs run --at/);
+  const mutant = ['grep -c bye a.txt', runLogged(wt, 'grep -c bye a.txt', { mutation: patch })];
+  assert.equal(mutant[1].exit, 1, 'the check fails on the mutated tree');
+  assert.equal(git(wt, 'status', '--porcelain'), '', 'the ticket worktree was never touched');
+  assert.match(fs.readFileSync(mutant[1].log.path, 'utf8'), /goal\.mjs run --mutation \(sha256 [0-9a-f]{64}\), applied at [0-9a-f]{40}:\n[\s\S]*\+hi/, 'the log keeps the patch');
+  const early = ['grep -c again a.txt', runLogged(wt, 'grep -c again a.txt', { at: first })];
+  assert.equal(early[1].exit, 1, 'the first commit has no second line: the command ran at that commit');
+  assert.throws(() => runLogged(wt, 'true', { at: 'nosuch' }), /is no commit of this branch/);
+  assert.throws(() => runLogged(wt, 'true', { mutation: path.join(wt, 'b.txt') }), /does not apply/);
+  assert.equal(checked(plain, mutant, early), '');
+  assert.equal(git(wt, 'worktree', 'list').split('\n').some((l) => l.includes('goal-run-')), false, 'no scratch worktree is left behind');
+  // A proof script under the run's tmp folder is evidence only when the log keeps its text.
+  const script = path.join(control, 'tmp', 'x', 'proof.sh');
+  write(script, 'grep -c bye a.txt\n');
+  const bare = [`sh ${script}`, runLogged(wt, `sh ${script}`)];
+  assert.match(checked(plain, mutant, early, bare), /runs a script under .*tmp.*`goal\.mjs run --script <file> -- <command>`/);
+  const kept = [`sh ${script}`, runLogged(wt, `sh ${script}`, { script })];
+  assert.match(fs.readFileSync(kept[1].log.path, 'utf8'), /^goal\.mjs run --script proof\.sh \(sha256 [0-9a-f]{64}\):\ngrep -c bye a\.txt\n/);
+  assert.equal(checked(plain, mutant, early, kept), '');
 });
 
 test('TARGET_DIVERGED: a supervisor run registered before init recorded its target is not diffed against main', () => {

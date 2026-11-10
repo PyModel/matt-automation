@@ -11,7 +11,7 @@ import {
   init, next, tick, pin, take, frontier, prepareTicket, brief, mergeTicket, verdict, setRegistry, checkRun, checkContract,
   checkReceipt, commit, configure, prepare, worktreeGet, runLogged, scriptsPin, ownerDecisions, gc, MAX_BRIEF_BYTES,
   adopt, controlDir, firstStageArgv, gcAll, stateDir, setStatus, amendClaims, discoverCheck, land, preflight,
-  ensureControl, cleanup, worktreeReturn, grant, flightRows, markedLive, parseTodo,
+  ensureControl, cleanup, worktreeReturn, grant, flightRows, markedLive, parseTodo, dismissedBugs, unresolvedBugs,
 } from './goal.mjs';
 
 const GOAL = path.join(import.meta.dirname, 'goal.mjs');
@@ -1220,4 +1220,33 @@ test("a line under todo.md's Tickets heading is never read as a stage line: tick
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('- [ ] 10: web', '- [x] 10: web'));
   commit(repo, '[x] ticket 10 landed', ['runs/x/todo.md']);
   assert.equal(next(repo, 'x').stage, '00');
+});
+
+test('next lists every bugs.md entry closed as not a bug, so the owner reads each dismissal at hand-back', () => {
+  // The shape of an entry a run relabelled to get past the tick of stage 7: routed to the owner, then closed on the orchestrator's word.
+  const text = [
+    '## t18-2 a stale value can still reach a client through a two-read race (not a t18 regression)',
+    '- Route: B2 / owner (D4).',
+    '- Status: not a bug: the page reads the record and its latest change in two calls, so one response can briefly carry a stale value.',
+    '',
+    '## o-1 typo',
+    '- fixed @ 1234567',
+    '',
+    '## o-2 stale cache',
+    '- Status: Not a product bug, already resolved upstream',
+    '',
+    '## o-3 flaky suite',
+    '- ticket 07',
+    '',
+  ].join('\n');
+  const titles = ['## t18-2 a stale value can still reach a client through a two-read race (not a t18 regression)', '## o-2 stale cache'];
+  assert.deepEqual(dismissedBugs(text).map((d) => d.entry), titles, 'an action word beside the label hides nothing');
+  assert.match(dismissedBugs(text)[0].reason, /^- Status: not a bug: the page reads the record/);
+  assert.deepEqual(unresolvedBugs(text), [], 'the label still closes the entry for a tick: the list is a record, not a gate');
+  const { repo, control } = setup();
+  init(repo, 'x', 'X', WHO);
+  assert.equal(next(control, 'x').dismissed_bugs, undefined, 'no entry, no key');
+  fs.appendFileSync(path.join(control, 'runs/x/bugs.md'), text);
+  commit(repo, '[x] bugs', ['runs/x/bugs.md']);
+  assert.deepEqual(next(control, 'x').dismissed_bugs.map((d) => d.entry), titles);
 });

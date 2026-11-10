@@ -113,7 +113,7 @@ A stage is done exactly when its line holds. Phase files point here.
 - **8 Final review**: ran in a fresh review subagent against `review_base`; cited findings fixed by one fix subagent, independently re-verified against the resulting snapshot, and committed; suite no worse than baseline; `review.md` (and `verify.md` after a fix pass) committed and `final-verdict.json` written from them by `goal.mjs verdict`; uncited leads listed.
 - **9 Hand back**: done per the `mode` `goal.mjs next` reports; `goal.mjs worktree status <slug>` shows no ticket worktree `active` (idle treehouse pool slots in `git worktree list` are not the run's); an authorized PR is marked ready for review. In supervisor mode, `goal.mjs land` has already put the commits on `--target-branch` and written the item map to `--status-file`.
 - **10 Retro**: `retro.md` written with candidates ordered by severity.
-- **Every stage**: `bugs.md` has no entry without an action (fixed @ commit, ticket id, blocker, or not a bug), which `goal.mjs tick` checks and refuses on; NOW rewritten and `goal.mjs tick <slug> <id>` run (it ticks `todo.md`, sets NOW's stage line, appends the event and commits) before the next stage starts.
+- **Every stage**: `bugs.md` has no entry without an action (fixed @ commit, ticket id, blocker, or not a bug), which `goal.mjs tick` checks and refuses on; an entry that waits on the owner is a blocker, never `not a bug`; NOW rewritten and `goal.mjs tick <slug> <id>` run (it ticks `todo.md`, sets NOW's stage line, appends the event and commits) before the next stage starts.
 
 ## Under a loop
 

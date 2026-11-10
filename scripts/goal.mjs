@@ -648,6 +648,10 @@ const statusAfter = (index) => (STAGES[index + 1] ? FLOOR_OF.get(STAGES[index + 
 const openStage = (status) => STAGES.findIndex((s) => RUN_ORDER.indexOf(FLOOR_OF.get(s.id)) >= RUN_ORDER.indexOf(status));
 
 /** The stage whose tick moves the registry to `status` (planning → 0c, specced → 5b, ticketed and building → 6b, reviewing → 7, done → 10). */
+const NOT_A_BUG = /\bnot a (product )?bug\b/i;
+/** The entries of bugs.md: each starts at a `## ` heading or a top-level `- [` item. */
+const bugEntries = (text) => text.split(/^(?=## |- \[)/m).filter((e) => /^(## |- \[)/.test(e));
+
 /**
  * The first line of each bugs.md entry (a `## ` heading or a top-level `- [` item) that names no action. An entry whose
  * only action is `ticket NN` stays open once every ticket it names is in `done`: the ticket closed without the entry
@@ -655,15 +659,26 @@ const openStage = (status) => STAGES.findIndex((s) => RUN_ORDER.indexOf(FLOOR_OF
  */
 // ponytail: keyword match on free text, so "fixed" anywhere passes; a structured Action: field if runs game it.
 export function unresolvedBugs(text, done = new Set()) {
-  return text.split(/^(?=## |- \[)/m)
-    .filter((e) => /^(## |- \[)/.test(e))
+  return bugEntries(text)
     .filter((e) => {
       const t = e.replace(/\bnot (yet )?fixed\b/gi, '');
-      if (/\b(fixed|resolved)\b|\bblocker\b|\bnot a (product )?bug\b/i.test(t)) return false;
+      if (/\b(fixed|resolved)\b|\bblocker\b/i.test(t) || NOT_A_BUG.test(t)) return false;
       const refs = [...t.matchAll(/\bticket\s+#?(\d+)/gi)].map((m) => ticketId(m[1]));
       return !refs.length || refs.every((id) => done.has(id));
     })
     .map((e) => e.split('\n')[0].trim().slice(0, 120));
+}
+
+/**
+ * Every bugs.md entry carrying the `not a bug` label, with the line that says why. The label closes an entry on the
+ * orchestrator's word (a run relabelled an entry routed to the owner to get past a tick), so `next`
+ * lists each one for the owner to judge at hand-back. Any entry with the label is listed, whatever else it says.
+ */
+export function dismissedBugs(text) {
+  return bugEntries(text).filter((e) => NOT_A_BUG.test(e)).map((e) => {
+    const lines = e.split('\n').map((l) => l.trim());
+    return { entry: lines[0].slice(0, 120), reason: lines.find((l) => NOT_A_BUG.test(l)).slice(0, 240) };
+  });
 }
 
 /** Decisions still waiting for an answer: `- D<n> (open) …` lines in log.md (LEDGER.md § Layout, log.md). */
@@ -726,7 +741,7 @@ export function tick(repo, slug, id, { skipped = null } = {}) {
     const logFile = path.join(runDir, 'log.md');
     const undecided = fs.existsSync(logFile) ? openDecisions(fs.readFileSync(logFile, 'utf8')) : [];
     if (undecided.length) throw new Refusal(`stage ${id} cannot be ticked: runs/${slug}/log.md has open decision(s) ${undecided.join('; ')}; the owner or /kun answers each, and the line becomes \`- D<n> [stage] Q: … → A: … (source: …)\` (LEDGER.md § Layout, log.md)`);
-    if (open.length) throw new Refusal(`stage ${id} cannot be ticked: runs/${slug}/bugs.md has entries with no action (fixed @ <sha>, ticket <NN> not yet done, blocker, or not a bug): ${open.join('; ')}. A pre-existing bug gets a ticket now (BUILD.md § Bugs found in flight, rule 3), never a known issue; an entry whose ticket is done says \`fixed @ <sha>\` once the fix is checked, or names a new ticket`);
+    if (open.length) throw new Refusal(`stage ${id} cannot be ticked: runs/${slug}/bugs.md has entries with no action (fixed @ <sha>, ticket <NN> not yet done, blocker, or not a bug): ${open.join('; ')}. \`not a bug\` is listed to the owner at hand-back with its reason, and an entry that waits on the owner is a blocker, not \`not a bug\`. A pre-existing bug gets a ticket now (BUILD.md § Bugs found in flight, rule 3), never a known issue; an entry whose ticket is done says \`fixed @ <sha>\` once the fix is checked, or names a new ticket`);
     // dry-run is a terminal label set after 6b; its stages tick without moving it.
     const moves = [];
     if (RUN_ORDER.includes(entry.status)) {
@@ -879,7 +894,7 @@ export function recordModel(repo, slug, role, model) {
 /**
  * Where the run resumes (`resumePoint`), plus the registry's hand-back `mode` and `target` so stage 9 reads config, and
  * `warnings` for what `check` would flag that the orchestrator must act on: SCRIPTS_MOVED, TARGET_DIVERGED, TICKET_IDLE.
- * `grants` and `guarded_changes` are for the hand-back (CLOSE.md stage 9).
+ * `grants`, `guarded_changes` and `dismissed_bugs` are for the hand-back (CLOSE.md stage 9).
  */
 export function next(control, slug) {
   const at = resumePoint(control, slug);
@@ -887,7 +902,9 @@ export function next(control, slug) {
   if (!entry) return at;
   const warnings = runWarnings(control, entry, { now: Date.now() });
   const changes = guardedChanges(control, entry);
-  return { ...at, mode: runMode(control, entry), target: entry.target ?? runBranch(control, entry), ...(at.tickets?.['in-flight']?.length && { in_flight: flightRows(control, slug) }), ...(entry.grants?.length && { grants: entry.grants }), ...(changes.length && { guarded_changes: changes }), ...(warnings.length && { warnings }) };
+  const bugsFile = path.join(control, 'runs', slug, 'bugs.md');
+  const dismissed = fs.existsSync(bugsFile) ? dismissedBugs(fs.readFileSync(bugsFile, 'utf8')) : [];
+  return { ...at, mode: runMode(control, entry), target: entry.target ?? runBranch(control, entry), ...(at.tickets?.['in-flight']?.length && { in_flight: flightRows(control, slug) }), ...(entry.grants?.length && { grants: entry.grants }), ...(changes.length && { guarded_changes: changes }), ...(dismissed.length && { dismissed_bugs: dismissed }), ...(warnings.length && { warnings }) };
 }
 
 /** The hand-back mode: the registry's, or for a run from before it was recorded, supervisor when supervise saved a target. */

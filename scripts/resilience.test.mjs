@@ -7,7 +7,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   configure, controlDir, repoId, ensureControl, prepare, land, cleanup, preflight, discoverCheck,
-  init, recordModel, compact, supervise, remoteGuard, isLinkedWorktree, ROOT,
+  init, helper, next, compact, supervise, remoteGuard, isLinkedWorktree, ROOT,
 } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
@@ -167,23 +167,42 @@ test('a shared clone keeps its own state and does not write the source git dir',
   }
 });
 
-test('no helper agents are recorded, and a named worker model is logged per role', () => {
+// A driver kept private scripts that parsed its harness's transcripts to save helper output, and typed "agents used" from memory.
+test('a helper is on record at both ends: counted against max_agents, its prompt and final message kept, its model named', () => {
   const repo = bareRepo();
   const state = useState();
   ensureControl(repo);
   init(repo, 'solo', 'Solo', { ...WHO, noHelpers: true });
-  const none = JSON.parse(fs.readFileSync(path.join(state, 'runs/solo/models.json'), 'utf8'));
-  assert.equal(none.helpers, 'none');
-  assert.deepEqual(none.roles, {});
-  assert.throws(() => recordModel(repo, 'solo', 'implementer', 'provider/model'), /registered with --no-helpers/);
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(state, 'runs/solo/models.json'), 'utf8')).roles, {});
-  assert.throws(() => recordModel(repo, 'nope', 'implementer', 'provider/model'), /no run nope/);
+  assert.ok(!fs.existsSync(path.join(state, 'runs/solo/models.json')), 'the registry holds it: no second copy');
+  assert.throws(() => helper(repo, 'solo', 'start', 'a1', { role: 'implementer' }), /registered with --no-helpers/);
+  assert.throws(() => helper(repo, 'nope', 'start', 'a1', { role: 'implementer' }), /no run nope/);
   init(repo, 'helped', 'Helped', { ...WHO, workerModel: 'provider/model' });
-  recordModel(repo, 'helped', 'implementer', 'provider/model-used');
-  const used = JSON.parse(fs.readFileSync(path.join(state, 'runs/helped/models.json'), 'utf8'));
-  assert.equal(used.workerModel, 'provider/model');
-  assert.equal(used.roles.implementer, 'provider/model-used');
-  assert.match(fs.readFileSync(path.join(state, 'runs/helped/ledger.md'), 'utf8'), /implementer used provider\/model-used/);
+  const read = (rel) => fs.readFileSync(path.join(state, 'runs/helped', rel), 'utf8');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'helper-'));
+  fs.writeFileSync(path.join(tmp, 'prompt.txt'), 'do the work');
+  fs.writeFileSync(path.join(tmp, 'final.txt'), 'DONE: all green\n');
+  assert.throws(() => helper(repo, 'helped', 'return', 'a1'), /helper a1 was never started in helped: `goal\.mjs helper start helped <role> a1` comes before the dispatch/);
+  assert.throws(() => helper(repo, 'helped', 'start', 'a 1', { role: 'implementer' }), /a helper id is one word/);
+  helper(repo, 'helped', 'start', 'a1', { role: 'implementer', brief: path.join(tmp, 'prompt.txt') });
+  assert.equal(read('notes/dispatch-a1.txt'), 'do the work\n');
+  assert.throws(() => helper(repo, 'helped', 'start', 'a1', { role: 'reviewer' }), /helper a1 is already on record \(implementer\)/);
+  const out = next(state, 'helped').budget;
+  assert.equal(out.agents_used, 1);
+  assert.match(out.helpers_out[0], /^a1 \(implementer, since \d\d:\d\d\)$/);
+  assert.match(out.wall_clock_used, /^0h0\d$/, 'the clock is read, never typed');
+  helper(repo, 'helped', 'return', 'a1', { model: 'provider/model-used', final: path.join(tmp, 'final.txt') });
+  assert.equal(read('notes/implementer-a1.md'), 'DONE: all green\n');
+  assert.match(read('ledger.md'), /\[helper\] return a1 implementer model provider\/model-used → runs\/helped\/notes\/implementer-a1\.md$/m);
+  assert.throws(() => helper(repo, 'helped', 'return', 'a1'), /helper a1 already returned at \d\d:\d\d/);
+  assert.deepEqual(next(state, 'helped').budget.helpers_out, undefined);
+  assert.equal(next(state, 'helped').budget.agents_used, 1, 'a returned helper still counts');
+  // The budget is a refusal, not a number to remember.
+  const ledger = path.join(state, 'runs/helped/ledger.md');
+  fs.writeFileSync(ledger, fs.readFileSync(ledger, 'utf8').replace('## NOW\n', '## NOW\n- budgets: concurrent 3, agents 1, wall-clock 8h\n'));
+  assert.throws(() => helper(repo, 'helped', 'start', 'a2', { role: 'reviewer' }), /helped has dispatched 1 helpers, its whole max_agents budget of 1 \(NOW budgets:\)/);
+  const cli = spawnSync(process.execPath, [GOAL, '--repo', repo, 'helper', 'start', 'helped', 'reviewer'], { encoding: 'utf8' });
+  assert.equal(cli.status, 2);
+  assert.match(cli.stderr, /helper start <slug> <role> <id> \[--brief <file\|->\] \| helper return <slug> <id>/);
 });
 
 test('--allow fails at startup when a planned write is outside the list', () => {

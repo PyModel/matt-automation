@@ -4,7 +4,7 @@ Commit each budget change with its stop conditions before any ticket runs under 
 
 ## Recording a change
 1. Append `budget: <old> -> <new> (source: <who>)` to the run log. A decision-subagent budget is `not owner-approved`, unless the owner's message delegated it: then `<persona> under owner delegation <date>`, citing the message.
-2. Take "now" from `date`, never the ledger. Update the ledger's wall-clock line; grep the new end time for exactly one match.
+2. Update the limit in NOW `budgets:`; what is used is `goal.mjs next`'s `budget`, never typed.
 3. Commit both: `goal.mjs commit -m "[<slug>] budget ..." <log> <ledger>`; read the sha back.
 4. On a cap raise, return tickets stuck only for the old cap to `ready-for-agent`, in priority order, in the same commit.
 5. Name the budget, its source and owner approval in the hand-back.

@@ -40,7 +40,7 @@ The tracker's ticket files stay the source of truth for *what to build*; `ticket
 - commands: install=`pnpm i` hooks=`pnpm lefthook install` typecheck=`pnpm tsc` lint=`pnpm lint` test1=`pnpm vitest run <file>` suite=`pnpm test`
 - packages: none
 - per-worktree: PORT=3000+100*run_id+NN, DATABASE_URL suffix _<slug>_tNN, copy .env with suffix
-- budgets: concurrent 3 (used 2), agents 40 (used 9), per-ticket 12 slices / 90 min, wall-clock 8h (used 1h07), bug-tickets 3 (used 0)
+- budgets: concurrent 3, agents 40, per-ticket 12 slices / 90 min, wall-clock 8h, bug-tickets 3 (limits only)
 - baseline: suite green @ base (412 tests)
 - active: t03 → <path from goal.mjs worktree get> (started 14:02, slice 2/4) ; t05 → …
 - blockers: wizard script <state>/runs/<slug>/wizard-stripe.sh (t06 waits)
@@ -59,7 +59,7 @@ The tracker's ticket files stay the source of truth for *what to build*; `ticket
 Rules:
 
 - **NOW is rewritten, Events are appended.** NOW is what a fresh context reads first; Events are how it verifies NOW.
-- One event per stage transition, subagent dispatch, subagent return, merge, blocker, bug noticed (`[bug]`), and compaction. Appended only with `goal.mjs event <slug> <stage> "<text>"`, which stamps the real local time; never typed by hand, so no time is guessed.
+- One event per stage transition, merge, blocker, bug noticed (`[bug]`) and compaction; helper dispatches and returns are `goal.mjs helper`'s. Appended only with `goal.mjs event <slug> <stage> "<text>"`, which stamps the real local time.
 - Never paste artifacts into the ledger: point at files, commits, ticket ids.
 - Every command output written here, or to a status, bug, or notes file, is redacted first (CORE.md, Redaction).
 

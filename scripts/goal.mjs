@@ -56,7 +56,7 @@
 //   node scripts/goal.mjs with-lock <name> -- <cmd...>    run one command holding a control-plane lock
 //   node scripts/goal.mjs commit -m <msg> <file>...       stage exactly <file>s in the control plane and commit, under the control lock
 //   node scripts/goal.mjs preflight | prepare | supervise | land [slug] | cleanup
-//   node scripts/goal.mjs check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | root
+//   node scripts/goal.mjs check-command [--objective <text>] | compact <slug> | helper start <slug> <role> <id> [--brief <file|->] | helper return <slug> <id> [--model <model>] [--final <file|->] | root
 //
 // Global flags, before the command: --repo, --state-dir, --allow (repeatable), --base, --target-branch, --status-file, --no-remote, --worker-model.
 // Every command takes --repo <path> (default: cwd); any worktree of the repo works.
@@ -809,11 +809,18 @@ function reconcileRounds(control, slug) {
  */
 const STAGE_CHECKS = {
   '0d': {
-    says: 'runs/<slug>/baseline.txt is committed and NOW carries commands:, budgets:, baseline:, nested: and worker:',
+    says: 'runs/<slug>/baseline.txt is committed, NOW carries commands:, budgets:, baseline:, nested: and worker:, and a limit that is not the default has a sourced `budget:` line in log.md',
     check: ({ control, slug }) => {
       const now = nowBlock(control, slug);
       const missing = ['commands', 'budgets', 'baseline', 'nested', 'worker'].filter((f) => !new RegExp(`\\b${f}:\\s*\\S`).test(now));
-      return [...(fs.existsSync(path.join(control, 'runs', slug, 'baseline.txt')) ? [] : [`runs/${slug}/baseline.txt is missing (the per-test set from 3 suite runs)`]), ...(missing.length ? [`NOW has no ${missing.map((f) => `${f}:`).join(', ')}`] : [])];
+      const limits = budgetLimits(control, slug);
+      const moved = Object.keys(BUDGET_DEFAULTS).filter((k) => limits[k] !== null && limits[k] !== BUDGET_DEFAULTS[k]);
+      const sourced = /\bbudget\b.*\(source: [^)]+\)/i.test(runText(control, slug, 'log.md'));
+      return [
+        ...(fs.existsSync(path.join(control, 'runs', slug, 'baseline.txt')) ? [] : [`runs/${slug}/baseline.txt is missing (the per-test set from 3 suite runs)`]),
+        ...(missing.length ? [`NOW has no ${missing.map((f) => `${f}:`).join(', ')}`] : []),
+        ...(moved.length && !sourced ? [`NOW budgets: sets ${moved.map((k) => `${k} ${limits[k]} (default ${BUDGET_DEFAULTS[k]})`).join(', ')} and log.md has no \`budget: <old> -> <new> (source: <who>)\` line saying who set it`] : []),
+      ];
     },
   },
   1: {
@@ -1013,8 +1020,6 @@ export function init(repo, slug, objective, { agent = null, harness = null, work
     'log.md': `# Decisions: ${objective}\n\n`,
     'bugs.md': `# Bugs noticed in flight: ${objective}\n\n`,
   };
-  if (noHelpers) files['models.json'] = `${JSON.stringify({ workerModel: null, helpers: 'none', roles: {} }, null, 2)}\n`;
-  else if (workerModel) files['models.json'] = `${JSON.stringify({ workerModel, helpers: 'named', roles: {} }, null, 2)}\n`;
   // The registration and the run's files land in one commit, so a crash never leaves a registered run with no todo.md.
   return withLock(repo, 'registry', () => {
     // Checked under the lock: a concurrent init of the same slug that got here first has written todo.md by now.
@@ -1062,32 +1067,72 @@ export function pin(repo, slug) {
   }));
 }
 
-/** Record the model a role actually used. The requested model is `workerModel` from init. */
-export function recordModel(repo, slug, role, model) {
+const HELPER_ID = /^[\w.-]{1,80}$/;
+
+/** Every helper the run dispatched, from its ledger events: `[helper] start <id> <role>` and `[helper] return <id> <role> …`. */
+function helperRecords(control, slug) {
+  const out = new Map();
+  for (const line of runText(control, slug, 'ledger.md').split('\n')) {
+    const m = line.match(/^- (\d\d:\d\d) \[helper\] (start|return) (\S+) (\S+)(?: model (\S+))?/);
+    if (!m) continue;
+    if (m[2] === 'start') out.set(m[3], { id: m[3], role: m[4], started: m[1] });
+    else if (out.has(m[3])) Object.assign(out.get(m[3]), { returned: m[1], model: m[5] ?? null });
+  }
+  return [...out.values()];
+}
+
+/** The limits NOW `budgets:` states, null where it states none. The run's own clock, not a `per-ticket wall-clock`; a logged raise (`8h -> 12h`) replaces the first value. */
+function budgetLimits(control, slug) {
+  const text = nowField(control, slug, 'budgets');
+  const clock = [...text.matchAll(/(per-ticket\s+)?\bwall-clock\s*[:=]?\s*(\d+(?:\.\d+)?)\s*h\b(?:\s*(?:->|→)\s*(\d+(?:\.\d+)?)\s*h\b)?/g)].filter((m) => !m[1]).at(-1);
+  const agents = text.match(/\b(?:max_agents|agents)\s*[:=]?\s*(\d+)|\b(\d+)\s+agents\b/);
+  return { concurrent: concurrencyCap(control, slug), agents: agents ? Number(agents[1] ?? agents[2]) : null, hours: clock ? Number(clock[3] ?? clock[2]) : null };
+}
+const BUDGET_DEFAULTS = { concurrent: 3, agents: 40, hours: 8 };
+
+/**
+ * A helper agent's two ends, on record: `start` before the dispatch (it counts the agent against max_agents and keeps the
+ * prompt), `return` after it (it keeps the final message and the model that ran). A driver kept private scripts that
+ * parsed its harness's transcripts to do this, carried from run to run, and the count of agents used was typed from memory.
+ */
+export function helper(repo, slug, verb, id, { role = null, model = null, final = null, brief = null } = {}) {
   assertSlug(slug);
-  if (!/^[a-z][a-z0-9-]{0,40}$/.test(role)) throw new Error(`bad role: ${role}`);
-  if (!model || /[\r\n]/.test(model)) throw new Error('model is one line');
+  if (!HELPER_ID.test(id ?? '')) throw new UsageError('a helper id is one word: letters, digits, `.`, `_`, `-`');
+  if (model !== null && !/^\S+$/.test(model)) throw new UsageError('a model is one word');
   const control = requireControl(repo);
-  const rel = path.join('runs', slug, 'models.json');
-  const file = path.join(control, rel);
   const entry = readRegistry(control).find((r) => r.slug === slug);
   if (!entry) throw new Refusal(`no run ${slug} in runs.json`);
-  // Read-modify-write under the control lock, so two roles recorded at once both land.
-  return withLock(repo, 'control', () => {
-    const data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { workerModel: entry.workerModel ?? null, helpers: entry.helpers ?? 'named', roles: {} };
-    // BOOTSTRAP.md: `--no-helpers` records that none ran; a helper's model recorded here means one did.
-    if (data.helpers === 'none') throw new Refusal(`${slug} was registered with --no-helpers, so no ${role} helper may run; do the work in this session`);
-    data.roles[role] = model;
-    fs.writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`);
-    commit(repo, `[${slug}] model ${role}`, [rel]);
-    return event(repo, slug, 'model', `${role} used ${model}`);
-  });
+  const all = helperRecords(control, slug);
+  const known = all.find((h) => h.id === id);
+  const keep = (rel, from, what) => {
+    const text = from === '-' ? fs.readFileSync(0, 'utf8') : fs.readFileSync(path.resolve(from), 'utf8');
+    if (!text.trim()) throw new Refusal(`${what} is empty`);
+    fs.mkdirSync(path.dirname(path.join(control, rel)), { recursive: true });
+    writeAndCommit(repo, control, `[${slug}] helper ${id} ${what}`, { [rel]: text.endsWith('\n') ? text : `${text}\n` });
+    return rel;
+  };
+  if (verb === 'start') {
+    if (!/^[a-z][a-z0-9-]{0,40}$/.test(role ?? '')) throw new UsageError(`bad role: ${role}`);
+    // BOOTSTRAP.md: `--no-helpers` records that none ran.
+    if (entry.helpers === 'none') throw new Refusal(`${slug} was registered with --no-helpers, so no ${role} helper may run; do the work in this session`);
+    if (known) throw new Refusal(`helper ${id} is already on record (${known.role}); a second dispatch takes a new id`);
+    const cap = budgetLimits(control, slug).agents;
+    if (cap !== null && all.length >= cap) throw new Refusal(`${slug} has dispatched ${all.length} helpers, its whole max_agents budget of ${cap} (NOW budgets:): finish what is running and \`goal.mjs stop ${slug} "budget: max_agents"\` (PIPELINE.md § Budgets), or log a raise with its source`);
+    const prompt = brief === null ? null : keep(path.join('runs', slug, 'notes', `dispatch-${id}.txt`), brief, 'prompt');
+    return event(repo, slug, 'helper', `start ${id} ${role}${prompt ? ` ← ${prompt}` : ''}`);
+  }
+  if (!known) throw new Refusal(`helper ${id} was never started in ${slug}: \`goal.mjs helper start ${slug} <role> ${id}\` comes before the dispatch`);
+  if (known.returned) throw new Refusal(`helper ${id} already returned at ${known.returned}`);
+  const note = final === null ? null : keep(path.join('runs', slug, 'notes', `${known.role}-${id}.md`), final, 'final message');
+  return event(repo, slug, 'helper', `return ${id} ${known.role}${model ? ` model ${model}` : ''}${note ? ` → ${note}` : ''}`);
 }
 
 /**
  * Where the run resumes (`resumePoint`), plus the registry's hand-back `mode` and `target` so stage 9 reads config, and
  * `warnings` for what `check` would flag that the orchestrator must act on: SCRIPTS_MOVED, TARGET_DIVERGED, TICKET_IDLE.
  * `skills_to_load` names the stage's skills this run has not loaded since its last compaction (`matt.mjs resolve <name> --slug`).
+ * `budget` is what the run has used (its clock since `started`, the helpers it dispatched); `base` and `stacked_on` say what
+ * the run branch was cut from, and the run whose unmerged branch that was.
  * `grants`, `guarded_changes`, `dismissed_bugs` and `replanned` (tickets whose criteria changed between two dispatches) are for the hand-back (CLOSE.md stage 9).
  */
 export function next(control, slug) {
@@ -1103,7 +1148,14 @@ export function next(control, slug) {
   const checks = at.stage ? STAGE_CHECKS[at.stage]?.says : null;
   const loads = skillLoads(control, slug);
   const toLoad = (STAGE_SKILLS[at.stage] ?? []).filter((name) => !loads.get(name));
-  return { ...at, ...(checks && { tick_checks: checks }), ...(toLoad.length && { skills_to_load: toLoad }), mode: runMode(control, entry), target: entry.target ?? runBranch(control, entry), ...(at.tickets?.['in-flight']?.length && { in_flight: flightRows(control, slug) }), ...(entry.grants?.length && { grants: entry.grants }), ...(changes.length && { guarded_changes: changes }), ...(dismissed.length && { dismissed_bugs: dismissed }), ...(replanned.length && { replanned }), ...(warnings.length && { warnings }) };
+  // What is used is computed here, never typed into NOW: a run's hand-kept clock read 2h30 at 1h19.
+  const helpers = helperRecords(control, slug);
+  const out = helpers.filter((h) => !h.returned).map((h) => `${h.id} (${h.role}, since ${h.started})`);
+  const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(entry.started)) / 60000));
+  const budget = { wall_clock_used: `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}`, agents_used: helpers.length, ...(out.length && { helpers_out: out }) };
+  const tree = readJson(path.join(control, 'runs', slug, 'worktrees.json')).run ?? {};
+  const parent = tree.parent ? readRegistry(control).find((r) => r.slug === tree.parent) : null;
+  return { ...at, ...(checks && { tick_checks: checks }), ...(toLoad.length && { skills_to_load: toLoad }), mode: runMode(control, entry), target: entry.target ?? runBranch(control, entry), budget, ...(tree.base && { base: tree.baseRef ? `${tree.baseRef} @ ${tree.base.slice(0, 12)}` : tree.base }), ...(tree.parent && { stacked_on: { run: tree.parent, status: parent?.status ?? 'unknown', branch: `goal/${tree.parent}` } }), ...(at.tickets?.['in-flight']?.length && { in_flight: flightRows(control, slug) }), ...(entry.grants?.length && { grants: entry.grants }), ...(changes.length && { guarded_changes: changes }), ...(dismissed.length && { dismissed_bugs: dismissed }), ...(replanned.length && { replanned }), ...(warnings.length && { warnings }) };
 }
 
 const HANDBACK_END = '<!-- end of what goal.mjs wrote; the orchestrator adds its judgment below this line, never above it -->';
@@ -1136,6 +1188,8 @@ export function handbackText(repo, control, slug) {
   return [
     `# Hand-back: ${entry.objective}`, '',
     `- mode: ${at.mode}   branch: ${record.branch ?? at.target ?? '?'}   base: ${record.base ?? '?'}   review_base: ${nowReviewBase(control, slug) ?? '?'}`,
+    ...(at.stacked_on ? [`- stacked on run ${at.stacked_on.run} (${at.stacked_on.status}): ${at.stacked_on.branch} merges before this branch`] : []),
+    `- used: ${at.budget.wall_clock_used} wall-clock, ${at.budget.agents_used} helpers (${helperSummary(control, slug)})`,
     `- verdict: ${verdictFile.verdict ?? 'none'} @ ${String(verdictFile.review_head ?? '').slice(0, 12) || '?'} (runs/${slug}/final-verdict.json)`, '',
     ...lines('Guarded files changed (kind, grant, the owner\'s quoted words)', (at.guarded_changes ?? []).map((c) => `${c.path} (${c.kind}): ${c.grant === 'none' ? 'NO GRANT' : `"${c.quote ?? ''}" (${c.grant})`}`)),
     ...lines('Grants (the owner judges whether the words mean this)', (entry.grants ?? []).map((g) => `${g.paths.join(', ')}: "${g.quote ?? g.source}" (${g.source})`)),
@@ -1149,6 +1203,17 @@ export function handbackText(repo, control, slug) {
     ...lines('Owner side tasks during the run', events('side')),
     HANDBACK_END, '',
   ].join('\n');
+}
+
+/** `implementer ×4 [model-a], reviewer ×1 (1 never returned)`: the helpers a run dispatched, by role, with the models that ran. */
+function helperSummary(control, slug) {
+  const roles = new Map();
+  for (const h of helperRecords(control, slug)) roles.set(h.role, [...(roles.get(h.role) ?? []), h]);
+  return [...roles].map(([role, hs]) => {
+    const models = [...new Set(hs.map((h) => h.model).filter(Boolean))];
+    const open = hs.filter((h) => !h.returned).length;
+    return `${role} ×${hs.length}${models.length ? ` [${models.join(', ')}]` : ''}${open ? ` (${open} never returned)` : ''}`;
+  }).join(', ') || 'none';
 }
 
 /** Write (or refresh) runs/<slug>/handback.md and commit it; whatever the orchestrator wrote below the end line is kept. */
@@ -1337,9 +1402,7 @@ function runWarnings(control, entry, { now, idleMinutes = TICKET_IDLE_MINUTES })
   try {
     for (const h of fs.existsSync(path.join(control, 'tracker', entry.slug, 'issues')) ? frontier(control, entry.slug).held ?? [] : []) out.push({ code: 'TICKET_HELD', message: `ticket ${h.id} is held off the frontier: ${h.problems.join('; ')}` });
   } catch { /* an unreadable tracker is frontier's own report */ }
-  // The run's own clock, not a `per-ticket wall-clock`; a logged raise (`8h -> 12h`) replaces the first value.
-  const clock = [...nowField(control, entry.slug, 'budgets').matchAll(/(per-ticket\s+)?\bwall-clock\s*[:=]?\s*(\d+(?:\.\d+)?)\s*h\b(?:\s*(?:->|→)\s*(\d+(?:\.\d+)?)\s*h\b)?/g)].filter((m) => !m[1]).at(-1);
-  const hours = clock?.[3] ?? clock?.[2];
+  const { hours } = budgetLimits(control, entry.slug);
   const ran = (now - Date.parse(entry.started)) / 3600000;
   if (hours && ran > Number(hours)) out.push({ code: 'BUDGET_SPENT', message: `${ran.toFixed(1)}h since the run started, past its wall-clock budget of ${hours}h (NOW budgets:): wrap up as references/run-budget.md says, or log a raise with its source; the orchestrator never raises a budget on its own judgment` });
   return out;
@@ -2647,7 +2710,15 @@ export function brief(repo, feature, id) {
     section(doc('CONTRACT.md'), 'The receipt'),
     section(doc('LEDGER.md'), 'Subagent contract'),
   ];
-  const out = `${parts.join('\n\n---\n\n')}\n`;
+  // The contract stays verbatim (dispatch checks it); the pasted doc text names the scripts by a placeholder a worker cannot run.
+  const goal = path.join(ROOT, 'scripts', 'goal.mjs');
+  const commands = [
+    '# Commands, as you type them',
+    `- \`ROOT\` is ${ROOT}. goal.mjs is \`node ${goal}\`; it takes its repo from the directory it runs in, so run it from your worktree${worktree ? ` (${worktree})` : ''}.`,
+    `- A validation: \`node ${goal} run -- <command>\`. Its first and last line is \`log: "<path>"\`: that path is what the receipt cites. \`node ${goal}\` alone prints every command.`,
+    '- Never `git checkout` or `git switch` in a checkout that is not your worktree. Another commit\'s file is `git show <sha>:<path>`.',
+  ].join('\n');
+  const out = `${[parts[0], ...parts.slice(1).map((part) => part.replaceAll('ROOT/', `${ROOT}/`)), commands].join('\n\n---\n\n')}\n`;
   if (Buffer.byteLength(out) > MAX_BRIEF_BYTES) throw new Refusal(`the brief for ticket ${want} is ${Buffer.byteLength(out)} bytes, past ${MAX_BRIEF_BYTES}: the docs it is built from grew past their budget; shorten them (goal-docs.test.mjs caps them), never the brief by hand`);
   const file = path.join(control, 'tmp', feature, `${want}.brief.md`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -3123,6 +3194,8 @@ function stageGuard(control, rel, owner) {
     if (changed) throw new Refusal(`runs/${slug}/todo.md: stage ${changed[0]} is ticked only by \`goal.mjs tick ${slug} ${changed[0]}\``);
     return;
   }
+  const budgets = (text) => (text.split(/^## /m).find((part) => part.startsWith('NOW')) ?? '').match(/^- budgets:.*$/m)?.[0] ?? '';
+  if (budgets(after) !== budgets(committed) && /\bused\b/i.test(budgets(after))) throw new Refusal(`runs/${slug}/ledger.md: NOW's budgets: line holds limits only; \`goal.mjs next ${slug}\` prints what is used (\`budget\`), computed from the run's clock and its helper records`);
   const stage = nowStage(after);
   if (stage === nowStage(committed)) return;
   const todo = path.join(control, 'runs', slug, 'todo.md');
@@ -3519,13 +3592,30 @@ function runBase(workspace) {
 }
 
 function defaultHead(workspace, has) {
-  if (runtime.base) return runtime.base;
+  return runtime.base ?? trunkHead(workspace, has);
+}
+
+/** The repo's own line: origin's default branch, else main or master, else HEAD. */
+function trunkHead(workspace, has) {
   if (!runtime.noRemote) {
     const head = spawnSync('git', ['-C', workspace, 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], { encoding: 'utf8' });
     if (head.status === 0 && head.stdout.trim()) return head.stdout.trim();
   }
   for (const name of ['main', 'master']) if (has(`refs/heads/${name}`)) return name;
   return 'HEAD';
+}
+
+/**
+ * `{ parent }` when the commit a run branch was cut from is the head of another run's branch and not yet on the repo's own
+ * line: the run is stacked on that run, and its branch merges after that one. A run cut from an unmerged run kept the
+ * dependency only in prose.
+ */
+function stackedOn(control, workspace, slug, commit) {
+  const rev = (ref) => spawnSync('git', ['-C', workspace, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { encoding: 'utf8' }).stdout.trim();
+  const trunk = trunkHead(workspace, (ref) => rev(ref) !== '');
+  if (ancestorOf(workspace, commit, trunk)) return {};
+  const parent = readRegistry(control).find((r) => r.slug !== slug && rev(`refs/heads/goal/${r.slug}`) === commit);
+  return parent ? { parent: parent.slug } : {};
 }
 
 /** The path a branch is checked out at in `workspace`'s worktrees, or null. */
@@ -3649,6 +3739,7 @@ export function worktreeGet(repo, slug, id) {
         git(workspace, exists ? ['worktree', 'add', wt, branch] : ['worktree', 'add', '-b', branch, wt, base]);
       }
       record = { backend: bin ? 'treehouse' : 'git', path: fs.realpathSync.native(wt), branch, base: exists ? null : git(workspace, ['rev-parse', base]) };
+      if (!ticket && !exists) Object.assign(record, { baseRef: base, ...stackedOn(control, workspace, slug, record.base) });
     }
     records[key] = { ...record, state: 'active' };
     fs.writeFileSync(file, `${JSON.stringify(records, null, 2)}\n`);
@@ -4009,7 +4100,7 @@ function sleep(ms) {
 
 const TAKES_VALUE = new Set(['--repo', '--state-dir', '--allow', '--base', '--target-branch', '--status-file', '--worker-model']);
 
-const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--mode branch|supervisor|pr] [--worker-model <model>] [--no-helpers] | next <slug> | pin <slug> | grant <slug> <path|push:<remote>|pr>... -- <owner words> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] [--idle-minutes <n>] | keep-going --agent <id> | worktree get|return <slug> [NN] | worktree status <slug> | gc [--delete-clean [--slots]] [--stale-hours <n>] [--all [--state-root <dir>]] | stop <slug> <reason> | resume <slug> | adopt <slug> --agent <id> --harness <name> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | prepare-ticket <feature> <id> | brief <feature> <id> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | merge <feature> <id> [--check <command>] | verdict <slug> | handback <slug> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | probe <feature> [id] | run [--at <commit>] [--mutation <patch file>] [--script <file>] -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
+const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | helper start <slug> <role> <id> [--brief <file|->] | helper return <slug> <id> [--model <model>] [--final <file|->] | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--mode branch|supervisor|pr] [--worker-model <model>] [--no-helpers] | next <slug> | pin <slug> | grant <slug> <path|push:<remote>|pr>... -- <owner words> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] [--idle-minutes <n>] | keep-going --agent <id> | worktree get|return <slug> [NN] | worktree status <slug> | gc [--delete-clean [--slots]] [--stale-hours <n>] [--all [--state-root <dir>]] | stop <slug> <reason> | resume <slug> | adopt <slug> --agent <id> --harness <name> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | prepare-ticket <feature> <id> | brief <feature> <id> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | merge <feature> <id> [--check <command>] | verdict <slug> | handback <slug> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | probe <feature> [id] | run [--at <commit>] [--mutation <patch file>] [--script <file>] -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
 
 function main(argv) {
   configure();
@@ -4116,9 +4207,25 @@ function main(argv) {
     print(compact(repo, rest[0]));
     return 0;
   }
-  if (command === 'model' && rest.length === 3) {
-    console.log(recordModel(repo, rest[0], rest[1], rest[2]));
-    return 0;
+  if (command === 'helper' && (rest[0] === 'start' || rest[0] === 'return')) {
+    const [verb, slug, ...words] = rest;
+    const flags = {};
+    const plain = [];
+    for (let i = 0; i < words.length; i += 1) {
+      const name = { '--model': 'model', '--final': 'final', '--brief': 'brief' }[words[i]];
+      if (!name) plain.push(words[i]);
+      else if (i + 1 >= words.length) throw new UsageError(`${words[i]} takes a value`);
+      else flags[name] = words[i += 1];
+    }
+    if (verb === 'start' && plain.length === 2 && !('model' in flags) && !('final' in flags)) {
+      console.log(helper(repo, slug, 'start', plain[1], { role: plain[0], ...flags }));
+      return 0;
+    }
+    if (verb === 'return' && plain.length === 1 && !('brief' in flags)) {
+      console.log(helper(repo, slug, 'return', plain[0], flags));
+      return 0;
+    }
+    throw new UsageError('helper start <slug> <role> <id> [--brief <file|->] | helper return <slug> <id> [--model <model>] [--final <file|->]');
   }
   if (command === 'slug' && (rest.length === 1 || (rest.length === 2 && rest[1] === '--new'))) {
     console.log(slugFor(repo, rest[0], { fresh: rest[1] === '--new' }));

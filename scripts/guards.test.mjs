@@ -188,6 +188,15 @@ test('worktree get without treehouse makes git worktrees under the state dir, ru
   assert.equal(git(twt, 'rev-parse', 'HEAD'), git(wt, 'rev-parse', 'HEAD'), 'ticket branch starts at the run branch head');
   const status = JSON.parse(goal(ctx, ['worktree', 'status', 'x']).stdout);
   assert.deepEqual(Object.keys(status).sort(), ['run', 't01']);
+  assert.equal(status.run.parent, undefined, 'a run cut from the repo\'s own line is stacked on nothing');
+  // A run cut from another run's unmerged branch is stacked on it: the registry of worktrees says so, and `next` reports it.
+  assert.equal(goal(ctx, ['init', 'y', 'Y', ...WHO_ARGS]).status, 0);
+  const stacked = goal(ctx, ['--base', 'goal/x', 'worktree', 'get', 'y']);
+  assert.equal(stacked.status, 0, stacked.stderr);
+  const y = JSON.parse(goal(ctx, ['next', 'y']).stdout);
+  assert.deepEqual(y.stacked_on, { run: 'x', status: 'bootstrapping', branch: 'goal/x' });
+  assert.equal(y.base, `goal/x @ ${git(wt, 'rev-parse', 'HEAD').slice(0, 12)}`);
+  assert.equal(JSON.parse(goal(ctx, ['next', 'x']).stdout).stacked_on, undefined);
   assert.equal(status.t01.backend, 'git');
   assert.equal(status.t01.state, 'active');
   assert.match(fs.readFileSync(path.join(ctx.state, '.gitignore'), 'utf8'), /^worktrees\/$/m);
@@ -861,12 +870,23 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   assert.deepEqual([planned.registry, planned.next], ['planning', '0d']);
   assert.equal(nowOf(ctx), '0d');
   assert.equal(git(ctx.state, 'log', '-1', '--format=%s'), '[x] tick 0c: done; status planning');
-  assert.match(JSON.parse(goal(ctx, ['next', 'x']).stdout).tick_checks, /baseline\.txt is committed and NOW carries commands:/, 'next prints what the tick will check');
+  assert.match(JSON.parse(goal(ctx, ['next', 'x']).stdout).tick_checks, /baseline\.txt is committed, NOW carries commands:/, 'next prints what the tick will check');
   // A tick checks what its stage must leave behind, not only that the stage before it was ticked.
   refused(ctx, /stage 0d is not finished: runs\/x\/baseline\.txt is missing.*NOW has no commands:, budgets:, baseline:, nested:, worker:/, '0d');
   put(ctx, 'runs/x/baseline.txt', 't1 pass\n');
-  nowAdd(ctx, '- commands: suite=`true`\n- budgets: concurrent 3\n- baseline: suite green\n- env: nested: yes   worker: subagent\n');
+  // NOW holds limits only: what is used is computed by `next`. A run's hand-typed clock read 2h30 at 1h19.
+  nowAdd(ctx, '- budgets: concurrent 3 (used 2), wall-clock 8h (used 2h30)\n');
+  const typed = goal(ctx, ['commit', '-m', '[x] now', path.join(ctx.state, 'runs/x/ledger.md')]);
+  assert.equal(typed.status, 1);
+  assert.match(typed.stderr, /NOW's budgets: line holds limits only; `goal\.mjs next x` prints what is used/);
+  const ledgerFile = path.join(ctx.state, 'runs/x/ledger.md');
+  fs.writeFileSync(ledgerFile, fs.readFileSync(ledgerFile, 'utf8').replace(/^- budgets:.*\n/m, ''));
+  // A limit that is not the default names who set it: a run's concurrency went from 3 to 2 with no line saying why.
+  nowAdd(ctx, '- commands: suite=`true`\n- budgets: concurrent 2\n- baseline: suite green\n- env: nested: yes   worker: subagent\n');
+  refused(ctx, /NOW budgets: sets concurrent 2 \(default 3\) and log\.md has no `budget: <old> -> <new> \(source: <who>\)` line/, '0d');
+  logAdd(ctx, '- budget: concurrent 3 -> 2 (source: findings, the suite binds one port)');
   ticked(ctx, '0d');
+  assert.match(JSON.parse(goal(ctx, ['next', 'x']).stdout).budget.wall_clock_used, /^0h0\d$/);
   refused(ctx, /runs\/x\/findings\.md is missing/, '1');
   put(ctx, 'runs/x/findings.md', '# f\n');
   refused(ctx, /log\.md has no decision tagged \[1\]/, '1');
@@ -928,7 +948,7 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   ticked(ctx, '8');
   refused(ctx, /stage 9 is not finished: runs\/x\/handback\.md is not committed: `goal\.mjs handback x` writes it/, '9');
   assert.equal(goal(ctx, ['handback', 'x']).status, 0);
-  assert.match(fs.readFileSync(path.join(ctx.state, 'runs/x/handback.md'), 'utf8'), /^# Hand-back: X\n\n- mode: branch .*\n- verdict: ship @ [0-9a-f]{12}/);
+  assert.match(fs.readFileSync(path.join(ctx.state, 'runs/x/handback.md'), 'utf8'), /^# Hand-back: X\n\n- mode: branch .*\n- used: 0h0\d wall-clock, 0 helpers \(none\)\n- verdict: ship @ [0-9a-f]{12}/);
   ticked(ctx, '9');
   refused(ctx, /runs\/x\/retro\.md is missing/, '10');
   put(ctx, 'runs/x/retro.md', '# r\n');

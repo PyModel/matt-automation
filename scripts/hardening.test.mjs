@@ -12,7 +12,7 @@ import {
   checkReceipt, commit, configure, prepare, worktreeGet, runLogged, scriptsPin, ownerDecisions, gc, MAX_BRIEF_BYTES,
   adopt, controlDir, firstStageArgv, gcAll, stateDir, setStatus, amendClaims, discoverCheck, land, preflight,
   ensureControl, cleanup, worktreeReturn, grant, flightRows, markedLive, parseTodo, dismissedBugs, unresolvedBugs,
-  probe, sinceDispatch, handback, handbackText, event,
+  probe, sinceDispatch, handback, handbackText, event, ROOT,
 } from './goal.mjs';
 
 const GOAL = path.join(import.meta.dirname, 'goal.mjs');
@@ -256,6 +256,12 @@ test('brief assembles the committed contract and the docs, refusing a contract t
   assert.ok(out.bytes < MAX_BRIEF_BYTES, `${out.bytes} bytes`);
   assert.ok(text.startsWith(contract.trim()));
   for (const heading of ['# The implement skill', '## The implementer brief', '## The receipt', '## Subagent contract']) assert.ok(text.includes(heading), heading);
+  // A worker cannot run a placeholder: two workers read goal.mjs's source to learn how `run` is typed.
+  const rules = text.slice(contract.trim().length);
+  assert.doesNotMatch(rules, /ROOT\//, 'no pasted rule names the scripts by a placeholder');
+  assert.ok(rules.includes(`node ${path.join(ROOT, 'scripts', 'goal.mjs')} run -- <command>`), 'one worked run example');
+  assert.match(rules, /Its first and last line is `log: "<path>"`/);
+  assert.match(rules, /Never `git checkout` or `git switch` in a checkout that is not your worktree/);
 });
 
 test('merge lands a ticket: receipt and claims checked, suite run on the result, a red suite lands nothing', () => {

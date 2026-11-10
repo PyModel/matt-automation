@@ -1184,7 +1184,7 @@ function liveDir(cwd) {
 }
 
 /** A process's start time as `ps` prints it, '' when there is none: with the pid it names one process, even after the pid is reused. */
-const startedAt = (pid) => spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).stdout?.trim() ?? '';
+const startedAt = (pid) => spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }).stdout?.trim() ?? '';
 
 /** The marks in `dir`, each with whether the process that wrote it is still running. */
 function liveMarks(dir) {
@@ -1206,7 +1206,9 @@ export function markedLive(cwd, fn) {
     const dir = liveDir(cwd);
     fs.mkdirSync(dir, { recursive: true });
     for (const m of liveMarks(dir)) if (!m.alive) fs.rmSync(m.file, { force: true });
-    fs.writeFileSync(path.join(dir, String(process.pid)), startedAt(process.pid));
+    // Renamed into place whole: a concurrent start that read it half-written would clear it as a dead mark.
+    fs.writeFileSync(path.join(dir, `.${process.pid}.tmp`), startedAt(process.pid));
+    fs.renameSync(path.join(dir, `.${process.pid}.tmp`), path.join(dir, String(process.pid)));
     mark = path.join(dir, String(process.pid));
   } catch { /* no git dir to write under: the command runs unmarked */ }
   try {
@@ -1735,7 +1737,8 @@ function claimsOverlap(a, b) {
 export function guardedCriteria(ticketText) {
   const off = parseTicket(ticketText).claims.guarded;
   const paths = (criterion) => criterion.split(/[\s`'"()]+/).map((word) => word.replace(/^(?:\.\/)+/, '').replace(/[,.;:]+$/, '')).filter((word) => word.includes('/'));
-  const hits = ticketCriteria(ticketText).flatMap((c) => paths(c).filter((p) => off.some((g) => claimCovers(g, p))).map((p) => `criterion "${c.length > 90 ? `${c.slice(0, 90)}…` : c}" needs ${p}, which its Claims line lists as guarded (off limits: \`merge\` lands no edit there); a path the objective grants is claimed exclusive (PLAN.md stage 6)`));
+  // A criterion about absence (`… -- db/migrations/` prints nothing) asks for no edit there; what was absent at the base says nothing.
+  const hits = ticketCriteria(ticketText).filter((c) => !ABSENCE.test(c.replace(/\(Red at base[^)]*\)/i, ''))).flatMap((c) => paths(c).filter((p) => off.some((g) => claimCovers(g, p))).map((p) => `criterion "${c.length > 90 ? `${c.slice(0, 90)}…` : c}" needs ${p}, which its Claims line lists as guarded (off limits: \`merge\` lands no edit there); a path the objective grants is claimed exclusive (PLAN.md stage 6)`));
   return [...new Set(hits)];
 }
 

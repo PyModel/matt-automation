@@ -476,6 +476,9 @@ test('TICKET_IDLE: a goal.mjs run or with-lock in the ticket worktree is a worke
   const during = cli(wt, 'run', '--', 'ls "$(git rev-parse --absolute-git-dir)/goal-live"');
   assert.equal(during.status, 0, during.stderr);
   assert.match(during.stdout, /^\d+$/m, 'a run marks its pid in the worktree git dir while the command runs');
+  const whole = cli(wt, 'run', '--', 'cd "$(git rev-parse --absolute-git-dir)/goal-live" && ls -a && cat [0-9]*');
+  assert.match(whole.stdout, /\d{2}:\d{2}:\d{2} \d{4}/, 'the mark appears whole, start time inside: a concurrent start that read it empty would clear it as dead');
+  assert.doesNotMatch(whole.stdout, /\.tmp/);
   assert.deepEqual(fs.readdirSync(liveOf(wt)), [], 'and takes the mark away when it ends');
   assert.equal(git(wt, 'status', '--porcelain'), '', 'the mark never dirties the worktree');
   assert.deepEqual(idle(), ['TICKET_IDLE'], 'a run that ended 45 minutes ago is no worker');
@@ -487,7 +490,7 @@ test('TICKET_IDLE: a goal.mjs run or with-lock in the ticket worktree is a worke
   assert.match(waiting.stdout, /^\d+$/m, 'a command waiting on or holding a lock is marked too');
 
   // Alive: this test process, marked as a run in the ticket worktree would mark itself.
-  const started = (pid) => spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).stdout.trim();
+  const started = (pid) => spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }).stdout.trim();
   write(path.join(liveOf(wt), String(process.pid)), started(process.pid));
   aged(liveOf(wt), later - 45 * 60 * 1000);
   assert.deepEqual(idle(), [], 'a run still going counts as now, however long it has run');
@@ -533,6 +536,9 @@ test('guarded: a criterion that needs a path its own ticket lists as guarded is 
   assert.throws(() => take(repo, 'x', 1), /claims gate/);
   seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt, db/migrations/001.sql ; guarded: .github/', `\n${needs}`));
   assert.deepEqual(frontier(control, 'x').malformed, [], 'the granted path is an exclusive claim');
+  const untouched = '- [ ] `git diff --name-only main...HEAD -- db/migrations/` prints nothing: no migration is written\n';
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt ; guarded: db/migrations/', `\n${untouched}`));
+  assert.deepEqual(frontier(control, 'x').malformed, [], 'a criterion that the guarded path stays untouched needs no edit there');
   // A ticket already dispatched is past this gate: one such ticket must not close the tracker for the rest of a live run.
   write(path.join(control, 'tracker/x/issues/02-b.md'), ticketText('in-flight', 'exclusive: b.txt ; guarded: db/migrations/', `\n${needs}`));
   rawCommit(control, '[x] fixture: a ticket dispatched by an older goal.mjs');

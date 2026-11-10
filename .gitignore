@@ -7,3 +7,5 @@ vendor/mattpocock-skills
 .sidecar.json
 # autoharness owns this skill: the ~/.claude and ~/.agents installs link here, and its edits stay out of git.
 to-auto-ticket-lifecycle/
+# autoharness provenance for project skills: excerpts of local sessions, kept out of git.
+.claude/skills/*/references/evidence-*.md

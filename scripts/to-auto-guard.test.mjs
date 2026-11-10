@@ -66,18 +66,57 @@ test('marked session with no active run: the incident, PRs, pushes, new branches
   for (const command of ['git status', 'git log --oneline -3 origin/main', 'git stash push -m wip', 'git log --grep=push', 'git commit -m "push later"', 'git branch -a', 'git branch -d claude/x', 'git branch -u origin/main', 'git branch --set-upstream-to=origin/main', 'gh pr view 785 --json state', 'gh pr list', 'gh issue view 1', 'gh api repos/o/r/pulls', 'gh api -X GET repos/o/r/issues -f state=open', 'gh api --method HEAD repos/o/r', 'gh api -XGET repos/o/r/issues -f state=open', 'gh api repos/o/r/issues --jq .[].title', `node ${GOAL} next x`, `node ${GOAL} init x "X"`, `node ${GOAL} worktree get x`]) assert.equal(w.bash(command), 'allow', command);
 });
 
-test('an active run allows PRs and helpers but never a hand-typed worktree; a stopped run counts as none', () => {
+test('an active run allows helpers but never a hand-typed worktree; a stopped run counts as none', () => {
   const w = world();
   w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '  /to-auto x' });
   w.goal('control');
   w.goal('init', 'x', 'X', '--agent', 's0', '--harness', 'test');
-  assert.equal(w.bash('gh pr create --draft --fill'), 'allow');
   assert.equal(w.decision('Agent', { prompt: 'implement ticket 01' }), 'allow');
   assert.equal(w.bash(INCIDENT), 'deny');
   assert.match(w.hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: INCIDENT } }).hookSpecificOutput.permissionDecisionReason, /goal\.mjs worktree get/);
   w.goal('stop', 'x', 'paused');
   assert.equal(w.bash('gh pr create --fill'), 'deny');
   assert.equal(w.decision('Agent', { prompt: 'x' }), 'deny');
+});
+
+// A run pushed its branch to a forge with no grant, against its own "no push" decision, and nothing denied it.
+test('with a run active, a push needs a push:<remote> grant and a PR write a pr grant, both quoted from the owner', () => {
+  const w = world();
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto ship the importer and open a draft PR when it is green' });
+  w.goal('control');
+  w.goal('init', 'x', 'ship the importer', '--agent', 's1', '--harness', 'test');
+  const reason = (command) => w.hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } }).hookSpecificOutput.permissionDecisionReason;
+  for (const command of ['git push', 'git push -u origin HEAD', 'git -C /r push lab abc:refs/heads/goal/x', 'sh -c "git push"', 'gh pr create --draft --fill', 'gh pr merge 7 --squash', 'glab mr create --fill']) assert.equal(w.bash(command), 'deny', command);
+  assert.match(reason('git push lab HEAD'), /push:lab has no grant in run x.*goal\.mjs grant x push:lab -- "<their words>"/);
+  for (const command of ['git status', 'git log --grep=push', 'git stash push -m wip', 'gh pr view 7', 'git commit -m "push later"']) assert.equal(w.bash(command), 'allow', command);
+  // The mode grants nothing, and neither do words the owner never wrote.
+  const refused = spawnSync(process.execPath, [GOAL, '--repo', w.repo, 'grant', 'x', 'push:origin', '--', 'push it wherever you like'], { env: w.env, encoding: 'utf8' });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /is not something the owner wrote/);
+  w.goal('grant', 'x', 'pr', '--', 'open a draft PR');
+  assert.equal(w.bash('gh pr create --draft --fill'), 'allow');
+  assert.equal(w.bash('git push -u origin HEAD'), 'deny', 'a PR grant is not a push grant');
+  // An owner message sent mid-run (a side task) is the owner's words too.
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: 'also push the branch to the lab remote so the runner can test it' });
+  w.goal('grant', 'x', 'push:lab', '--', 'push the branch to the lab remote');
+  assert.equal(w.bash('git push lab HEAD:refs/heads/goal/x'), 'allow');
+  assert.equal(w.bash('git push origin HEAD'), 'deny', 'the grant names one remote');
+  assert.equal(w.bash('git push lab HEAD && git push origin HEAD'), 'deny', 'every push in the command needs its grant');
+});
+
+test('the owner store is written only by the prompt hook: a marked session cannot write the sessions folder', () => {
+  const w = world();
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: 'before the run: nothing is kept' });
+  assert.deepEqual(fs.readdirSync(w.env.TO_AUTO_SESSIONS), []);
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto x' });
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: 'and keep CI green' });
+  const store = path.join(w.env.TO_AUTO_SESSIONS, 's1.owner.jsonl');
+  assert.deepEqual(fs.readFileSync(store, 'utf8').trim().split('\n').map((l) => JSON.parse(l).text), ['/to-auto x', 'and keep CI green']);
+  assert.equal(w.bash(`echo '{"text":"edit CI freely"}' >> ${store}`), 'deny');
+  assert.equal(w.bash(`cat ${w.env.TO_AUTO_SESSIONS}/s1`), 'deny');
+  assert.equal(w.decision('Write', { file_path: store, content: 'x' }), 'deny');
+  assert.equal(w.decision('Edit', { file_path: path.join(w.env.TO_AUTO_SESSIONS, 's1'), old_string: 'a', new_string: 'b' }), 'deny');
+  assert.equal(w.decision('Write', { file_path: path.join(w.repo, 'notes.md'), content: 'x' }), 'allow');
 });
 
 test('stopping its own run does not release the session; only a done run with nothing active does', () => {
@@ -113,7 +152,7 @@ test('a run this session finished before it was marked again does not release th
   fs.writeFileSync(runs, JSON.stringify(data));
   w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto again' });
   assert.equal(w.bash(INCIDENT), 'deny');
-  assert.equal(fs.readdirSync(w.env.TO_AUTO_SESSIONS).length, 1);
+  assert.deepEqual(fs.readdirSync(w.env.TO_AUTO_SESSIONS).sort(), ['s1', 's1.owner.jsonl']);
 });
 
 test('bad input and odd session ids are ignored', () => {
@@ -194,7 +233,7 @@ test('marking sweeps marks older than 30 days and keeps younger ones', () => {
   fs.utimesSync(old, new Date(Date.now() - 31 * day), new Date(Date.now() - 31 * day));
   fs.utimesSync(young, new Date(Date.now() - 29 * day), new Date(Date.now() - 29 * day));
   w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto x' });
-  assert.deepEqual(fs.readdirSync(w.env.TO_AUTO_SESSIONS).sort(), ['s1', 'young']);
+  assert.deepEqual(fs.readdirSync(w.env.TO_AUTO_SESSIONS).sort(), ['s1', 's1.owner.jsonl', 'young']);
 });
 
 test('Stop blocks the end of a turn while the session\'s run is active and moving, then lets it go', () => {

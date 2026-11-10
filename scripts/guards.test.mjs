@@ -10,6 +10,8 @@ import { STAGES, nowStage, ignoreAllAncestors, unresolvedBugs } from './goal.mjs
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 const WHO_ARGS = ['--agent', 'test-session', '--harness', 'test'];
+// The owner's words are read from here (ownerWords); never the real sessions folder.
+process.env.TO_AUTO_SESSIONS = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-words-'));
 const tmp = (prefix) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 
 function bareRepo(repo = tmp('guards-repo-')) {

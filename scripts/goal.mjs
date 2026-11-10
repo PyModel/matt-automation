@@ -7,6 +7,8 @@
 //   node scripts/goal.mjs init <slug> <objective> --agent <id> --harness <name> [--mode branch|supervisor|pr]
 //                                                          register the run (hand-back mode, target branch, scripts pin) and create runs/<slug>/; commit
 //   node scripts/goal.mjs next <slug>                     where the run resumes (JSON, with mode, target, warnings); blocked when NOW or todo.md is ahead of the registry
+//   node scripts/goal.mjs grant <slug> <path|push:<remote>|pr>... -- <owner words>
+//                                                          record which of the owner's own words authorize a guarded path, a push or a PR (checked against what they wrote)
 //   node scripts/goal.mjs pin <slug>                      accept the scripts as they are now for a run that pinned older ones (SCRIPTS_MOVED)
 //   node scripts/goal.mjs check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] [--idle-minutes <n>]
 //   node scripts/goal.mjs keep-going --agent <id>   (Stop hook / pi extension: must this session continue its run?)
@@ -617,6 +619,8 @@ export function adopt(repo, slug, { agent = null, harness = null } = {}) {
     if (['done', 'dry-run'].includes(entry.status)) throw new Refusal(`${slug} is ${entry.status}; there is nothing to take over`);
     if (entry.agent === agent && entry.harness === harness) return `${slug} already belongs to ${agent}`;
     const from = `${entry.agent ?? 'nobody'} (${entry.harness ?? '?'})`;
+    // The words the owner sent the earlier session still count (`ownerWords`).
+    if (entry.agent) entry.priorAgents = [...new Set([...(entry.priorAgents ?? []), entry.agent])];
     Object.assign(entry, { agent, harness });
     writeAndCommit(repo, control, `[${slug}] adopt: ${from} → ${agent} (${harness})`, { 'runs.json': `${JSON.stringify(runs, null, 2)}\n` }, { owner: 'registry' });
     return `${slug} now belongs to ${agent} (${harness}); was ${from}`;
@@ -691,6 +695,66 @@ export function ownerDecisions(text) {
   return text.split('\n').filter((l) => /^- D\d+ (?!\(open\)).*\(source: owner\b/.test(l));
 }
 
+const sessionsDir = () => process.env.TO_AUTO_SESSIONS || path.join(os.homedir(), '.local', 'state', 'to-auto-sessions');
+
+/**
+ * Text the owner wrote, the only source of authority (CORE.md, Autonomous): every prompt the owner sent in the run's
+ * session, as the harness's prompt hook kept it (`to-auto-guard.mjs` appends `<sessions>/<agent>.owner.jsonl`; no goal.mjs
+ * command writes there). On a harness with no such hook nothing was kept, and the objective `init` registered is all there is.
+ */
+export function ownerWords(entry, sessions = sessionsDir()) {
+  const kept = [];
+  for (const agent of [...(entry.priorAgents ?? []), entry.agent].filter(Boolean)) {
+    let lines = [];
+    try { lines = fs.readFileSync(path.join(sessions, `${agent}.owner.jsonl`), 'utf8').split('\n').filter(Boolean); } catch { /* this session kept none */ }
+    for (const line of lines) {
+      try {
+        const { at, text } = JSON.parse(line);
+        if (typeof text === 'string' && text.trim()) kept.push({ source: `owner ${at}`, text });
+      } catch { /* a torn line is no words */ }
+    }
+  }
+  return kept.length ? kept : [{ source: 'objective', text: entry.objective ?? '' }];
+}
+
+/**
+ * Where the owner wrote `quote`: the source of the first of `words` that holds it as whole words (case and spacing aside),
+ * or null. A quote shorter than `minWords` words stands only when it is a whole message, so one common word cited from a
+ * long prompt proves nothing.
+ */
+export function ownerQuote(quote, words, minWords) {
+  const q = norm(quote);
+  if (!q) return null;
+  const whole = new RegExp(`(?<![\\w-])${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`);
+  const short = q.split(' ').length < minWords;
+  return words.find(({ text }) => (short ? norm(text) === q : whole.test(norm(text))))?.source ?? null;
+}
+
+// What a grant's quotation must name for a target of each kind, beside the target itself.
+const NAMES_CI = /\b(?:ci|pipelines?|workflows?)\b/i;
+const NAMES_MIGRATION = /\b(?:migrations?|schema)\b/i;
+const NAMES_PUSH = /\b(?:push|pushed|pushing|publish)\b/i;
+const NAMES_PR = /\b(?:prs?|pull requests?|merge requests?)\b/i;
+const GRANT_TARGET = /^(?:push:(?:\*|[\w.-]+)|pr)$/;
+
+/** Whether the owner's quoted words name `target`: the path, its file name or a folder above it, or the word for its class. */
+function quoteNames(quote, target) {
+  const q = norm(quote);
+  if (target === 'pr') return NAMES_PR.test(q);
+  if (target.startsWith('push:')) return NAMES_PUSH.test(q) || (target !== 'push:*' && q.includes(target.slice(5).toLowerCase()));
+  const root = claimRoot(target).replace(/\/$/, '').toLowerCase();
+  const parts = root.split('/');
+  const named = [root, parts.at(-1), ...parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('/'))].filter((n) => n.length > 2);
+  if (named.some((n) => q.includes(n))) return true;
+  const kind = guardedKind(target);
+  return (kind === 'ci' && NAMES_CI.test(q)) || (kind === 'migration' && NAMES_MIGRATION.test(q));
+}
+
+/** Decisions tagged `(source: owner)` whose line quotes nothing the owner wrote: an orchestrator's reading is not the owner's word. */
+export function unquotedOwnerDecisions(text, words) {
+  return ownerDecisions(text).filter((l) => ![...l.matchAll(/"([^"]+)"/g)].some(([, q]) => ownerQuote(q, words, 2))).map((l) => l.match(/^- (D\d+)/)[1]);
+}
+
 export function tickingStage(status) {
   const at = RUN_ORDER.indexOf(status);
   return STAGES.find((s, i) => RUN_ORDER.indexOf(statusAfter(i)) >= at)?.id ?? null;
@@ -740,6 +804,8 @@ export function tick(repo, slug, id, { skipped = null } = {}) {
     const open = fs.existsSync(bugsFile) ? unresolvedBugs(fs.readFileSync(bugsFile, 'utf8'), done) : [];
     const logFile = path.join(runDir, 'log.md');
     const undecided = fs.existsSync(logFile) ? openDecisions(fs.readFileSync(logFile, 'utf8')) : [];
+    const unquoted = fs.existsSync(logFile) ? unquotedOwnerDecisions(fs.readFileSync(logFile, 'utf8'), ownerWords(entry)) : [];
+    if (unquoted.length) throw new Refusal(`stage ${id} cannot be ticked: runs/${slug}/log.md tags ${unquoted.join(', ')} \`(source: owner)\` but the line quotes nothing the owner wrote. Put the owner's own words in double quotes in the line, verbatim from a message they sent this session (on a harness that keeps none, from the objective), or give the decision its real source (kun, findings, codebase, default): a reading of the owner by the orchestrator is not an owner decision`);
     if (undecided.length) throw new Refusal(`stage ${id} cannot be ticked: runs/${slug}/log.md has open decision(s) ${undecided.join('; ')}; the owner or /kun answers each, and the line becomes \`- D<n> [stage] Q: … → A: … (source: …)\` (LEDGER.md § Layout, log.md)`);
     if (open.length) throw new Refusal(`stage ${id} cannot be ticked: runs/${slug}/bugs.md has entries with no action (fixed @ <sha>, ticket <NN> not yet done, blocker, or not a bug): ${open.join('; ')}. \`not a bug\` is listed to the owner at hand-back with its reason, and an entry that waits on the owner is a blocker, not \`not a bug\`. A pre-existing bug gets a ticket now (BUILD.md § Bugs found in flight, rule 3), never a known issue; an entry whose ticket is done says \`fixed @ <sha>\` once the fix is checked, or names a new ticket`);
     // dry-run is a terminal label set after 6b; its stages tick without moving it.
@@ -1454,6 +1520,7 @@ export function frontier(control, feature) {
   const { tickets, duplicates } = readTickets(path.join(control, 'tracker', feature, 'issues'));
   const malformed = [...duplicates];
   const held = [];
+  const entry = readRegistry(control).find((r) => r.slug === feature);
   for (const [id, t] of tickets) {
     for (const b of t.blockers) if (!tickets.has(b)) t.problems.push(`blocked by unknown ticket ${b}`);
     if (t.fromReview && !tickets.has(t.fromReview)) t.problems.push(`from the review of unknown ticket ${t.fromReview}`);
@@ -1462,6 +1529,9 @@ export function frontier(control, feature) {
     // rest of the tracker stays open (one such ticket once would have stopped every dispatch of a live run).
     if (t.status === 'ready-for-agent') {
       const why = guardedCriteria(fs.readFileSync(t.file, 'utf8'));
+      // A CI or migration path is changed only under the owner's grant, at stage 6 as after it: the claim waits for one.
+      const ungranted = t.claims.exclusive.filter((c) => NEEDS_GRANT.has(guardedKind(c)) && !grantFor(entry, c));
+      if (ungranted.length) why.push(`claims ${ungranted.join(', ')} (CI or migration) with no grant: ${grantHint(feature, ungranted)}`);
       if (why.length) held.push({ id, file: t.file, problems: why });
     }
     if (t.problems.length) malformed.push({ id, file: t.file, problems: t.problems });
@@ -1682,25 +1752,30 @@ const CLAIMS_LINE = /^\*\*Claims:\*\* (.+)$/m;
 const TICKET_BASE = /^- Ticket base: (\S+)/m;
 const AMENDED = /^\*\*Claims amended:\*\* /gm;
 export const MAX_AMENDMENTS = 2;
-// Paths a ticket may gain only through the objective's grant, never an amendment: CI workflows, migrations and any
-// top-level file. Broader than PLAN.md stage 6's planned `guarded` claims (top-level config): a top-level file a ticket
-// claimed at stage 6 is planned scope; one added later, or needed by a review fix, is a blocker.
+// Guarded paths, one definition for every gate (claims at stage 6, amendments, landing, hand-back). CI workflows and
+// migrations need the owner's grant whenever a ticket would change them. A top-level file is planned scope when a ticket
+// claims it at stage 6 (PLAN.md), and guarded after: an amendment or a review fix adds one only under a grant.
 // ponytail: migration folders as the common frameworks name them (Rails db/migrate, Flyway migration, EF Core Migrations,
 // Alembic); a project that keeps schema changes elsewhere is not matched, and would need its own pattern in NOW.
-const CI_PATHS = String.raw`^(?:\.github\/|\.gitlab-ci|\.circleci\/)`;
-const MIGRATION_PATHS = String.raw`(?:^|\/)(?:migrations?|migrate|alembic\/versions)(?:\/|$)`;
-const GUARDED_CLASS = new RegExp(`${CI_PATHS}|^[^/]+$|${MIGRATION_PATHS}`, 'i');
-// CI workflows and migrations: what `next` lists for the hand-back when the run branch changed one (`guardedChanges`).
-const HANDBACK_CLASS = new RegExp(`${CI_PATHS}|${MIGRATION_PATHS}`, 'i');
+const CI_PATHS = /^(?:\.github\/|\.gitlab-ci|\.circleci\/)/i;
+const MIGRATION_PATHS = /(?:^|\/)(?:migrations?|migrate|alembic\/versions)(?:\/|$)/i;
+/** `ci`, `migration` or `top-level` for a guarded path, else null. */
+export function guardedKind(file) {
+  const f = claimRoot(file);
+  if (CI_PATHS.test(f)) return 'ci';
+  if (MIGRATION_PATHS.test(f)) return 'migration';
+  return /^[^/]+$/.test(f) ? 'top-level' : null;
+}
+// The kinds no ticket changes without a grant, planned or not; a top-level file needs one only once planning is over.
+const NEEDS_GRANT = new Set(['ci', 'migration']);
 const grantFor = (entry, file) => (entry?.grants ?? []).find((g) => g.paths.some((p) => claimCovers(p, claimRoot(file))));
-const grantHint = (slug, paths) => `if the objective or an answered owner decision grants it, record which with \`goal.mjs grant ${slug} ${paths.join(' ')} -- objective\` (or \`-- D<n>\`); if neither does, it is a blocker`;
+const grantHint = (slug, paths) => `if the owner's own words name it, record them with \`goal.mjs grant ${slug} ${paths.join(' ')} -- "<their words>"\` (checked against what the owner wrote); if none do, it is a blocker`;
 
 /**
- * CI and migration files the run's own commits changed (first-parent, no merges, since the recorded base: the target merged
- * into the run branch adds none, and a target fast-forwarded to the run head hides none), each with the source of the
- * grant covering it or `none`. Read from the branch, never the Claims lines, so no relabelled claim hides one. goal.mjs
- * cannot tell whether the owner's words cover a path (every file it reads, the orchestrator wrote): the owner judges this
- * list at hand-back.
+ * Every guarded file the run's own commits changed (first-parent, no merges, since the recorded base: the target merged
+ * into the run branch adds none, and a target fast-forwarded to the run head hides none), each with its kind and the grant
+ * covering it (source and the owner's quoted words) or `none`. Read from the branch, never the Claims lines, so no
+ * relabelled claim hides one. The owner judges at hand-back whether the quoted words cover the path.
  */
 function guardedChanges(control, entry) {
   const record = readJson(path.join(control, 'runs', entry.slug, 'worktrees.json')).run;
@@ -1708,37 +1783,43 @@ function guardedChanges(control, entry) {
   if (!record?.branch || !record.base || !ws || !fs.existsSync(ws)) return [];
   const log = spawnSync('git', ['-C', ws, 'log', '--first-parent', '--no-merges', '--no-renames', '--name-only', '--format=', `${record.base}..${record.branch}`], { encoding: 'utf8', maxBuffer: 1 << 28 });
   if (log.status !== 0) return [];
-  return [...new Set(log.stdout.split('\n').filter((f) => HANDBACK_CLASS.test(f)))].sort().map((f) => ({ path: f, grant: grantFor(entry, f)?.source ?? 'none' }));
+  return [...new Set(log.stdout.split('\n').filter((f) => f && guardedKind(f)))].sort().map((f) => {
+    const g = grantFor(entry, f);
+    return { path: f, kind: guardedKind(f), grant: g?.source ?? 'none', ...(g?.quote && { quote: g.quote }) };
+  });
 }
 
 /**
- * Record which of the owner's words authorize `paths` for this run: `source` is `objective` or the id of an answered owner
- * decision in log.md, and the decision's line is copied as it stands, so authority is cited and copied, never typed. This
- * is a record for the owner to read (`next` returns every grant for the hand-back), not proof: the orchestrator wrote
- * every file it cites.
+ * Record which of the owner's words authorize `targets` for this run: repo paths, `push:<remote>` (or `push:*`) or `pr`.
+ * `quote` must be words the owner wrote (`ownerWords`: the session's own prompts, kept by the harness hook, else the
+ * objective), at least three of them unless it is a whole message, and must name every target (`quoteNames`). An
+ * orchestrator cannot author the text a grant stands on; whether those words mean what the run takes them to mean is the
+ * owner's call, so `next` returns every grant with its quotation for the hand-back.
  */
-export function grant(repo, slug, paths, source) {
+export function grant(repo, slug, targets, quote) {
   assertSlug(slug);
-  paths = paths.map((p) => p.replace(/^(?:\.\/)+/, ''));
-  const outside = paths.filter((p) => !p || p === '.' || path.isAbsolute(p) || p.split('/').includes('..') || /[\r\n,;]/.test(p));
-  if (!paths.length || outside.length) throw new UsageError(`grant takes repo-relative paths inside the repo${outside.length ? `, got ${outside.join(', ')}` : ''}`);
-  if (!/^(?:objective|D\d+)$/.test(source)) throw new UsageError('a grant cites `objective` or an answered owner decision `D<n>` of log.md; it takes no typed words');
+  targets = targets.map((p) => (GRANT_TARGET.test(p) ? p : p.replace(/^(?:\.\/)+/, '')));
+  const outside = targets.filter((p) => !GRANT_TARGET.test(p) && (!p || p === '.' || path.isAbsolute(p) || p.split('/').includes('..') || /[\r\n,;:]/.test(p)));
+  if (!targets.length || outside.length) throw new UsageError(`grant takes repo-relative paths inside the repo, \`push:<remote>\` or \`pr\`${outside.length ? `, got ${outside.join(', ')}` : ''}`);
+  quote = String(quote ?? '').replace(/\s+/g, ' ').trim();
+  if (!quote) throw new UsageError('a grant quotes the owner: `goal.mjs grant <slug> <path>... -- "<their words>"`');
   const control = requireControl(repo);
   return withLock(repo, 'registry', () => withLock(repo, 'control', () => {
     refuseUncommittedSoleEdits(control, ['runs.json']);
     const runs = readRegistry(control);
     const entry = runs.find((r) => r.slug === slug);
     if (!entry) throw new Refusal(`no run ${slug} in runs.json`);
-    const quote = source === 'objective' ? undefined
-      : ownerDecisions(committedText(control, path.join('runs', slug, 'log.md')) ?? '').find((l) => l.startsWith(`- ${source} `));
-    if (source !== 'objective' && !quote) throw new Refusal(`${source} is no answered owner decision in runs/${slug}/log.md (\`- ${source} … (source: owner)\`, committed); a path nobody granted is a blocker`);
-    const by = source === 'objective' ? 'the objective' : source;
-    entry.grants = [...(entry.grants ?? []), { paths, source, ...(quote && { quote }), at: new Date().toISOString() }];
+    const words = ownerWords(entry);
+    const source = ownerQuote(quote, words, 3);
+    if (!source) throw new Refusal(`"${quote}" is not something the owner wrote: a grant quotes at least three words in a row (or a whole message) from ${words[0].source === 'objective' ? 'the objective, the only owner text this harness keeps' : 'a message the owner sent this session'}. A decision or a reading the orchestrator wrote is never a grant; a target nobody granted is a blocker for the hand-back`);
+    const unnamed = targets.filter((t) => !quoteNames(quote, t));
+    if (unnamed.length) throw new Refusal(`the owner's words "${quote}" do not name ${unnamed.join(', ')}: a grant covers only what it names (the path, its file name or folder; CI, pipeline or workflow for CI files; migration or schema for migrations; push for \`push:<remote>\`; PR for \`pr\`). Unnamed, it is a blocker for the hand-back`);
+    entry.grants = [...(entry.grants ?? []), { paths: targets, source, quote, at: new Date().toISOString() }];
     const writes = { 'runs.json': `${JSON.stringify(runs, null, 2)}\n` };
     const ledger = path.join('runs', slug, 'ledger.md');
-    if (fs.existsSync(path.join(control, ledger))) writes[ledger] = withEvent(fs.readFileSync(path.join(control, ledger), 'utf8'), 'grant', `${paths.join(', ')} by ${by}`);
-    writeAndCommit(repo, control, `[${slug}] grant ${paths.join(', ')}`.slice(0, 120), writes, { owner: 'registry' });
-    return `granted ${paths.join(', ')} to ${slug} by ${by}`;
+    if (fs.existsSync(path.join(control, ledger))) writes[ledger] = withEvent(fs.readFileSync(path.join(control, ledger), 'utf8'), 'grant', `${targets.join(', ')} by "${quote}" (${source})`);
+    writeAndCommit(repo, control, `[${slug}] grant ${targets.join(', ')}`.slice(0, 120), writes, { owner: 'registry' });
+    return `granted ${targets.join(', ')} to ${slug} by "${quote}" (${source})`;
   }));
 }
 
@@ -1748,7 +1829,7 @@ export function grant(repo, slug, paths, source) {
  * amendment (the ticket is mis-scoped) is refused and nothing changes. Other runs' overlaps are reported.
  */
 export function amendClaims(repo, feature, id, kind, paths, why) {
-  if (kind === 'guarded') throw new Refusal('a guarded path needs the objective\'s grant, never an amendment');
+  if (kind === 'guarded') throw new Refusal('a guarded path needs the owner\'s grant, never an amendment');
   if (!['exclusive', 'shared-regenerate'].includes(kind)) throw new UsageError(`claim kind must be exclusive or shared-regenerate, got ${kind}`);
   if (!paths.length || !why.trim()) throw new UsageError('claim needs at least one path and a reason');
   if (/[\r\n,;]/.test(paths.join('')) || /[\r\n]/.test(why)) throw new UsageError('paths hold no , ; or newline, and the reason is one line');
@@ -1768,8 +1849,8 @@ export function amendClaims(repo, feature, id, kind, paths, why) {
     if (!fresh.length) return { commit: 'already claimed', claims: before.match(CLAIMS_LINE)[1], cross_run: [] };
     const declared = [...files.values()].flatMap((f) => parseTicket(fs.readFileSync(f, 'utf8')).claims.guarded);
     const run = readRegistry(control).find((r) => r.slug === feature);
-    const guarded = fresh.filter((p) => (GUARDED_CLASS.test(p) || declared.some((g) => claimsOverlap(g, p))) && !grantFor(run, p));
-    if (guarded.length) throw new Refusal(`${guarded.join(', ')} is guarded; only the objective's grant authorizes it: ${grantHint(feature, guarded)}`);
+    const guarded = fresh.filter((p) => (guardedKind(p) || declared.some((g) => claimsOverlap(g, p))) && !grantFor(run, p));
+    if (guarded.length) throw new Refusal(`${guarded.join(', ')} is guarded; only the owner's grant authorizes it: ${grantHint(feature, guarded)}`);
     const amended = (before.match(AMENDED) ?? []).length;
     if (amended >= MAX_AMENDMENTS) throw new Refusal(`ticket ${want} already had ${amended} claims amendments, so it is mis-scoped: stop it and split it at PLAN.md 6b`);
 
@@ -2315,6 +2396,8 @@ export function mergeTicket(repo, feature, id, { check = null } = {}) {
     const touched = git(wt.path, ['diff', '--name-only', '--no-renames', `${base}...HEAD`]).split('\n').filter(Boolean);
     const breach = claimsBreach(text, touched);
     if (breach.unclaimed.length || breach.guarded.length) throw new Refusal(`ticket ${want} touched ${[...breach.unclaimed.map((f) => `${f} (unclaimed)`), ...breach.guarded.map((f) => `${f} (guarded)`)].join(', ')}: an unclaimed edit, so it does not land (BUILD.md step 5.1)${breach.guarded.length ? `; \`guarded\` in a Claims line means off limits: ${grantHint(feature, breach.guarded)}; then \`goal.mjs claim ${feature} ${want} exclusive ${breach.guarded.join(' ')} -- <why>\` and merge again` : ''}`);
+    const ungranted = touched.filter((f) => NEEDS_GRANT.has(guardedKind(f)) && !grantFor(readRegistry(control).find((r) => r.slug === feature), f));
+    if (ungranted.length) throw new Refusal(`ticket ${want} changed ${ungranted.join(', ')} (CI or migration) with no grant, so it does not land: ${grantHint(feature, ungranted)}; then merge again`);
     if (git(run.path, ['status', '--porcelain'])) throw new Refusal(`the run worktree ${run.path} has uncommitted changes; commit or discard them before a merge`);
     // In supervisor mode the run worktree is the owner's checkout: on another branch there, the fast-forward would land the ticket on it.
     const on = git(run.path, ['rev-parse', '--abbrev-ref', 'HEAD']);
@@ -3575,7 +3658,7 @@ function sleep(ms) {
 
 const TAKES_VALUE = new Set(['--repo', '--state-dir', '--allow', '--base', '--target-branch', '--status-file', '--worker-model']);
 
-const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--mode branch|supervisor|pr] [--worker-model <model>] [--no-helpers] | next <slug> | pin <slug> | grant <slug> <path>... -- objective|D<n> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] [--idle-minutes <n>] | keep-going --agent <id> | worktree get|return <slug> [NN] | worktree status <slug> | gc [--delete-clean [--slots]] [--stale-hours <n>] [--all [--state-root <dir>]] | stop <slug> <reason> | resume <slug> | adopt <slug> --agent <id> --harness <name> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | prepare-ticket <feature> <id> | brief <feature> <id> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | merge <feature> <id> [--check <command>] | verdict <slug> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
+const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--mode branch|supervisor|pr] [--worker-model <model>] [--no-helpers] | next <slug> | pin <slug> | grant <slug> <path|push:<remote>|pr>... -- <owner words> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] [--idle-minutes <n>] | keep-going --agent <id> | worktree get|return <slug> [NN] | worktree status <slug> | gc [--delete-clean [--slots]] [--stale-hours <n>] [--all [--state-root <dir>]] | stop <slug> <reason> | resume <slug> | adopt <slug> --agent <id> --harness <name> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | prepare-ticket <feature> <id> | brief <feature> <id> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | merge <feature> <id> [--check <command>] | verdict <slug> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
 
 function main(argv) {
   configure();
@@ -3698,8 +3781,9 @@ function main(argv) {
     console.log(pin(repo, rest[0]));
     return 0;
   }
-  if (command === 'grant' && rest.length >= 4 && rest.indexOf('--') === rest.length - 2) {
-    console.log(grant(repo, rest[0], rest.slice(1, -2), rest.at(-1)));
+  if (command === 'grant' && rest.indexOf('--') >= 2 && rest.indexOf('--') < rest.length - 1) {
+    const cut = rest.indexOf('--');
+    console.log(grant(repo, rest[0], rest.slice(1, cut), rest.slice(cut + 1).join(' ')));
     return 0;
   }
   if (command === 'prepare-ticket' && rest.length === 2) {

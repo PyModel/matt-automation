@@ -13,7 +13,7 @@ A source is **agent-ready** when every box holds. The orchestrator ticks them fr
 - [ ] Every path a criterion or claim requires a change to can be committed: `git check-ignore <path>` in the run worktree matches none of them (a git-ignored file never reaches the branch, so the criterion could not be met).
 - [ ] Validation commands are known (NOW `commands:`, or the repo's own scripts, CI, and tests).
 - [ ] The starting point is recorded: `<ticket-base>` for a ticket, `review_base` for the run.
-- [ ] Authority is explicit: which paths it may touch (claims) and which external effects the objective grants (SKILL.md § Rules, Autonomous).
+- [ ] Authority is explicit: which paths it may touch (claims) and which external effects the objective grants (CORE.md, Autonomous).
 
 Used at three points: stage 1 decides the `ready` route with it (PLAN.md § Ready source), stage 6b gates every ticket with it, and stage 7 re-checks it at dispatch, when `<ticket-base>` exists. A ticket that fails at 6b or dispatch is this run's own ticket: fix it and re-run 6b on it; failing twice makes it `stuck`.
 
@@ -104,7 +104,7 @@ The implementer's final message ends with exactly one fenced `json` block, the r
 - `review`: the implementer's own `code-review` pass. `cited_fixed` counts the cited findings it fixed before the receipt; `leads` lists the uncited ones. A fix from this review goes here, never in `repairs`.
 - `external_effects`: every push, deploy, tracker edit, real-service call, or message the implementer caused. The orchestrator checks each against the objective's grants; an ungranted one is a blocker.
 - `contract_quality` (optional, never a completion condition): `accurate` | `criteria-too-vague` | `criteria-wrong` | `missing-constraint` | `over-scoped`. The retro reads it.
-- Secrets in any field are `<REDACTED>` (SKILL.md § Rules, Redaction).
+- Secrets in any field are `<REDACTED>` (CORE.md, Redaction).
 
 ## The receipt check
 

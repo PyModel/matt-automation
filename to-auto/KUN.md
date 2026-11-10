@@ -19,7 +19,7 @@ Whenever a sub-skill says *ask*, *confirm*, *quiz*, *check with the user*, *wait
 1. **Facts are never questions.** If the findings, the codebase, or `log.md` settle it, take that answer; log `(source: findings)` or `(source: codebase)`.
 2. Otherwise invoke `/kun`, framed as "the user is asked the following; answer as the user": the exact question, the candidate answers, the sub-skill's recommended answer if any, and pointers (objective, spec path, `GLOSSARY.md`, the module's defensive tier). Kun's answer is the user's final word, overriding sub-skill recommendations and PIPELINE.md § Defaults (budgets only within PIPELINE.md § Budgets); log `(source: kun)`.
 3. Kun answers with a question of its own → the PIPELINE.md default; log `(source: default)`. Never re-ask; never escalate.
-4. Kun advises on reversible technical and architectural choices. It never grants authority (SKILL.md § Rules, Autonomous); those actions stay blockers.
+4. Kun advises on reversible technical and architectural choices. It never grants authority (CORE.md, Autonomous); those actions stay blockers.
 
 Every answer is one line in `log.md` (LEDGER.md § Layout).
 

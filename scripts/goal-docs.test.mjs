@@ -78,3 +78,11 @@ test('no doc tells the orchestrator to write the verdict or a landing script by 
     assert.doesNotMatch(doc(name), /with-lock integration -- <merge script>/, `${name} has the orchestrator write a merge script`);
   }
 });
+
+// A run read the owner's "merge all to main" as lifting the owner's separate review of two
+// changes "unless the owner objects"; only the project's own merge rule stopped it.
+test('CORE.md says owner words grant only what they name, and every citation of a core rule names CORE.md', () => {
+  assert.ok(doc('CORE.md').includes('Either grants only what it names: a blanket instruction ("merge all") lifts no hold the owner set (an owner-only merge, a separate review), and silence grants nothing, so no plan reads "unless the owner objects".'));
+  const dangling = PHASE_DOCS.filter((f) => doc(f).includes('SKILL.md § Rules,'));
+  assert.deepEqual(dangling, [], 'SKILL.md § Rules only points at CORE.md; it holds no Autonomous or Redaction rule');
+});

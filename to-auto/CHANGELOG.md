@@ -3,6 +3,7 @@
 Behavior that moved. The phase files are the spec; this list is the delta.
 
 - Live fixes of 2026-11-09 (found by watching a live run; each has a test that failed before it):
+  - CORE.md, Autonomous: an owner's words grant only what they name. The run read "merge all to main" as lifting the owner's separate review of two changes "unless the owner objects"; the project's own merge rule made it withdraw that and ask. Seven citations of `SKILL.md § Rules, Autonomous` and `Redaction` now name CORE.md, where those rules live.
   - `goal.mjs next` returns `dismissed_bugs`: every `bugs.md` entry carrying the `not a bug` label, with the line that says why, and the hand-back lists them. The run was refused the tick of stage 7 over an entry routed to the owner, relabelled it `not a bug`, and ticked; the label is still taken on the orchestrator's word, so the owner now reads each one.
   - Stage ticks are read only from the `## Stages` section of `todo.md`. A hand-kept checkbox line for ticket 10 under `## Tickets` was read as stage 10: with the stage ticked it read unticked, and ticking the ticket line was refused as a hand-typed stage tick.
   - TICKET_IDLE counts a `goal.mjs run` or `with-lock` in the ticket's worktree as a worker sign, for as long as it runs and when it ends. A worker that ran a 19-minute integration suite after its last commit, or queued behind another ticket's suite, was reported as orphaned. Each such process marks itself under the worktree's git dir (`goal-live/<pid>`, holding its start time, so a reused pid is not read as alive).

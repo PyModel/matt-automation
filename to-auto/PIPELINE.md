@@ -75,7 +75,7 @@ Either way `runs/<slug>/spec.md` is a working copy (PLAN.md stage 5). Point ever
 
 ## Defaults (when neither evidence nor kun settles a question)
 
-KUN.md decides when these apply: kun answers with a question of its own, or answerer and challenger still disagree. They never grant authority (SKILL.md § Rules, Autonomous).
+KUN.md decides when these apply: kun answers with a question of its own, or answerer and challenger still disagree. They never grant authority (CORE.md, Autonomous).
 
 | Question a sub-skill asks | Default |
 |---|---|

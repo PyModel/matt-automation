@@ -16,7 +16,7 @@ export function lintReceipt(text, worktree = process.cwd()) {
 
 // realpath: run through a linked path, the plain comparison never matched and the lint printed nothing and exited 0.
 if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
-  if (process.argv.length !== 3) { console.error('usage: receipt-lint.mjs <receipt file>   (from the ticket worktree)'); process.exit(2); }
+  if (process.argv.length !== 3 || !fs.existsSync(process.argv[2])) { console.error('usage: receipt-lint.mjs <receipt file>   (from the ticket worktree)'); process.exit(2); }
   const problems = lintReceipt(fs.readFileSync(process.argv[2], 'utf8'));
   for (const p of problems) console.error(p);
   if (problems.length) process.exit(1);

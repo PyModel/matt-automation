@@ -875,13 +875,15 @@ export function recordModel(repo, slug, role, model) {
 /**
  * Where the run resumes (`resumePoint`), plus the registry's hand-back `mode` and `target` so stage 9 reads config, and
  * `warnings` for what `check` would flag that the orchestrator must act on: SCRIPTS_MOVED, TARGET_DIVERGED, TICKET_IDLE.
+ * `grants` and `guarded_changes` are for the hand-back (CLOSE.md stage 9).
  */
 export function next(control, slug) {
   const at = resumePoint(control, slug);
   const entry = readRegistry(control).find((r) => r.slug === slug);
   if (!entry) return at;
   const warnings = runWarnings(control, entry, { now: Date.now() });
-  return { ...at, mode: runMode(control, entry), target: entry.target ?? runBranch(control, entry), ...(at.tickets?.['in-flight']?.length && { in_flight: flightRows(control, slug) }), ...(entry.grants?.length && { grants: entry.grants }), ...(warnings.length && { warnings }) };
+  const changes = guardedChanges(control, entry);
+  return { ...at, mode: runMode(control, entry), target: entry.target ?? runBranch(control, entry), ...(at.tickets?.['in-flight']?.length && { in_flight: flightRows(control, slug) }), ...(entry.grants?.length && { grants: entry.grants }), ...(changes.length && { guarded_changes: changes }), ...(warnings.length && { warnings }) };
 }
 
 /** The hand-back mode: the registry's, or for a run from before it was recorded, supervisor when supervise saved a target. */
@@ -1059,7 +1061,9 @@ function runWarnings(control, entry, { now, idleMinutes = TICKET_IDLE_MINUTES })
   try {
     for (const h of fs.existsSync(path.join(control, 'tracker', entry.slug, 'issues')) ? frontier(control, entry.slug).held ?? [] : []) out.push({ code: 'TICKET_HELD', message: `ticket ${h.id} is held off the frontier: ${h.problems.join('; ')}` });
   } catch { /* an unreadable tracker is frontier's own report */ }
-  const hours = nowField(control, entry.slug, 'budgets').match(/\bwall-clock\s*[:=]?\s*(\d+(?:\.\d+)?)\s*h\b/)?.[1];
+  // The run's own clock, not a `per-ticket wall-clock`; a logged raise (`8h -> 12h`) replaces the first value.
+  const clock = [...nowField(control, entry.slug, 'budgets').matchAll(/(per-ticket\s+)?\bwall-clock\s*[:=]?\s*(\d+(?:\.\d+)?)\s*h\b(?:\s*(?:->|→)\s*(\d+(?:\.\d+)?)\s*h\b)?/g)].filter((m) => !m[1]).at(-1);
+  const hours = clock?.[3] ?? clock?.[2];
   const ran = (now - Date.parse(entry.started)) / 3600000;
   if (hours && ran > Number(hours)) out.push({ code: 'BUDGET_SPENT', message: `${ran.toFixed(1)}h since the run started, past its wall-clock budget of ${hours}h (NOW budgets:): wrap up as references/run-budget.md says, or log a raise with its source; the orchestrator never raises a budget on its own judgment` });
   return out;
@@ -1206,15 +1210,22 @@ function liveDir(cwd) {
   return r.status === 0 ? path.join(r.stdout.trim(), 'goal-live') : null;
 }
 
-/** A process's start time as `ps` prints it, '' when there is none: with the pid it names one process, even after the pid is reused. */
-const startedAt = (pid) => spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }).stdout?.trim() ?? '';
+/**
+ * A process's start time as `ps` prints it, '' when there is none: with the pid it names one process, even after the pid is
+ * reused. null when `ps` itself could not start (fork pressure), which says nothing about the process.
+ */
+function startedAt(pid) {
+  const r = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } });
+  return r.error ? null : r.stdout.trim();
+}
 
 /** The marks in `dir`, each with whether the process that wrote it is still running. */
 function liveMarks(dir) {
   return fs.readdirSync(dir).filter((name) => /^[1-9]\d*$/.test(name)).map((name) => {
     let wrote = null;
     try { wrote = fs.readFileSync(path.join(dir, name), 'utf8'); } catch { /* gone since the listing */ }
-    return { file: path.join(dir, name), alive: Boolean(wrote) && wrote === startedAt(name) };
+    const now = wrote ? startedAt(name) : '';
+    return { file: path.join(dir, name), alive: Boolean(wrote) && (now === null || wrote === now) };
   });
 }
 
@@ -1230,11 +1241,13 @@ export function markedLive(cwd, fn) {
     fs.mkdirSync(dir, { recursive: true });
     for (const m of liveMarks(dir)) if (!m.alive) fs.rmSync(m.file, { force: true });
     // Renamed into place whole: a concurrent start that read it half-written would clear it as a dead mark.
-    fs.writeFileSync(path.join(dir, `.${process.pid}.tmp`), startedAt(process.pid));
+    const self = startedAt(process.pid);
+    if (!self) throw new Error('ps gave no start time');
+    fs.writeFileSync(path.join(dir, `.${process.pid}.tmp`), self);
     fs.renameSync(path.join(dir, `.${process.pid}.tmp`), path.join(dir, String(process.pid)));
     mark = path.join(dir, String(process.pid));
     process.env.GOAL_LIVE_PIDS = [process.env.GOAL_LIVE_PIDS, process.pid].filter(Boolean).join(',');
-  } catch { /* no git dir to write under: the command runs unmarked */ }
+  } catch { /* no git dir to write under, or no start time to write: the command runs unmarked */ }
   try {
     return fn();
   } finally {
@@ -1420,17 +1433,14 @@ export function frontier(control, feature) {
   const { tickets, duplicates } = readTickets(path.join(control, 'tracker', feature, 'issues'));
   const malformed = [...duplicates];
   const held = [];
-  const holds = grantedPaths(control, feature);
   for (const [id, t] of tickets) {
     for (const b of t.blockers) if (!tickets.has(b)) t.problems.push(`blocked by unknown ticket ${b}`);
     if (t.fromReview && !tickets.has(t.fromReview)) t.problems.push(`from the review of unknown ticket ${t.fromReview}`);
-    // Only before dispatch, when the Claims line can still be corrected: a dispatched ticket meets this at `contract` and `merge`.
+    // Only before dispatch, when the Claims line can still be corrected: a dispatched ticket meets `guarded` at `merge`.
     // Held, never malformed: these keep one ticket off the frontier while its Claims line can still be corrected, and the
     // rest of the tracker stays open (one such ticket once would have stopped every dispatch of a live run).
     if (t.status === 'ready-for-agent') {
       const why = guardedCriteria(fs.readFileSync(t.file, 'utf8'));
-      const bare = [...t.claims.exclusive, ...t.claims['shared-regenerate']].filter((c) => GRANT_CLASS.test(claimRoot(c)) && !granted(holds, c));
-      if (bare.length) why.push(`claims ${bare.join(', ')}, a guarded-class path (CI, migrations) the run holds no grant for: ${grantHint(feature, bare)}`);
       if (why.length) held.push({ id, file: t.file, problems: why });
     }
     if (t.problems.length) malformed.push({ id, file: t.file, problems: t.problems });
@@ -1493,8 +1503,8 @@ function crossRun(control, feature, open) {
 /** Under the frontier lock, so two orchestrators never take the same ticket. */
 /** NOW's concurrency budget (`concurrent N` or `max_concurrent_tickets N` in `budgets:`), or null when the run set none. */
 function concurrencyCap(control, feature) {
-  const n = nowField(control, feature, 'budgets').match(/\b(?:max_concurrent_tickets|concurrent)\s*[:=]?\s*(\d+)/)?.[1];
-  return n ? Number(n) : null;
+  const m = nowField(control, feature, 'budgets').match(/\b(?:max_concurrent_tickets|concurrent(?:\s+tickets)?)\s*[:=]?\s*(\d+)|\b(\d+)\s+concurrent\b/);
+  return m ? Number(m[1] ?? m[2]) : null;
 }
 const inFlightIds = (control, feature) => ticketsByStatus(control, feature)?.['in-flight'] ?? [];
 
@@ -1631,9 +1641,6 @@ function doneGate(repo, control, feature, want, file, ticketText, landed) {
     spawnSync('git', ['-C', repo, 'worktree', 'remove', '--force', wt]);
     fs.rmSync(wt, { recursive: true, force: true });
   }
-  // Here, not only in `merge`: a landing made by hand (`status … done --landed`) passes this gate and no other.
-  const bare = ungranted(control, feature, git(repo, ['diff', '--name-only', '--no-renames', `${base}...${head}`]).split('\n').filter(Boolean));
-  if (bare.length) problems.push(`it touched ${bare.join(', ')}, a guarded-class path (CI, migrations) the run holds no grant for: ${grantHint(feature, bare)}`);
   const contains = spawnSync('git', ['-C', repo, 'merge-base', '--is-ancestor', head, landedSha]).status === 0;
   if (!contains) {
     const landedId = patchId(repo, fromSha ?? `${landedSha}^`, landedSha);
@@ -1658,44 +1665,61 @@ export const MAX_AMENDMENTS = 2;
 // top-level file. Broader than PLAN.md stage 6's planned `guarded` claims (top-level config): a top-level file a ticket
 // claimed at stage 6 is planned scope; one added later, or needed by a review fix, is a blocker.
 const GUARDED_CLASS = /^(?:\.github\/|\.gitlab-ci|\.circleci\/|[^/]+$)|(?:^|\/)migrations(?:\/|$)/;
-// CI workflows and migrations: a ticket claims, gains or lands one only under a grant the run recorded from the owner's
-// words (`goal.mjs grant`). Moving a path from `guarded` to `exclusive` in a ticket is not a grant.
-const GRANT_CLASS = /^(?:\.github\/|\.gitlab-ci|\.circleci\/)|(?:^|\/)migrations(?:\/|$)/;
-function grantedPaths(control, slug) {
-  try { return (readRegistry(control).find((r) => r.slug === slug)?.grants ?? []).flatMap((g) => g.paths); } catch { return []; }
-}
-const granted = (holds, file) => holds.some((g) => claimCovers(g, claimRoot(file)));
-const ungranted = (control, slug, touched) => { const holds = grantedPaths(control, slug); return touched.filter((f) => GRANT_CLASS.test(f) && !granted(holds, f)); };
-const grantHint = (slug, paths) => `if the objective grants it, record the owner's words with \`goal.mjs grant ${slug} ${paths.join(' ')} -- "<verbatim from the objective or an owner decision in log.md>"\`; if it does not, it is a blocker`;
+// CI workflows and migrations: what `next` lists for the hand-back when the run branch changed one (`guardedChanges`).
+// ponytail: folder names of the common frameworks (Rails db/migrate, Flyway migration, EF Core Migrations, Alembic); a
+// project that keeps schema changes elsewhere is not listed, and would need its own pattern in NOW.
+const HANDBACK_CLASS = /^(?:\.github\/|\.gitlab-ci|\.circleci\/)|(?:^|\/)(?:migrations?|migrate|alembic\/versions)\//i;
+const grantFor = (entry, file) => (entry?.grants ?? []).find((g) => g.paths.some((p) => claimCovers(p, claimRoot(file))));
+const grantHint = (slug, paths) => `if the objective or an answered owner decision grants it, record which with \`goal.mjs grant ${slug} ${paths.join(' ')} -- objective\` (or \`-- D<n>\`); if neither does, it is a blocker`;
 
 /**
- * Record that the owner's words authorize `paths` for this run: the quote must stand verbatim in the registered objective
- * or in an owner decision of log.md, so authority is copied, never typed. `next` returns every grant for the hand-back.
+ * CI and migration files the run branch changed since it left its target, each with the source of the grant covering it
+ * or `none`. Read from the branch, never the Claims lines, so no relabelled claim hides one. goal.mjs cannot tell whether
+ * the owner's words cover a path (every file it reads, the orchestrator wrote): the owner judges this list at hand-back.
  */
-export function grant(repo, slug, paths, quote) {
+function guardedChanges(control, entry) {
+  const record = readJson(path.join(control, 'runs', entry.slug, 'worktrees.json')).run;
+  const ws = readJson(path.join(control, 'workspace.json')).workspace;
+  if (!record?.branch || !ws || !fs.existsSync(ws)) return [];
+  const out = (args) => {
+    const r = spawnSync('git', ['-C', ws, ...args], { encoding: 'utf8', maxBuffer: 1 << 28 });
+    return r.status === 0 ? r.stdout.trim() : null;
+  };
+  const target = entry.target && entry.target !== record.branch ? entry.target : null;
+  const from = (target && out(['merge-base', record.branch, target])) ?? record.base;
+  if (!from) return [];
+  return (out(['diff', '--name-only', '--no-renames', from, record.branch]) ?? '').split('\n')
+    .filter((f) => HANDBACK_CLASS.test(f)).map((f) => ({ path: f, grant: grantFor(entry, f)?.source ?? 'none' }));
+}
+
+/**
+ * Record which of the owner's words authorize `paths` for this run: `source` is `objective` or the id of an answered owner
+ * decision in log.md, and the decision's line is copied as it stands, so authority is cited and copied, never typed. This
+ * is a record for the owner to read (`next` returns every grant for the hand-back), not proof: the orchestrator wrote
+ * every file it cites.
+ */
+export function grant(repo, slug, paths, source) {
   assertSlug(slug);
   paths = paths.map((p) => p.replace(/^(?:\.\/)+/, ''));
-  const outside = paths.filter((p) => !p || path.isAbsolute(p) || p.split('/').includes('..') || /[\r\n,;]/.test(p));
+  const outside = paths.filter((p) => !p || p === '.' || path.isAbsolute(p) || p.split('/').includes('..') || /[\r\n,;]/.test(p));
   if (!paths.length || outside.length) throw new UsageError(`grant takes repo-relative paths inside the repo${outside.length ? `, got ${outside.join(', ')}` : ''}`);
-  const squeeze = (text) => text.replace(/\s+/g, ' ').trim();
-  const said = squeeze(quote);
-  if (said.length < 20) throw new UsageError('a grant quotes at least 20 characters of the owner\'s words');
+  if (!/^(?:objective|D\d+)$/.test(source)) throw new UsageError('a grant cites `objective` or an answered owner decision `D<n>` of log.md; it takes no typed words');
   const control = requireControl(repo);
   return withLock(repo, 'registry', () => withLock(repo, 'control', () => {
     refuseUncommittedSoleEdits(control, ['runs.json']);
     const runs = readRegistry(control);
     const entry = runs.find((r) => r.slug === slug);
     if (!entry) throw new Refusal(`no run ${slug} in runs.json`);
-    const decisions = ownerDecisions(committedText(control, path.join('runs', slug, 'log.md')) ?? '');
-    if (![entry.objective ?? '', ...decisions].some((source) => squeeze(source).includes(said))) {
-      throw new Refusal(`those words are in neither the registered objective nor an owner decision in runs/${slug}/log.md (\`- D<n> … (source: owner)\`); a grant quotes the owner verbatim, and a path nobody granted is a blocker`);
-    }
-    entry.grants = [...(entry.grants ?? []), { paths, quote: said, at: new Date().toISOString() }];
+    const quote = source === 'objective' ? undefined
+      : ownerDecisions(committedText(control, path.join('runs', slug, 'log.md')) ?? '').find((l) => l.startsWith(`- ${source} `));
+    if (source !== 'objective' && !quote) throw new Refusal(`${source} is no answered owner decision in runs/${slug}/log.md (\`- ${source} … (source: owner)\`, committed); a path nobody granted is a blocker`);
+    const by = source === 'objective' ? 'the objective' : source;
+    entry.grants = [...(entry.grants ?? []), { paths, source, ...(quote && { quote }), at: new Date().toISOString() }];
     const writes = { 'runs.json': `${JSON.stringify(runs, null, 2)}\n` };
     const ledger = path.join('runs', slug, 'ledger.md');
-    if (fs.existsSync(path.join(control, ledger))) writes[ledger] = withEvent(fs.readFileSync(path.join(control, ledger), 'utf8'), 'grant', `${paths.join(', ')}: "${said}"`);
+    if (fs.existsSync(path.join(control, ledger))) writes[ledger] = withEvent(fs.readFileSync(path.join(control, ledger), 'utf8'), 'grant', `${paths.join(', ')} by ${by}`);
     writeAndCommit(repo, control, `[${slug}] grant ${paths.join(', ')}`.slice(0, 120), writes, { owner: 'registry' });
-    return `granted ${paths.join(', ')} to ${slug}`;
+    return `granted ${paths.join(', ')} to ${slug} by ${by}`;
   }));
 }
 
@@ -1724,8 +1748,8 @@ export function amendClaims(repo, feature, id, kind, paths, why) {
     const fresh = paths.filter((p) => !ticket.claims[kind].some((c) => claimCovers(c, claimRoot(p))));
     if (!fresh.length) return { commit: 'already claimed', claims: before.match(CLAIMS_LINE)[1], cross_run: [] };
     const declared = [...files.values()].flatMap((f) => parseTicket(fs.readFileSync(f, 'utf8')).claims.guarded);
-    const holds = grantedPaths(control, feature);
-    const guarded = fresh.filter((p) => (GUARDED_CLASS.test(p) || declared.some((g) => claimsOverlap(g, p))) && !granted(holds, p));
+    const run = readRegistry(control).find((r) => r.slug === feature);
+    const guarded = fresh.filter((p) => (GUARDED_CLASS.test(p) || declared.some((g) => claimsOverlap(g, p))) && !grantFor(run, p));
     if (guarded.length) throw new Refusal(`${guarded.join(', ')} is guarded; only the objective's grant authorizes it: ${grantHint(feature, guarded)}`);
     const amended = (before.match(AMENDED) ?? []).length;
     if (amended >= MAX_AMENDMENTS) throw new Refusal(`ticket ${want} already had ${amended} claims amendments, so it is mis-scoped: stop it and split it at PLAN.md 6b`);
@@ -1860,9 +1884,10 @@ function claimsOverlap(a, b) {
  * asks for work that cannot land. A criterion that only reads or protects the path (not red at base) is left alone.
  */
 export function guardedCriteria(ticketText) {
-  const off = parseTicket(ticketText).claims.guarded;
+  const { claims } = parseTicket(ticketText);
+  const mine = [...claims.exclusive, ...claims['shared-regenerate']];
   const named = (criterion) => criterion.split(/[\s`'"()]+/).map((word) => word.replace(/^(?:\.\/)+/, '').replace(/[,.;:]+$/, ''))
-    .filter((word) => off.some((g) => (word.includes('/') || word === claimRoot(g)) && claimCovers(g, word)));
+    .filter((word) => claims.guarded.some((g) => (word.includes('/') || word === claimRoot(g)) && claimCovers(g, word)) && !mine.some((c) => claimCovers(c, word)));
   const hits = ticketCriteria(ticketText).filter((c) => /\(Red at base\b/i.test(c)).flatMap((c) => named(c).map((p) => `criterion "${c.length > 90 ? `${c.slice(0, 90)}…` : c}" is red at base and names ${p}, which its Claims line lists as guarded (off limits: \`merge\` lands no edit there); a path the ticket must change is claimed exclusive (PLAN.md stage 6)`));
   return [...new Set(hits)];
 }
@@ -2214,12 +2239,6 @@ export function brief(repo, feature, id) {
   // Recover first, never resend: a worker still on the ticket, or a receipt that already lands, is not answered by a second worker.
   const busy = liveWriter(worktree);
   if (busy) throw new Refusal(`ticket ${want}'s worktree has ${busyWith(busy)}: a worker is still on it, and a second worker would write beside it (BUILD.md § Stuck detection)`);
-  const receipt = committedText(control, path.join('runs', feature, 'tickets', `${want}.receipt.md`));
-  const base = contract.match(TICKET_BASE)?.[1];
-  if (receipt && base && worktree && fs.existsSync(worktree)) {
-    const back = checkReceipt({ text: receipt, worktree, base, ticketText: text });
-    if (back.ok && back.conclusion === 'completed') throw new Refusal(`ticket ${want} has a committed receipt that passes: land it with \`goal.mjs merge ${feature} ${want}\`, never dispatch it again`);
-  }
   const checked = worktree && fs.existsSync(worktree) ? checkContract({ text: contract, ticketText: text, worktree }) : { problems: [`ticket ${want} has no active worktree`] };
   if (checked.problems.length) throw new Refusal(`ticket ${want}'s contract does not pass: ${checked.problems.join('; ')}`);
   const implement = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'matt.mjs'), 'resolve', 'implement'], { encoding: 'utf8' });
@@ -2260,7 +2279,7 @@ export function mergeTicket(repo, feature, id, { check = null } = {}) {
     const wt = records[`t${want}`];
     if (run?.state !== 'active' || !run.path || !fs.existsSync(run.path)) throw new Refusal(`${feature} has no active run worktree (gc returns a stopped or stale run's clean worktrees); \`goal.mjs worktree get ${feature}\` cuts it again from its branch`);
     if (wt?.state !== 'active' || !wt.path || !fs.existsSync(wt.path)) throw new Refusal(`ticket ${want} has no active worktree; \`goal.mjs prepare-ticket ${feature} ${want}\` cuts it again from its branch and keeps the contract`);
-    // ponytail: checked once, before the rebase; a command started in the ticket worktree while the suite runs is not seen.
+    // Checked before the rebase; a command started in the ticket worktree during the suite keeps the worktree after the landing.
     const busy = liveWriter(wt.path);
     if (busy) throw new Refusal(`ticket ${want}'s worktree has ${busyWith(busy)}: its worker is still validating, so a receipt is not its last word; land it when that ends`);
     const contract = committedText(control, path.join('runs', feature, 'tickets', `${want}.goal.md`));
@@ -2277,8 +2296,6 @@ export function mergeTicket(repo, feature, id, { check = null } = {}) {
     const touched = git(wt.path, ['diff', '--name-only', '--no-renames', `${base}...HEAD`]).split('\n').filter(Boolean);
     const breach = claimsBreach(text, touched);
     if (breach.unclaimed.length || breach.guarded.length) throw new Refusal(`ticket ${want} touched ${[...breach.unclaimed.map((f) => `${f} (unclaimed)`), ...breach.guarded.map((f) => `${f} (guarded)`)].join(', ')}: an unclaimed edit, so it does not land (BUILD.md step 5.1)${breach.guarded.length ? `; \`guarded\` in a Claims line means off limits: ${grantHint(feature, breach.guarded)}; then \`goal.mjs claim ${feature} ${want} exclusive ${breach.guarded.join(' ')} -- <why>\` and merge again` : ''}`);
-    const bare = ungranted(control, feature, touched);
-    if (bare.length) throw new Refusal(`ticket ${want} touched ${bare.join(', ')}, a guarded-class path (CI, migrations) the run holds no grant for, so it does not land: ${grantHint(feature, bare)}; then merge again`);
     if (git(run.path, ['status', '--porcelain'])) throw new Refusal(`the run worktree ${run.path} has uncommitted changes; commit or discard them before a merge`);
     // In supervisor mode the run worktree is the owner's checkout: on another branch there, the fast-forward would land the ticket on it.
     const on = git(run.path, ['rev-parse', '--abbrev-ref', 'HEAD']);
@@ -2308,6 +2325,8 @@ export function mergeTicket(repo, feature, id, { check = null } = {}) {
     } catch (error) {
       undo(`the suite could not run on the merged run branch: ${error.message}`);
     }
+    const waited = suite.exit !== 0 && fs.readFileSync(suite.log.path, 'utf8').match(/^error: (lock \S+ still held after \d+s)/m)?.[1];
+    if (waited) undo(`the suite never ran: ${waited} (a worker holds the lock \`--check\` waits on); nothing failed, so this is no stuck signal: merge again when the lock is free`);
     if (suite.exit !== 0) undo(`the suite failed on the merged run branch (exit ${suite.exit}, log ${suite.log.path}) (BUILD.md § Stuck detection)`);
     const after = git(run.path, ['rev-parse', 'HEAD']);
     let status;
@@ -2316,8 +2335,14 @@ export function mergeTicket(repo, feature, id, { check = null } = {}) {
     } catch (error) {
       undo(`ticket ${want} could not be marked done: ${error.message}`);
     }
-    const returned = worktreeReturn(repo, feature, want);
-    git(run.path, ['branch', '--quiet', '-d', wt.branch]);
+    // The ticket has landed: a worktree that cannot go back yet (a command started in it during the suite) is reported, never a failed merge.
+    let returned;
+    try {
+      returned = worktreeReturn(repo, feature, want);
+      git(run.path, ['branch', '--quiet', '-d', wt.branch]);
+    } catch (error) {
+      returned = `kept: ${error.message}; then \`goal.mjs worktree return ${feature} ${want}\``;
+    }
     event(repo, feature, 'merge', `t${want} landed ${before.slice(0, 12)}..${after.slice(0, 12)}; suite exit 0 (${suite.log.sha256.slice(0, 12)})`);
     return { ticket: want, landed: `${before}..${after}`, suite: { command, log: suite.log }, status, worktree: returned };
   });
@@ -3531,7 +3556,7 @@ function sleep(ms) {
 
 const TAKES_VALUE = new Set(['--repo', '--state-dir', '--allow', '--base', '--target-branch', '--status-file', '--worker-model']);
 
-const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--mode branch|supervisor|pr] [--worker-model <model>] [--no-helpers] | next <slug> | pin <slug> | grant <slug> <path>... -- <owner words, verbatim> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] [--idle-minutes <n>] | keep-going --agent <id> | worktree get|return <slug> [NN] | worktree status <slug> | gc [--delete-clean [--slots]] [--stale-hours <n>] [--all [--state-root <dir>]] | stop <slug> <reason> | resume <slug> | adopt <slug> --agent <id> --harness <name> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | prepare-ticket <feature> <id> | brief <feature> <id> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | merge <feature> <id> [--check <command>] | verdict <slug> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
+const USAGE = `${'usage: goal.mjs [--repo <path>] [--state-dir <path>] [--allow <path>]... [--base <commit>] [--target-branch <name>] [--status-file <path>] [--no-remote] [--worker-model <model>] root | preflight | control | prepare | supervise | land [slug] | cleanup | check-command [--objective <text>] | compact <slug> | model <slug> <role> <model> | slug <objective> [--new] | init <slug> <objective> --agent <id> --harness <name> [--mode branch|supervisor|pr] [--worker-model <model>] [--no-helpers] | next <slug> | pin <slug> | grant <slug> <path>... -- objective|D<n> | check <slug> | check --all [--state-root <dir>] [--stale-hours <n>] [--idle-minutes <n>] | keep-going --agent <id> | worktree get|return <slug> [NN] | worktree status <slug> | gc [--delete-clean [--slots]] [--stale-hours <n>] [--all [--state-root <dir>]] | stop <slug> <reason> | resume <slug> | adopt <slug> --agent <id> --harness <name> | event <slug> <stage> <text> | tick <slug> <stage> [--skipped <reason>] | registry <slug> dry-run | frontier <feature> | take <feature> <n> | status <feature> <id> <status> [--landed <sha>] [-- <reason>] | claims <ticket.md> <path>... | claim <feature> <id> <kind> <path>... -- <why> | waive <feature> <id> <criterion number> [--carried-to <id>] -- <why> | prepare-ticket <feature> <id> | brief <feature> <id> | contract <NN.goal.md> --worktree <wt> --ticket <ticket.md> | merge <feature> <id> [--check <command>] | verdict <slug> | dispatch <feature> <id> --worktree <wt> -- <orc-dispatch args...> | run -- <command> | receipt <file> --worktree <wt> --base <sha> --ticket <ticket.md> | with-lock <name> -- <cmd...> | commit -m <msg> <file>... | guard-staged'.replace(/ (root \| )/, '\n  root\n  ').split(' | ').join('\n  ')}`;
 
 function main(argv) {
   configure();
@@ -3654,9 +3679,8 @@ function main(argv) {
     console.log(pin(repo, rest[0]));
     return 0;
   }
-  if (command === 'grant' && rest.indexOf('--') >= 2 && rest.indexOf('--') < rest.length - 1) {
-    const cut = rest.indexOf('--');
-    console.log(grant(repo, rest[0], rest.slice(1, cut), rest.slice(cut + 1).join(' ')));
+  if (command === 'grant' && rest.length >= 4 && rest.indexOf('--') === rest.length - 2) {
+    console.log(grant(repo, rest[0], rest.slice(1, -2), rest.at(-1)));
     return 0;
   }
   if (command === 'prepare-ticket' && rest.length === 2) {

@@ -11,7 +11,7 @@ import {
   init, next, tick, pin, take, frontier, prepareTicket, brief, mergeTicket, verdict, setRegistry, checkRun, checkContract,
   checkReceipt, commit, configure, prepare, worktreeGet, runLogged, scriptsPin, ownerDecisions, gc, MAX_BRIEF_BYTES,
   adopt, controlDir, firstStageArgv, gcAll, stateDir, setStatus, amendClaims, discoverCheck, land, preflight,
-  ensureControl, cleanup, worktreeReturn, grant, flightRows,
+  ensureControl, cleanup, worktreeReturn, grant, flightRows, markedLive,
 } from './goal.mjs';
 
 const GOAL = path.join(import.meta.dirname, 'goal.mjs');
@@ -259,10 +259,13 @@ test('merge lands a ticket: receipt and claims checked, suite run on the result,
   }));
   assert.throws(() => mergeTicket(repo, 'x', '01', { check: 'true' }), /receipt is not committed/);
   commit(repo, '[x] 01 receipt', [receiptRel]);
-  assert.throws(() => brief(repo, 'x', '01'), /has a committed receipt that passes: land it with `goal\.mjs merge x 01`/, 'finished work is landed, never dispatched again');
   const before = git(run, 'rev-parse', 'HEAD');
   assert.throws(() => mergeTicket(repo, 'x', '01', { check: 'false' }), /suite failed on the merged run branch .* stays in flight/);
   assert.equal(git(run, 'rev-parse', 'HEAD'), before, 'a red suite resets the run branch');
+  assert.match(fs.readFileSync(brief(repo, 'x', '01').brief, 'utf8'), /a\.txt says bye/, 'a ticket merge sent back is dispatched again, passing receipt or not (BUILD.md § Stuck detection)');
+  // A suite wrapped in a lock a worker holds never ran: that is a wait, not a red suite and no stuck signal.
+  assert.throws(() => mergeTicket(repo, 'x', '01', { check: 'echo "error: lock integration still held after 120s (/l)" >&2; exit 3' }), /the suite never ran: lock integration still held after 120s.*no stuck signal.*merge again/);
+  assert.equal(git(run, 'rev-parse', 'HEAD'), before);
   // A run names its own locks for its suites (`with-lock integration -- make test-integration`): a landing must not queue behind one.
   const locks = path.join(control, 'locks');
   const landed = mergeTicket(repo, 'x', '01', { check: `test -d ${locks}/merge && test ! -e ${locks}/integration` });
@@ -489,7 +492,7 @@ test('TICKET_IDLE: a goal.mjs run or with-lock in the ticket worktree is a worke
   aged(liveOf(wt), later - 45 * 60 * 1000);
 
   const waiting = cli(wt, 'with-lock', 'integration', '--', 'ls', liveOf(wt));
-  assert.match(waiting.stdout, /^\d+$/m, 'a command holding a lock is marked too (the mark is written before the wait)');
+  assert.match(waiting.stdout, /^\d+$/m, 'a command holding a lock is marked too');
 
   // Alive: this test process, marked as a run in the ticket worktree would mark itself.
   write(path.join(liveOf(wt), String(process.pid)), started(process.pid));
@@ -508,6 +511,33 @@ test('TICKET_IDLE: a goal.mjs run or with-lock in the ticket worktree is a worke
   cli(runWt, 'run', '--', 'true');
   aged(liveOf(runWt), later - 60 * 1000);
   aged(liveOf(wt), later - 45 * 60 * 1000);
+  assert.deepEqual(idle(), ['TICKET_IDLE']);
+
+  // `ps` failing to start (fork pressure) says nothing about a process: its mark stays, and still counts.
+  const mark = path.join(liveOf(wt), String(process.pid));
+  write(mark, started(process.pid));
+  aged(liveOf(wt), later - 45 * 60 * 1000);
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-nops-'));
+  fs.symlinkSync(execFileSync('which', ['git'], { encoding: 'utf8' }).trim(), path.join(bin, 'git'));
+  const PATH = process.env.PATH;
+  process.env.PATH = bin;
+  try {
+    assert.deepEqual(idle(), [], 'an unknown process is not a dead one');
+    markedLive(wt, () => {});
+    assert.ok(fs.existsSync(mark), 'and the next command does not clear its mark');
+  } finally {
+    process.env.PATH = PATH;
+    delete process.env.GOAL_LIVE_PIDS;
+  }
+  // A marks folder that cannot be listed is no crash in `check`.
+  fs.rmSync(liveOf(wt), { recursive: true, force: true });
+  write(liveOf(wt), 'not a folder');
+  assert.deepEqual(idle(), ['TICKET_IDLE']);
+  // A ticket worktree that is gone answers nothing: the repo around its path is not the ticket.
+  fs.rmSync(liveOf(wt));
+  fs.rmSync(path.join(wt, '.git'));
+  const around = spawnSync('git', ['-C', wt, 'rev-parse', '--absolute-git-dir'], { encoding: 'utf8' });
+  if (around.status === 0) write(path.join(around.stdout.trim(), 'goal-live', String(process.pid)), started(process.pid));
   assert.deepEqual(idle(), ['TICKET_IDLE']);
 });
 
@@ -543,9 +573,7 @@ test('guarded: a red-at-base criterion naming a path its own ticket lists as gua
   assert.deepEqual(codes(control), ['TICKET_HELD'], 'check and next say so too');
   assert.deepEqual(take(repo, 'x', 5), ['09']);
   seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt, db/migrations/001.sql ; guarded: .github/', `\n${needs}`));
-  assert.match(frontier(control, 'x').held[0].problems[0], /holds no grant for/, 'relabelling the path exclusive is not a grant');
-  grant(repo, 'x', ['db/migrations/'], 'migrations under db/migrations are in scope here');
-  assert.equal(frontier(control, 'x').held, undefined, 'the granted path is an exclusive claim');
+  assert.equal(frontier(control, 'x').held, undefined, 'a path the plan claims exclusive is planned scope: nothing holds it');
   // Criteria that read or protect a guarded path ask for no edit there: only red at base means the ticket must change it.
   const reads = [
     'the handler reads the columns db/migrations/0003_users.sql defines',
@@ -559,7 +587,11 @@ test('guarded: a red-at-base criterion naming a path its own ticket lists as gua
   // A top-level guarded file is a path too, though it has no slash.
   seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt ; guarded: package.json', '\n- [ ] package.json gains a `lint` script (Red at base: no such script)\n'));
   assert.match(frontier(control, 'x').held[0].problems[0], /names package\.json, which its Claims line lists as guarded/);
-  // A ticket already dispatched is past this gate: re-dispatching it (`contract`) must still work.
+  // The path is claimed exclusive as the hold advises: a broader guarded claim beside it holds nothing (merge lands it).
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt, db/migrations/001.sql ; guarded: db/migrations/', `\n${needs}`));
+  assert.equal(frontier(control, 'x').held, undefined);
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt ; guarded: package.json', '\n- [ ] package.json gains a `lint` script (Red at base: no such script)\n'));
+  // Only a ticket not yet dispatched is held: one already in flight is past this gate.
   write(path.join(control, 'tracker/x/issues/02-b.md'), ticketText('in-flight', 'exclusive: b.txt ; guarded: db/migrations/', `\n${needs}`));
   rawCommit(control, '[x] fixture: a ticket dispatched by an older goal.mjs');
   assert.deepEqual(frontier(control, 'x').held.map((h) => h.id), ['01']);
@@ -579,7 +611,7 @@ test('guarded: a red-at-base criterion naming a path its own ticket lists as gua
     review: { cited_fixed: 0, leads: [] }, not_validated: [], blockers: [], external_effects: [], worktree_clean: true,
   }));
   commit(m.repo, '[x] 01 receipt', ['runs/x/tickets/01.receipt.md']);
-  assert.throws(() => mergeTicket(m.repo, 'x', '01', { check: 'true' }), /touched b\.txt \(guarded\): an unclaimed edit.*`guarded` in a Claims line means off limits.*goal\.mjs grant x b\.txt -- .*goal\.mjs claim x 01 exclusive b\.txt/);
+  assert.throws(() => mergeTicket(m.repo, 'x', '01', { check: 'true' }), /touched b\.txt \(guarded\): an unclaimed edit.*`guarded` in a Claims line means off limits.*goal\.mjs grant x b\.txt -- objective`.*goal\.mjs claim x 01 exclusive b\.txt/);
 });
 
 test('a call goal.mjs cannot read prints the usage of that command, not of all forty', () => {
@@ -591,70 +623,73 @@ test('a call goal.mjs cannot read prints the usage of that command, not of all f
   const unknown = spawnSync(process.execPath, [GOAL, 'no-such-command'], { cwd: repo, encoding: 'utf8' });
   assert.match(unknown.stderr, /preflight/, 'an unknown command still gets the whole list');
   assert.notEqual(fs.statSync(GOAL).mode & 0o111, 0, 'goal.mjs runs as a command: `$G check` word-splits in no shell');
+  const lint = (...args) => spawnSync(process.execPath, [path.join(import.meta.dirname, 'receipt-lint.mjs'), ...args], { cwd: repo, encoding: 'utf8' });
+  for (const args of [['--help'], ['no-such-receipt.md']]) {
+    assert.equal(lint(...args).status, 2, `receipt-lint ${args[0]}`);
+    assert.match(lint(...args).stderr, /^usage: receipt-lint\.mjs <receipt file>/m);
+    assert.doesNotMatch(lint(...args).stderr, /ENOENT|at node:/, 'a worker asking for help reads usage, not a stack');
+  }
 });
 
-test('grant: a CI or migrations path is claimed, amended and landed only under the owner\'s recorded words', () => {
-  const said = 'the run may add migrations under db/migrations for the jobs table';
+test('grant: a guarded path joins a ticket after planning only under a grant that cites the objective or an owner decision', () => {
   const { repo, control, read } = setup();
-  init(repo, 'x', `Build the jobs table; ${said}`, WHO);
+  init(repo, 'x', 'Build the jobs table with its migration', WHO);
   seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt, db/migrations/001.sql'));
   seedTicket(repo, control, '02-b.md', ticketText('ready-for-agent', 'exclusive: b.txt'));
   const gate = frontier(control, 'x');
-  assert.deepEqual([gate.frontier, gate.malformed], [['02'], []], 'the ticket is held back; the rest of the tracker stays open');
-  assert.match(gate.held[0].problems[0], /claims db\/migrations\/001\.sql, a guarded-class path \(CI, migrations\) the run holds no grant for.*goal\.mjs grant x db\/migrations\/001\.sql -- /);
-  // Parked until the owner answers, it is an ordinary blocked ticket.
-  setStatus(repo, 'x', '01', 'blocked', { reason: 'owner: may this run add migrations?' });
-  assert.equal(frontier(control, 'x').held, undefined);
-  setStatus(repo, 'x', '01', 'ready-for-agent');
-  assert.equal(frontier(control, 'x').held.length, 1);
-  assert.throws(() => grant(repo, 'x', ['db/migrations/'], 'the owner said anything goes here'), /neither the registered objective nor an owner decision/);
-  assert.throws(() => grant(repo, 'x', ['db/migrations/'], 'Build'), /at least 20 characters/);
-  assert.throws(() => grant(repo, 'x', ['../etc'], said), /repo-relative/);
-  assert.match(grant(repo, 'x', ['db/migrations/'], said), /granted db\/migrations\//);
-  assert.deepEqual(registry(control)[0].grants.map((g) => [g.paths, g.quote]), [[['db/migrations/'], said]]);
-  assert.match(read('runs/x/ledger.md'), /\[grant\] db\/migrations\/: "the run may add migrations/);
-  assert.deepEqual(next(control, 'x').grants.map((g) => g.paths), [['db/migrations/']], 'the hand-back reads every grant from next');
-  assert.equal(frontier(control, 'x').held, undefined);
+  assert.deepEqual([gate.frontier, gate.malformed, gate.held], [['01', '02'], [], undefined], 'a migration the plan claims is planned scope: no hold, the hand-back reports it');
   assert.deepEqual(take(repo, 'x', 2), ['01', '02']);
 
-  // An amendment may add a granted path, and still no other guarded one.
+  // After planning, a guarded path joins a ticket only under a grant, and a grant cites its source: nobody types the owner's words.
+  assert.throws(() => amendClaims(repo, 'x', '02', 'exclusive', ['db/migrations/002.sql'], 'a second table'), /is guarded.*goal\.mjs grant x db\/migrations\/002\.sql -- objective` \(or `-- D<n>`/);
+  assert.throws(() => grant(repo, 'x', ['db/migrations/'], 'the owner said anything goes here'), /cites `objective` or an answered owner decision `D<n>`/);
+  assert.throws(() => grant(repo, 'x', ['db/migrations/'], 'D9'), /D9 is no answered owner decision/);
+  assert.throws(() => grant(repo, 'x', ['../etc'], 'objective'), /repo-relative/);
+  assert.throws(() => grant(repo, 'x', ['.'], 'objective'), /repo-relative/, 'the whole repo is no path to grant');
+  assert.match(grant(repo, 'x', ['db/migrations/'], 'objective'), /granted db\/migrations\/ to x by the objective/);
+  assert.deepEqual(registry(control)[0].grants.map((g) => [g.paths, g.source, g.quote]), [[['db/migrations/'], 'objective', undefined]]);
+  assert.match(read('runs/x/ledger.md'), /\[grant\] db\/migrations\/ by the objective/);
+  assert.deepEqual(next(control, 'x').grants.map((g) => g.paths), [['db/migrations/']], 'the hand-back reads every grant from next');
   assert.match(amendClaims(repo, 'x', '02', 'exclusive', ['db/migrations/002.sql'], 'a second table').claims, /db\/migrations\/002\.sql/);
   assert.throws(() => amendClaims(repo, 'x', '02', 'exclusive', ['.github/workflows/ci.yml'], 'ci'), /is guarded.*goal\.mjs grant x/);
-  // The owner's words may also be a decision in log.md, never the orchestrator's own line.
-  fs.appendFileSync(path.join(control, 'runs/x/log.md'), '- D1 [0] Q: CI? → A: yes, edit .github/workflows for the new job (source: owner)\n- D2 [0] Q: deploy? → A: change deploy/migrations freely (source: default)\n');
+
+  // An owner decision is copied from log.md as it stands there; an open one, or one the owner did not answer, grants nothing.
+  const d1 = '- D1 [0] Q: CI? → A: yes, edit .github/workflows for the new job (source: owner)';
+  fs.appendFileSync(path.join(control, 'runs/x/log.md'), `${d1}\n- D2 [0] Q: deploy? → A: change deploy/migrations freely (source: default)\n- D3 (open) [0] Q: more CI?\n`);
   commit(repo, '[x] decisions', ['runs/x/log.md']);
-  assert.match(grant(repo, 'x', ['.github/'], 'edit .github/workflows for the new job'), /granted \.github\//);
-  assert.throws(() => grant(repo, 'x', ['deploy/migrations/'], 'change deploy/migrations freely'), /neither the registered objective nor an owner decision/);
+  assert.throws(() => grant(repo, 'x', ['deploy/migrations/'], 'D2'), /D2 is no answered owner decision/);
+  assert.throws(() => grant(repo, 'x', ['.github/'], 'D3'), /D3 is no answered owner decision/);
+  assert.match(grant(repo, 'x', ['.github/'], 'D1'), /granted \.github\/ to x by D1/);
+  assert.deepEqual(registry(control)[0].grants[1], { paths: ['.github/'], source: 'D1', quote: d1, at: registry(control)[0].grants[1].at });
+  const cli = spawnSync(process.execPath, [GOAL, 'grant', 'x', 'db/migrations/', '--', 'the', 'owner', 'said', 'so'], { cwd: repo, encoding: 'utf8' });
+  assert.equal(cli.status, 2, 'typed words are a usage error at the command line');
 });
 
-test('merge lands an edit to a migrations path only while the run holds a grant for it', () => {
-  const said = 'migrations under db/migrations are part of this work';
-  const m = dispatched({
-    one: '- [ ] a.txt says bye (Red at base)\n', two: '- [ ] b.txt says B (Red at base)\n', claims: 'exclusive: a.txt, db/migrations/001.sql',
-    objective: `X; ${said}`, before: (repo) => grant(repo, 'x', ['db/migrations/'], said),
-  });
+test('next lists every CI and migration file the run branch changed, with the grant that covers it or none', () => {
+  const m = dispatched({ one: '- [ ] a.txt says bye (Red at base)\n', two: '- [ ] b.txt says B (Red at base)\n', claims: 'exclusive: a.txt, db/, Schema/, alembic/, docs/' });
+  assert.equal(next(m.control, 'x').guarded_changes, undefined, 'nothing landed yet');
   fillIn(m.repo, m.control, '01');
   const wt = worktreeGet(m.repo, 'x', '01');
   const base = git(wt, 'rev-parse', 'HEAD');
   write(path.join(wt, 'a.txt'), 'bye\n');
-  write(path.join(wt, 'db/migrations/001.sql'), 'create table jobs ();\n');
+  const changed = ['Schema/Migrations/Init.cs', 'alembic/versions/a1.py', 'db/migrate/002.rb', 'db/migrations/001.sql', 'docs/migrations.md'];
+  for (const f of changed) write(path.join(wt, f), 'x\n');
   git(wt, 'add', '-A');
   git(wt, 'commit', '-qm', 'Refs 01');
   const { log } = runLogged(wt, 'grep -c bye a.txt');
   write(path.join(m.control, 'runs/x/tickets/01.receipt.md'), JSON.stringify({
-    ticket: '01', conclusion: 'completed', ticket_base: base, head: git(wt, 'rev-parse', 'HEAD'), changed_files: ['a.txt', 'db/migrations/001.sql'],
+    ticket: '01', conclusion: 'completed', ticket_base: base, head: git(wt, 'rev-parse', 'HEAD'), changed_files: ['a.txt', ...changed],
     criteria: [{ criterion: 'a.txt says bye (Red at base)', result: 'pass', evidence: 'grep -c bye a.txt exit 0' }],
     validation: [{ command: 'grep -c bye a.txt', exit: 0, summary: '1', log }],
     review: { cited_fixed: 0, leads: [] }, not_validated: [], blockers: [], external_effects: [], worktree_clean: true,
   }));
   commit(m.repo, '[x] 01 receipt', ['runs/x/tickets/01.receipt.md']);
-  // A ticket dispatched before grants were recorded (or whose claim was relabelled by hand) meets the gate at the landing.
-  const grants = registry(m.control)[0].grants;
-  editRegistry(m.control, (run) => { delete run.grants; });
-  assert.throws(() => mergeTicket(m.repo, 'x', '01', { check: 'true' }), /touched db\/migrations\/001\.sql, a guarded-class path \(CI, migrations\) the run holds no grant for.*goal\.mjs grant x db\/migrations\/001\.sql -- /);
-  assert.throws(() => setStatus(m.repo, 'x', '01', 'done', { landed: git(wt, 'rev-parse', 'HEAD') }), /touched db\/migrations\/001\.sql, a guarded-class path .* holds no grant for/, 'a landing made by hand meets the same gate');
-  editRegistry(m.control, (run) => { run.grants = grants; });
+  // A planned migration lands: the run is not stopped at its own landing, and the owner reads what it changed.
   assert.match(mergeTicket(m.repo, 'x', '01', { check: 'true' }).landed, /\.\./);
+  const listed = () => next(m.control, 'x').guarded_changes.map((c) => `${c.path} ${c.grant}`);
+  assert.deepEqual(listed(), ['Schema/Migrations/Init.cs none', 'alembic/versions/a1.py none', 'db/migrate/002.rb none', 'db/migrations/001.sql none'], 'read from the run branch, so no Claims line hides it; each framework spells the folder its own way');
+  grant(m.repo, 'x', ['db/migrations/'], 'D1');
+  assert.deepEqual(listed().at(-1), 'db/migrations/001.sql D1');
 });
 
 const started = (pid) => spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }).stdout.trim();
@@ -702,17 +737,49 @@ test('a ticket worktree with a live goal.mjs run in it is not returned, landed o
   assert.match(worktreeReturn(repo, 'x', '01'), /returned|removed/);
 });
 
+test('merge reports a landed ticket as landed when a command started in its worktree during the suite keeps the worktree', () => {
+  const { repo, control } = dispatched({ one: '- [ ] a.txt says bye (Red at base)\n', two: '- [ ] b.txt says B (Red at base)\n' });
+  fillIn(repo, control, '01');
+  const wt = worktreeGet(repo, 'x', '01');
+  const base = git(wt, 'rev-parse', 'HEAD');
+  write(path.join(wt, 'a.txt'), 'bye\n');
+  git(wt, 'commit', '-qam', 'Refs 01');
+  const { log } = runLogged(wt, 'grep -c bye a.txt');
+  write(path.join(control, 'runs/x/tickets/01.receipt.md'), JSON.stringify({
+    ticket: '01', conclusion: 'completed', ticket_base: base, head: git(wt, 'rev-parse', 'HEAD'), changed_files: ['a.txt'],
+    criteria: [{ criterion: 'a.txt says bye (Red at base)', result: 'pass', evidence: 'grep -c bye a.txt exit 0' }],
+    validation: [{ command: 'grep -c bye a.txt', exit: 0, summary: '1', log }],
+    review: { cited_fixed: 0, leads: [] }, not_validated: [], blockers: [], external_effects: [], worktree_clean: true,
+  }));
+  commit(repo, '[x] 01 receipt', ['runs/x/tickets/01.receipt.md']);
+  const live = path.join(git(wt, 'rev-parse', '--absolute-git-dir'), 'goal-live');
+  const sleeper = spawn('sleep', ['60'], { stdio: 'ignore' });
+  try {
+    const landed = mergeTicket(repo, 'x', '01', { check: `mkdir -p '${live}' && printf '%s' '${started(sleeper.pid)}' > '${live}/${sleeper.pid}'` });
+    assert.match(landed.landed, /\.\./);
+    assert.match(landed.worktree, /^kept: .*live goal\.mjs run or with-lock in it.*goal\.mjs worktree return x 01/);
+    assert.match(fs.readFileSync(path.join(control, 'tracker/x/issues/01-a.md'), 'utf8'), /^\*\*Status:\*\* done$/m);
+    assert.match(fs.readFileSync(path.join(control, 'runs/x/ledger.md'), 'utf8'), /\[merge\] t01 landed/, 'the landing is on record');
+  } finally {
+    sleeper.kill();
+  }
+});
+
 test('take and status keep in-flight tickets within NOW budgets, and frontier names tickets whose blockers have landed', () => {
   const { repo, control } = setup();
   init(repo, 'x', 'X', WHO);
   for (const [n, f] of [['01', 'a'], ['02', 'b'], ['03', 'c'], ['04', 'd']]) seedTicket(repo, control, `${n}-${f}.md`, ticketText('ready-for-agent', `exclusive: ${f}.txt`));
-  assert.deepEqual(take(repo, 'x', 0), [], 'no budgets line: nothing is clamped, and 0 still takes nothing');
+  assert.deepEqual(take(repo, 'x', 0), [], '0 takes nothing');
   setBudgets(repo, control, 'concurrent 2, agents 40, wall-clock 8h');
   assert.deepEqual(take(repo, 'x', 22), ['01', '02'], 'a count past the free slots takes only what the budget allows (22 was once meant as a ticket id)');
   assert.throws(() => setStatus(repo, 'x', '03', 'in-flight'), /no free slot: 2 of concurrent 2 in flight \(01, 02\)/);
   assert.deepEqual(take(repo, 'x', 1), []);
   setStatus(repo, 'x', '01', 'stuck', { reason: 'too big' });
   assert.deepEqual(take(repo, 'x', 5), ['03']);
+  setBudgets(repo, control, 'max 2 concurrent tickets, agents 40');
+  assert.deepEqual(take(repo, 'x', 5), [], 'the cap is read however the line words it');
+  setBudgets(repo, control, 'concurrent tickets: 3');
+  assert.deepEqual(take(repo, 'x', 5), ['04']);
 
   const edge = (status, blockedBy, claims) => `# t\n\n**Status:** ${status}\n**Blocked by:** ${blockedBy}\n**Claims:** ${claims}\n`;
   write(path.join(control, 'tracker/x/issues/05-e.md'), edge('done', 'None', 'exclusive: e.txt'));
@@ -742,6 +809,10 @@ test('next lists each in-flight ticket with its last sign, and check warns when 
   const spent = checkRun(control, 'x', { now: Date.now() + 9 * 3600 * 1000, staleHours: 24, idleMinutes: 9999 }).problems;
   assert.deepEqual(spent.map((p) => p.code), ['BUDGET_SPENT']);
   assert.match(spent[0].message, /9\.0h since the run started, past its wall-clock budget of 8h/);
+  // The run's own clock is the one not marked per-ticket, and a logged raise replaces the first value.
+  setBudgets(repo, control, 'per-ticket wall-clock 2h, wall-clock 8h -> 12h (source: owner)');
+  assert.deepEqual(codes(control, { now: Date.now() + 9 * 3600 * 1000, staleHours: 24, idleMinutes: 9999 }), []);
+  assert.match(checkRun(control, 'x', { now: Date.now() + 13 * 3600 * 1000, staleHours: 24, idleMinutes: 9999 }).problems[0].message, /budget of 12h/);
 });
 
 test('prepare-ticket copies the tier and seam a ticket states, and writes the ticket number once', () => {

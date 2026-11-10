@@ -129,6 +129,8 @@ export const MAX_VERIFY_ROUNDS = 2;
 export const MODES = ['branch', 'supervisor', 'pr'];
 // An in-flight ticket with no worker sign (branch commit, heartbeat, to-orc status, ticket commit, `run` or `with-lock` in its worktree) for this long is orphaned.
 const TICKET_IDLE_MINUTES = 30;
+// How long one `goal.mjs run` or `with-lock` may vouch for its ticket: longer than any suite here, shorter than a night.
+const LIVE_MARK_HOURS = 2;
 // gc returns the worktrees of a run with no goal.mjs commit for this long, as it does for a finished run's.
 const STALE_GC_HOURS = 72;
 // A generated implementer brief past this size means the docs it is assembled from grew past their budget.
@@ -1054,6 +1056,9 @@ function runWarnings(control, entry, { now, idleMinutes = TICKET_IDLE_MINUTES })
   const diverged = targetDrift(control, entry);
   if (diverged) out.push({ code: diverged.code, message: diverged.message });
   out.push(...ticketProblems(control, entry, now, idleMinutes));
+  try {
+    for (const h of fs.existsSync(path.join(control, 'tracker', entry.slug, 'issues')) ? frontier(control, entry.slug).held ?? [] : []) out.push({ code: 'TICKET_HELD', message: `ticket ${h.id} is held off the frontier: ${h.problems.join('; ')}` });
+  } catch { /* an unreadable tracker is frontier's own report */ }
   const hours = nowField(control, entry.slug, 'budgets').match(/\bwall-clock\s*[:=]?\s*(\d+(?:\.\d+)?)\s*h\b/)?.[1];
   const ran = (now - Date.parse(entry.started)) / 3600000;
   if (hours && ran > Number(hours)) out.push({ code: 'BUDGET_SPENT', message: `${ran.toFixed(1)}h since the run started, past its wall-clock budget of ${hours}h (NOW budgets:): wrap up as references/run-budget.md says, or log a raise with its source; the orchestrator never raises a budget on its own judgment` });
@@ -1184,7 +1189,8 @@ function flight(control, slug, now) {
       ['a goal.mjs run or with-lock in its worktree', liveSign(wt, now)],
     ];
     const [last, at] = signs.reduce((newest, sign) => (sign[1] > newest[1] ? sign : newest));
-    const receipt = (committedText(control, path.join('runs', slug, 'tickets', `${id}.receipt.md`)) ?? '').match(/"conclusion":\s*"([a-z-]+)"/)?.[1] ?? null;
+    const conclusion = receiptJson(committedText(control, path.join('runs', slug, 'tickets', `${id}.receipt.md`)) ?? '')?.conclusion;
+    const receipt = typeof conclusion === 'string' ? conclusion : null;
     return { id, status: t.status, record, branch, last, idle: now / 1000 - at, live: Boolean(liveWriter(wt, { own: true })), receipt };
   });
 }
@@ -1241,19 +1247,34 @@ export function markedLive(cwd, fn) {
  * commands it runs under are not counted (`with-lock x -- goal.mjs worktree return` marks the worktree it stands in).
  */
 function liveWriter(wt, { own = false } = {}) {
-  const dir = wt && fs.existsSync(wt) ? liveDir(wt) : null;
-  if (!dir || !fs.existsSync(dir)) return null;
-  const mine = new Set(own ? [] : [String(process.pid), ...(process.env.GOAL_LIVE_PIDS ?? '').split(',')]);
-  const mark = liveMarks(dir).find((m) => m.alive && !mine.has(path.basename(m.file)));
-  return mark ? path.basename(mark.file) : null;
+  try {
+    const dir = marksOf(wt);
+    if (!dir) return null;
+    const mine = new Set(own ? [] : [String(process.pid), ...(process.env.GOAL_LIVE_PIDS ?? '').split(',')]);
+    const mark = liveMarks(dir).find((m) => m.alive && !mine.has(path.basename(m.file)));
+    return mark ? path.basename(mark.file) : null;
+  } catch {
+    return null; // the worktree went away under the read (a return, gc)
+  }
 }
+/** The marks folder of the worktree rooted at `wt`, or null: a path whose worktree is gone would answer for the repo around it. */
+const marksOf = (wt) => {
+  const dir = wt && fs.existsSync(wt) && !notWorktreeRoot(wt) ? liveDir(wt) : null;
+  return dir && fs.existsSync(dir) ? dir : null;
+};
 const busyWith = (pid) => `a live goal.mjs run or with-lock in it (pid ${pid})`;
 
 /** When a `goal.mjs run` or `with-lock` last showed in the worktree at `wt` (seconds): `now` while one runs, else when the last one started or ended, else 0. Read-only. */
 function liveSign(wt, now) {
-  const dir = wt && fs.existsSync(wt) ? liveDir(wt) : null;
-  if (!dir || !fs.existsSync(dir)) return 0;
-  return liveMarks(dir).some((m) => m.alive) ? now / 1000 : fs.statSync(dir).mtimeMs / 1000;
+  try {
+    const dir = marksOf(wt);
+    if (!dir) return 0;
+    // A live mark counts as now for LIVE_MARK_HOURS from its start: past that the command is hung, and must not hide a dead ticket for ever.
+    const alive = liveMarks(dir).filter((m) => m.alive).map((m) => fs.statSync(m.file).mtimeMs / 1000 + LIVE_MARK_HOURS * 3600);
+    return Math.max(fs.statSync(dir).mtimeMs / 1000, ...alive.map((until) => Math.min(now / 1000, until)));
+  } catch {
+    return 0; // the worktree went away under the read (a return, gc): no sign, never a crash of check or next
+  }
 }
 
 /** Where every repo's control plane lives by default; `--state-root` and TO_AUTO_HOME name others. */
@@ -1398,19 +1419,23 @@ function readTickets(issues) {
 export function frontier(control, feature) {
   const { tickets, duplicates } = readTickets(path.join(control, 'tracker', feature, 'issues'));
   const malformed = [...duplicates];
+  const held = [];
   const holds = grantedPaths(control, feature);
   for (const [id, t] of tickets) {
     for (const b of t.blockers) if (!tickets.has(b)) t.problems.push(`blocked by unknown ticket ${b}`);
     if (t.fromReview && !tickets.has(t.fromReview)) t.problems.push(`from the review of unknown ticket ${t.fromReview}`);
     // Only before dispatch, when the Claims line can still be corrected: a dispatched ticket meets this at `contract` and `merge`.
-    if (['ready-for-agent', 'blocked'].includes(t.status)) {
-      t.problems.push(...guardedCriteria(fs.readFileSync(t.file, 'utf8')));
+    // Held, never malformed: these keep one ticket off the frontier while its Claims line can still be corrected, and the
+    // rest of the tracker stays open (one such ticket once would have stopped every dispatch of a live run).
+    if (t.status === 'ready-for-agent') {
+      const why = guardedCriteria(fs.readFileSync(t.file, 'utf8'));
       const bare = [...t.claims.exclusive, ...t.claims['shared-regenerate']].filter((c) => GRANT_CLASS.test(claimRoot(c)) && !granted(holds, c));
-      if (bare.length) t.problems.push(`claims ${bare.join(', ')}, a guarded-class path (CI, migrations) the run holds no grant for: ${grantHint(feature, bare)}`);
+      if (bare.length) why.push(`claims ${bare.join(', ')}, a guarded-class path (CI, migrations) the run holds no grant for: ${grantHint(feature, bare)}`);
+      if (why.length) held.push({ id, file: t.file, problems: why });
     }
     if (t.problems.length) malformed.push({ id, file: t.file, problems: t.problems });
   }
-  const ready = [...tickets].filter(([, t]) => t.status === 'ready-for-agent' && t.blockers.every((b) => tickets.get(b)?.status === 'done')).map(([id]) => id);
+  const ready = [...tickets].filter(([id, t]) => t.status === 'ready-for-agent' && !held.some((h) => h.id === id) && t.blockers.every((b) => tickets.get(b)?.status === 'done')).map(([id]) => id);
   const open = [...tickets].filter(([, t]) => !['done', 'stuck'].includes(t.status));
   const conflicts = [];
   for (let i = 0; i < open.length; i += 1) {
@@ -1440,7 +1465,7 @@ export function frontier(control, feature) {
   const state = (b) => tickets.get(b)?.status;
   const releasable = [...tickets].filter(([, t]) => t.status === 'blocked' && t.blockers.length && t.blockers.every((b) => state(b) === 'done')).map(([id, t]) => ({ id, reason: t.reason }));
   const unreachable = [...tickets].filter(([, t]) => ['blocked', 'ready-for-agent'].includes(t.status) && t.blockers.some((b) => state(b) === 'stuck')).map(([id, t]) => ({ id, behind: t.blockers.filter((b) => state(b) === 'stuck') }));
-  return { feature, frontier: malformed.length ? [] : ready, malformed, conflicts, ...(releasable.length && { releasable }), ...(unreachable.length && { unreachable }), capability, cross_run: crossRun(control, feature, open) };
+  return { feature, frontier: malformed.length ? [] : ready, malformed, conflicts, ...(held.length && { held }), ...(releasable.length && { releasable }), ...(unreachable.length && { unreachable }), capability, cross_run: crossRun(control, feature, open) };
 }
 
 const FINISHED_RUNS = new Set(['done', 'stopped', 'dry-run']);
@@ -1541,8 +1566,10 @@ export function setStatus(repo, feature, id, status, { reason = '', landed = nul
     }
     let subject = `→ ${status}`;
     if (status === 'in-flight' && from === 'ready-for-agent') {
-      const { frontier: ready, malformed, conflicts } = frontier(control, feature);
+      const { frontier: ready, malformed, conflicts, held = [] } = frontier(control, feature);
       if (malformed.length || conflicts.length) throw new Refusal(`tracker ${feature} fails the claims gate; run \`goal.mjs frontier ${feature}\``);
+      const why = held.find((h) => h.id === want);
+      if (why) throw new Refusal(`ticket ${want} is held off the frontier: ${why.problems.join('; ')}`);
       if (!ready.includes(want)) throw new Refusal(`ticket ${want} is not on the frontier (ready-for-agent with every blocker done); dispatch it with \`goal.mjs take\``);
       const entry = readRegistry(control).find((r) => r.slug === feature);
       const diverged = entry ? targetDrift(control, entry) : null;
@@ -1604,6 +1631,9 @@ function doneGate(repo, control, feature, want, file, ticketText, landed) {
     spawnSync('git', ['-C', repo, 'worktree', 'remove', '--force', wt]);
     fs.rmSync(wt, { recursive: true, force: true });
   }
+  // Here, not only in `merge`: a landing made by hand (`status … done --landed`) passes this gate and no other.
+  const bare = ungranted(control, feature, git(repo, ['diff', '--name-only', '--no-renames', `${base}...${head}`]).split('\n').filter(Boolean));
+  if (bare.length) problems.push(`it touched ${bare.join(', ')}, a guarded-class path (CI, migrations) the run holds no grant for: ${grantHint(feature, bare)}`);
   const contains = spawnSync('git', ['-C', repo, 'merge-base', '--is-ancestor', head, landedSha]).status === 0;
   if (!contains) {
     const landedId = patchId(repo, fromSha ?? `${landedSha}^`, landedSha);
@@ -1635,6 +1665,7 @@ function grantedPaths(control, slug) {
   try { return (readRegistry(control).find((r) => r.slug === slug)?.grants ?? []).flatMap((g) => g.paths); } catch { return []; }
 }
 const granted = (holds, file) => holds.some((g) => claimCovers(g, claimRoot(file)));
+const ungranted = (control, slug, touched) => { const holds = grantedPaths(control, slug); return touched.filter((f) => GRANT_CLASS.test(f) && !granted(holds, f)); };
 const grantHint = (slug, paths) => `if the objective grants it, record the owner's words with \`goal.mjs grant ${slug} ${paths.join(' ')} -- "<verbatim from the objective or an owner decision in log.md>"\`; if it does not, it is a blocker`;
 
 /**
@@ -1824,14 +1855,15 @@ function claimsOverlap(a, b) {
 }
 
 /**
- * Criteria that need a path the ticket's own Claims line lists as guarded. `guarded` is off limits (`merge` lands no edit
- * under it), so such a ticket asks for work that cannot land: a path the objective grants is claimed `exclusive`.
+ * Criteria that are red at the base and name a path the ticket's own Claims line lists as guarded. Red at base means the
+ * ticket must change what the criterion reads, and `guarded` is off limits (`merge` lands no edit under it), so the ticket
+ * asks for work that cannot land. A criterion that only reads or protects the path (not red at base) is left alone.
  */
 export function guardedCriteria(ticketText) {
   const off = parseTicket(ticketText).claims.guarded;
-  const paths = (criterion) => criterion.split(/[\s`'"()]+/).map((word) => word.replace(/^(?:\.\/)+/, '').replace(/[,.;:]+$/, '')).filter((word) => word.includes('/'));
-  // A criterion about absence (`… -- db/migrations/` prints nothing) asks for no edit there; what was absent at the base says nothing.
-  const hits = ticketCriteria(ticketText).filter((c) => !ABSENCE.test(c.replace(/\(Red at base[^)]*\)/i, ''))).flatMap((c) => paths(c).filter((p) => off.some((g) => claimCovers(g, p))).map((p) => `criterion "${c.length > 90 ? `${c.slice(0, 90)}…` : c}" needs ${p}, which its Claims line lists as guarded (off limits: \`merge\` lands no edit there); a path the objective grants is claimed exclusive (PLAN.md stage 6)`));
+  const named = (criterion) => criterion.split(/[\s`'"()]+/).map((word) => word.replace(/^(?:\.\/)+/, '').replace(/[,.;:]+$/, ''))
+    .filter((word) => off.some((g) => (word.includes('/') || word === claimRoot(g)) && claimCovers(g, word)));
+  const hits = ticketCriteria(ticketText).filter((c) => /\(Red at base\b/i.test(c)).flatMap((c) => named(c).map((p) => `criterion "${c.length > 90 ? `${c.slice(0, 90)}…` : c}" is red at base and names ${p}, which its Claims line lists as guarded (off limits: \`merge\` lands no edit there); a path the ticket must change is claimed exclusive (PLAN.md stage 6)`));
   return [...new Set(hits)];
 }
 
@@ -1912,7 +1944,6 @@ export function checkContract({ text, ticketText, worktree }) {
   const claims = ticketText.match(CLAIMS_LINE)?.[1];
   if (!claims) problems.push('the ticket has no **Claims:** line');
   else if (!text.includes(`- Claims: ${claims}`)) problems.push(`the contract's Claims line is not the ticket's verbatim: "${claims}"`);
-  problems.push(...guardedCriteria(ticketText));
   const have = new Set(ticketCriteria(text).map(norm));
   const want = ticketCriteria(ticketText);
   for (const c of want) if (!have.has(norm(c))) problems.push(`criterion missing or not verbatim: "${c}"`);
@@ -2210,7 +2241,7 @@ export function brief(repo, feature, id) {
 }
 
 /**
- * Land one ticket on the run branch (BUILD.md step 5), the whole merger as one `integration` transaction: the committed
+ * Land one ticket on the run branch (BUILD.md step 5), the whole merger as one transaction under the `merge` lock: the committed
  * receipt passes the receipt check against the ticket worktree and its contract's base; the diff stays inside the claims;
  * the ticket branch rebases onto the run head (a conflict stops here, rebase in progress, for § Merge conflicts; a rebase
  * that changed the change needs a fresh receipt); the run branch fast-forwards; the suite (`check`, else `check-command`)
@@ -2245,7 +2276,7 @@ export function mergeTicket(repo, feature, id, { check = null } = {}) {
     const touched = git(wt.path, ['diff', '--name-only', '--no-renames', `${base}...HEAD`]).split('\n').filter(Boolean);
     const breach = claimsBreach(text, touched);
     if (breach.unclaimed.length || breach.guarded.length) throw new Refusal(`ticket ${want} touched ${[...breach.unclaimed.map((f) => `${f} (unclaimed)`), ...breach.guarded.map((f) => `${f} (guarded)`)].join(', ')}: an unclaimed edit, so it does not land (BUILD.md step 5.1)${breach.guarded.length ? `; \`guarded\` in a Claims line means off limits: ${grantHint(feature, breach.guarded)}; then \`goal.mjs claim ${feature} ${want} exclusive ${breach.guarded.join(' ')} -- <why>\` and merge again` : ''}`);
-    const bare = touched.filter((f) => GRANT_CLASS.test(f) && !granted(grantedPaths(control, feature), f));
+    const bare = ungranted(control, feature, touched);
     if (bare.length) throw new Refusal(`ticket ${want} touched ${bare.join(', ')}, a guarded-class path (CI, migrations) the run holds no grant for, so it does not land: ${grantHint(feature, bare)}; then merge again`);
     if (git(run.path, ['status', '--porcelain'])) throw new Refusal(`the run worktree ${run.path} has uncommitted changes; commit or discard them before a merge`);
     // In supervisor mode the run worktree is the owner's checkout: on another branch there, the fast-forward would land the ticket on it.
@@ -2271,7 +2302,8 @@ export function mergeTicket(repo, feature, id, { check = null } = {}) {
     };
     let suite;
     try {
-      suite = runLogged(run.path, command);
+      // Marked in the ticket's worktree: a landing suite longer than the idle limit is work on that ticket.
+      suite = markedLive(wt.path, () => runLogged(run.path, command));
     } catch (error) {
       undo(`the suite could not run on the merged run branch: ${error.message}`);
     }
@@ -2711,7 +2743,7 @@ export function commit(repo, message, files, { owner = null } = {}) {
   return withLock(repo, 'control', () => {
     // A path whose deletion is already staged is in neither the folder nor the index, and `git add` refuses the whole call for it.
     const known = (f, args) => spawnSync('git', ['-C', control, ...args, f], { encoding: 'utf8' }).stdout.trim() !== '';
-    const here = files.filter((f) => fs.existsSync(path.join(control, f)) || known(f, ['ls-files', '--']));
+    const here = files.filter((f) => fs.existsSync(path.join(control, f)) || known(f, ['ls-files', '--cached', '--others', '--exclude-standard', '--']));
     const gone = files.filter((f) => !here.includes(f) && !known(f, ['ls-tree', '-r', '--name-only', 'HEAD', '--']));
     if (gone.length) throw new Refusal(`${gone.join(', ')} is no file in the state folder ${control}, tracked or new; name paths under it`);
     if (here.length) git(control, ['add', '--', ...here]);

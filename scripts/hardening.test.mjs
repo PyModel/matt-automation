@@ -479,7 +479,7 @@ test('TICKET_IDLE: a goal.mjs run or with-lock in the ticket worktree is a worke
   assert.equal(during.status, 0, during.stderr);
   assert.match(during.stdout, /^\d+$/m, 'a run marks its pid in the worktree git dir while the command runs');
   const whole = cli(wt, 'run', '--', 'cd "$(git rev-parse --absolute-git-dir)/goal-live" && ls -a && cat [0-9]*');
-  assert.match(whole.stdout, /\d{2}:\d{2}:\d{2} \d{4}/, 'the mark appears whole, start time inside: a concurrent start that read it empty would clear it as dead');
+  assert.match(whole.stdout, /\d{2}:\d{2}:\d{2} \d{4}/, 'the mark holds its process start time, and no half-written file sits beside it');
   assert.doesNotMatch(whole.stdout, /\.tmp/);
   assert.deepEqual(fs.readdirSync(liveOf(wt)), [], 'and takes the mark away when it ends');
   assert.equal(git(wt, 'status', '--porcelain'), '', 'the mark never dirties the worktree');
@@ -489,12 +489,16 @@ test('TICKET_IDLE: a goal.mjs run or with-lock in the ticket worktree is a worke
   aged(liveOf(wt), later - 45 * 60 * 1000);
 
   const waiting = cli(wt, 'with-lock', 'integration', '--', 'ls', liveOf(wt));
-  assert.match(waiting.stdout, /^\d+$/m, 'a command waiting on or holding a lock is marked too');
+  assert.match(waiting.stdout, /^\d+$/m, 'a command holding a lock is marked too (the mark is written before the wait)');
 
   // Alive: this test process, marked as a run in the ticket worktree would mark itself.
   write(path.join(liveOf(wt), String(process.pid)), started(process.pid));
   aged(liveOf(wt), later - 45 * 60 * 1000);
-  assert.deepEqual(idle(), [], 'a run still going counts as now, however long it has run');
+  assert.deepEqual(idle(), [], 'a run still going counts as now');
+  const hung = (later - 3 * 3600 * 1000) / 1000;
+  fs.utimesSync(path.join(liveOf(wt), String(process.pid)), hung, hung);
+  aged(liveOf(wt), later - 3 * 3600 * 1000);
+  assert.deepEqual(idle(), ['TICKET_IDLE'], 'a command alive for three hours is hung: it hides a dead ticket for two hours, not for ever');
   write(path.join(liveOf(wt), String(process.pid)), 'Thu Jan  1 00:00:00 1970');
   assert.deepEqual(idle(), ['TICKET_IDLE'], 'a killed run whose pid another process took is no worker');
   cli(wt, 'run', '--', 'true');
@@ -526,26 +530,39 @@ test('TICKET_IDLE names the newest sign, and a ticket whose completed receipt is
   assert.doesNotMatch(message(), /kill any recorded pid/, 'a finished worker is not a dead one');
 });
 
-test('guarded: a criterion that needs a path its own ticket lists as guarded is refused before dispatch, and merge says what guarded means', () => {
+test('guarded: a red-at-base criterion naming a path its own ticket lists as guarded holds that ticket back, and merge says what guarded means', () => {
   const needs = '- [ ] `git grep -c CHECK -- db/migrations/001.sql` counts 3 (Red at base: no such file)\n';
   const { repo, control } = setup();
   init(repo, 'x', 'X; migrations under db/migrations are in scope here', WHO);
   seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt ; guarded: db/migrations/', `\n${needs}`));
+  seedTicket(repo, control, '09-z.md', ticketText('ready-for-agent', 'exclusive: z.txt'));
   const gate = frontier(control, 'x');
-  assert.deepEqual(gate.frontier, []);
-  assert.match(gate.malformed[0].problems[0], /needs db\/migrations\/001\.sql, which its Claims line lists as guarded \(off limits.*claimed exclusive/);
-  assert.throws(() => take(repo, 'x', 1), /claims gate/);
+  assert.deepEqual([gate.frontier, gate.malformed], [['09'], []], 'one such ticket never closes the tracker for the rest');
+  assert.match(gate.held[0].problems[0], /is red at base and names db\/migrations\/001\.sql, which its Claims line lists as guarded \(off limits.*claimed exclusive/);
+  assert.throws(() => setStatus(repo, 'x', '01', 'in-flight'), /ticket 01 is held off the frontier: .*lists as guarded/);
+  assert.deepEqual(codes(control), ['TICKET_HELD'], 'check and next say so too');
+  assert.deepEqual(take(repo, 'x', 5), ['09']);
   seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt, db/migrations/001.sql ; guarded: .github/', `\n${needs}`));
-  assert.match(frontier(control, 'x').malformed[0].problems[0], /holds no grant for/, 'relabelling the path exclusive is not a grant');
+  assert.match(frontier(control, 'x').held[0].problems[0], /holds no grant for/, 'relabelling the path exclusive is not a grant');
   grant(repo, 'x', ['db/migrations/'], 'migrations under db/migrations are in scope here');
-  assert.deepEqual(frontier(control, 'x').malformed, [], 'the granted path is an exclusive claim');
-  const untouched = '- [ ] `git diff --name-only main...HEAD -- db/migrations/` prints nothing: no migration is written\n';
-  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt ; guarded: db/migrations/', `\n${untouched}`));
-  assert.deepEqual(frontier(control, 'x').malformed, [], 'a criterion that the guarded path stays untouched needs no edit there');
-  // A ticket already dispatched is past this gate: one such ticket must not close the tracker for the rest of a live run.
+  assert.equal(frontier(control, 'x').held, undefined, 'the granted path is an exclusive claim');
+  // Criteria that read or protect a guarded path ask for no edit there: only red at base means the ticket must change it.
+  const reads = [
+    'the handler reads the columns db/migrations/0003_users.sql defines',
+    'no file under db/migrations/ is modified',
+    'db/migrations/ stays untouched',
+    '`git diff --name-only main...HEAD -- db/migrations/` prints nothing: no migration is written',
+    'CI (.github/workflows/ci.yml) passes',
+  ].map((c) => `- [ ] ${c}\n`).join('');
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt ; guarded: db/migrations/, .github/', `\n${reads}`));
+  assert.equal(frontier(control, 'x').held, undefined);
+  // A top-level guarded file is a path too, though it has no slash.
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt ; guarded: package.json', '\n- [ ] package.json gains a `lint` script (Red at base: no such script)\n'));
+  assert.match(frontier(control, 'x').held[0].problems[0], /names package\.json, which its Claims line lists as guarded/);
+  // A ticket already dispatched is past this gate: re-dispatching it (`contract`) must still work.
   write(path.join(control, 'tracker/x/issues/02-b.md'), ticketText('in-flight', 'exclusive: b.txt ; guarded: db/migrations/', `\n${needs}`));
   rawCommit(control, '[x] fixture: a ticket dispatched by an older goal.mjs');
-  assert.deepEqual(frontier(control, 'x').malformed, []);
+  assert.deepEqual(frontier(control, 'x').held.map((h) => h.id), ['01']);
 
   const m = dispatched({ one: '- [ ] a.txt says bye (Red at base)\n', two: '- [ ] b.txt says B (Red at base)\n', claims: 'exclusive: a.txt ; guarded: b.txt' });
   fillIn(m.repo, m.control, '01');
@@ -583,8 +600,13 @@ test('grant: a CI or migrations path is claimed, amended and landed only under t
   seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt, db/migrations/001.sql'));
   seedTicket(repo, control, '02-b.md', ticketText('ready-for-agent', 'exclusive: b.txt'));
   const gate = frontier(control, 'x');
-  assert.deepEqual(gate.frontier, []);
-  assert.match(gate.malformed[0].problems[0], /claims db\/migrations\/001\.sql, a guarded-class path \(CI, migrations\) the run holds no grant for.*goal\.mjs grant x db\/migrations\/001\.sql -- /);
+  assert.deepEqual([gate.frontier, gate.malformed], [['02'], []], 'the ticket is held back; the rest of the tracker stays open');
+  assert.match(gate.held[0].problems[0], /claims db\/migrations\/001\.sql, a guarded-class path \(CI, migrations\) the run holds no grant for.*goal\.mjs grant x db\/migrations\/001\.sql -- /);
+  // Parked until the owner answers, it is an ordinary blocked ticket.
+  setStatus(repo, 'x', '01', 'blocked', { reason: 'owner: may this run add migrations?' });
+  assert.equal(frontier(control, 'x').held, undefined);
+  setStatus(repo, 'x', '01', 'ready-for-agent');
+  assert.equal(frontier(control, 'x').held.length, 1);
   assert.throws(() => grant(repo, 'x', ['db/migrations/'], 'the owner said anything goes here'), /neither the registered objective nor an owner decision/);
   assert.throws(() => grant(repo, 'x', ['db/migrations/'], 'Build'), /at least 20 characters/);
   assert.throws(() => grant(repo, 'x', ['../etc'], said), /repo-relative/);
@@ -592,7 +614,7 @@ test('grant: a CI or migrations path is claimed, amended and landed only under t
   assert.deepEqual(registry(control)[0].grants.map((g) => [g.paths, g.quote]), [[['db/migrations/'], said]]);
   assert.match(read('runs/x/ledger.md'), /\[grant\] db\/migrations\/: "the run may add migrations/);
   assert.deepEqual(next(control, 'x').grants.map((g) => g.paths), [['db/migrations/']], 'the hand-back reads every grant from next');
-  assert.deepEqual(frontier(control, 'x').malformed, []);
+  assert.equal(frontier(control, 'x').held, undefined);
   assert.deepEqual(take(repo, 'x', 2), ['01', '02']);
 
   // An amendment may add a granted path, and still no other guarded one.
@@ -630,6 +652,7 @@ test('merge lands an edit to a migrations path only while the run holds a grant 
   const grants = registry(m.control)[0].grants;
   editRegistry(m.control, (run) => { delete run.grants; });
   assert.throws(() => mergeTicket(m.repo, 'x', '01', { check: 'true' }), /touched db\/migrations\/001\.sql, a guarded-class path \(CI, migrations\) the run holds no grant for.*goal\.mjs grant x db\/migrations\/001\.sql -- /);
+  assert.throws(() => setStatus(m.repo, 'x', '01', 'done', { landed: git(wt, 'rev-parse', 'HEAD') }), /touched db\/migrations\/001\.sql, a guarded-class path .* holds no grant for/, 'a landing made by hand meets the same gate');
   editRegistry(m.control, (run) => { run.grants = grants; });
   assert.match(mergeTicket(m.repo, 'x', '01', { check: 'true' }).landed, /\.\./);
 });
@@ -652,6 +675,10 @@ test('commit takes a file whose deletion is already staged, and names a path tha
   assert.equal(git(control, 'status', '--porcelain'), '');
   assert.equal(git(control, 'ls-files', 'runs/x/notes'), 'runs/x/notes/b.md');
   assert.throws(() => commit(repo, '[x] typo', ['runs/x/notes/c.md']), /runs\/x\/notes\/c\.md is no file in the state folder/);
+  write(path.join(control, 'runs/x/reviews/d.md'), 'd\n');
+  write(path.join(control, 'runs/x/reviews/e.md'), 'e\n');
+  assert.match(commit(repo, '[x] two new files by a pattern', ['runs/x/reviews/*.md']), /^[0-9a-f]{7,}$/);
+  assert.equal(git(control, 'status', '--porcelain'), '');
 });
 
 test('a ticket worktree with a live goal.mjs run in it is not returned, landed or briefed for a second worker', async () => {

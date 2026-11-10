@@ -871,6 +871,18 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   put(ctx, 'runs/x/findings.md', '# f\n');
   refused(ctx, /log\.md has no decision tagged \[1\]/, '1');
   logAdd(ctx, '- D1 [1] Q: route? → A: feature (source: findings)');
+  // The stage's skill is loaded in this run, by path, on record: what an earlier run of the session read does not count.
+  assert.deepEqual(JSON.parse(goal(ctx, ['next', 'x']).stdout).skills_to_load, ['ask-matt']);
+  refused(ctx, /this run never loaded ask-matt, which stage 1 follows: `node \S+matt\.mjs resolve <name> --slug x`/, '1');
+  const MATT = path.join(path.dirname(GOAL), 'matt.mjs');
+  const loaded = spawnSync(process.execPath, [MATT, 'resolve', 'ask-matt', '--slug', 'x'], { cwd: ctx.repo, encoding: 'utf8', env: { ...process.env, TO_AUTO_HOME: ctx.state } });
+  assert.equal(loaded.status, 0, loaded.stderr);
+  assert.match(loaded.stdout, /ask-matt\/SKILL\.md\n$/);
+  assert.match(fs.readFileSync(path.join(ctx.state, 'runs/x/ledger.md'), 'utf8'), /^- \d\d:\d\d \[skill\] ask-matt @ [0-9a-f]{12}$/m);
+  assert.equal(JSON.parse(goal(ctx, ['next', 'x']).stdout).skills_to_load, undefined);
+  // A compaction empties the session's memory of it: the skill is to load again.
+  assert.equal(goal(ctx, ['event', 'x', 'compact', 'context compacted']).status, 0);
+  assert.deepEqual(JSON.parse(goal(ctx, ['next', 'x']).stdout).skills_to_load, ['ask-matt']);
   ticked(ctx, '1');
   for (const id of ['2', '3', '4', '4b']) ticked(ctx, id, '--skipped', 'ready source');
   assert.match(todoOf(ctx), /^- \[x\] 4b challenge \(skipped: ready source\)$/m);
@@ -920,6 +932,8 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   ticked(ctx, '9');
   refused(ctx, /runs\/x\/retro\.md is missing/, '10');
   put(ctx, 'runs/x/retro.md', '# r\n');
+  refused(ctx, /this run never loaded retro, which stage 10 follows/, '10');
+  assert.equal(goal(ctx, ['event', 'x', 'skill', 'retro @ fixture']).status, 0);
   git(ctx.repo, 'commit', '-q', '--allow-empty', '-m', 'landed after the review');
   refused(ctx, /main is at .* but the final review saw/, '10');
   git(ctx.repo, 'reset', '-q', '--hard', 'HEAD~1');

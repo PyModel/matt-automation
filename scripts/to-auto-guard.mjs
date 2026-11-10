@@ -15,6 +15,8 @@
 //   writes it. PreToolUse in a marked session denies any write that names the sessions folder.
 //   With a run active, `git push` needs a recorded `push:<remote>` grant and a PR or merge-request write a `pr` grant
 //   (`goal.mjs grant <slug> push:<remote> -- "<the owner's words>"`), whatever the run's mode.
+//   SessionStart with source `compact`, in a marked session with an active run: record the compaction in the run's ledger
+//   and print the re-entry packet (CORE.md, the phase file, the stage, the skills to load again). Fails open.
 //   Stop: in a marked session, while a run it registered (runs.json `agent`) is active and has committed since the last
 //   block, block the end of the turn with `goal.mjs keep-going`'s reason. It fails open: any error lets the turn end.
 // Markers live in `$TO_AUTO_SESSIONS`, else ~/.local/state/to-auto-sessions/<session_id>, outside every state dir.
@@ -137,6 +139,16 @@ async function main() {
         const { keepGoing } = await import('./goal.mjs');
         const verdict = keepGoing(path.join(os.homedir(), '.local', 'state', 'to-auto'), id, sessions());
         if (verdict.continue) console.log(JSON.stringify({ decision: 'block', reason: verdict.reason }));
+      } catch {}
+      return;
+    }
+    if (event === 'SessionStart') {
+      // After a compaction the session no longer holds the skills or the stage: say so, from the files. Fails open.
+      try {
+        if (input.source !== 'compact' || !fs.existsSync(path.join(sessions(), id))) return;
+        const { reentry } = await import('./goal.mjs');
+        const packet = reentry(path.join(os.homedir(), '.local', 'state', 'to-auto'), id);
+        if (packet) console.log(packet);
       } catch {}
       return;
     }

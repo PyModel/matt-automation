@@ -104,8 +104,8 @@ Every invocation runs this, first run or fiftieth loop tick, and so does a subag
 
 ## Compaction and context pressure
 
-- Stages 1 to 6b stay in one window when they can: grilling, spec, and tickets build on the same thinking, and to-tickets truncates a large spec after a break (PITFALLS.md). If the window must be compacted, do it only at a stage boundary outside 5–6b, never between to-spec and to-tickets. Stage 7 gets a fresh context per ticket (a subagent). `/clear` never mid-run.
-- Before any compaction (harness-triggered or chosen), rewrite NOW so it is sufficient on its own, then `goal.mjs compact <slug>` (it refuses an empty NOW, appends a `[compact]` event, and commits). The compaction summary is seeded with: "resume from `<state>/runs/<slug>/ledger.md`".
+- Stages 1 to 6b stay in one window when they can: grilling, spec, and tickets build on the same thinking, and to-tickets truncates a large spec after a break (PITFALLS.md). A chosen compaction happens only at a stage boundary outside 5–6b. Stage 7 gets a fresh context per ticket (a subagent). `/clear` never mid-run.
+- Before a chosen one, rewrite NOW so it stands alone, then `goal.mjs compact <slug>` (refuses an empty NOW, appends a `[compact]` event, commits). One the harness triggers gives no warning: on Claude Code the guard's SessionStart hook appends the event and prints the re-entry steps; elsewhere run `compact` on noticing it. A skill read before the last `[compact]` event is not loaded.
 - Subagent briefs never carry state that the ledger holds; they carry the path to it.
 
 ## Subagent contract

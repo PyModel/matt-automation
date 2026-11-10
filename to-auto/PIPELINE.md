@@ -127,4 +127,4 @@ A stage is done exactly when its line holds. Phase files point here. `goal.mjs n
 | pi | `pi-keep-going.ts` extension | no | the goal.mjs refusals and `check --all` |
 | opencode, others | no | no | run it under a loop (below) so every tick re-enters through `next`; `check --all` (`to-auto-watch`) flags a stalled run or an orphaned ticket |
 
-Any recurring runner works: Claude Code's `/loop /to-auto <objective>`, a cron or CI job, or a script that re-invokes the agent. Each tick runs the LEDGER.md re-entry protocol, which starts with `goal.mjs next <slug>`: a deterministic answer from the files, so every tick resumes at the same place whatever model or harness runs it. `done` or `stop` ends the loop.
+Any recurring runner works: Claude Code's `/loop /to-auto <objective>`, a cron or CI job, a script that re-invokes the agent. Each tick runs the LEDGER.md re-entry protocol, so it resumes at the same place whatever model or harness runs it; `done` or `stop` ends the loop.

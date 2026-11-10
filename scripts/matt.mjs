@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The one owner of "where is a skill, and is the Matt skill set wired correctly".
 //
-//   node scripts/matt.mjs resolve <name>   absolute SKILL.md path the automations must load
+//   node scripts/matt.mjs resolve <name> [--slug <slug>]   absolute SKILL.md path the automations must load; --slug records the load in that run
 //   node scripts/matt.mjs link             regenerate matt/<name> symlinks from the vendored checkout
 //   node scripts/matt.mjs pull             fast-forward the vendored checkout, unless a to-auto run is live (the hourly job)
 //   node scripts/matt.mjs check            fast-forward the vendored checkout (as pull), then fail on any wiring drift or missing
@@ -18,7 +18,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { liveRuns, STATE_ROOT } from './goal.mjs';
+import { createHash } from 'node:crypto';
+import { event, liveRuns, STATE_ROOT } from './goal.mjs';
 
 const VENDOR = 'vendor/mattpocock-skills';
 const LINKS = 'matt';
@@ -209,9 +210,16 @@ function vendoredSha(root) {
 
 function main([command, ...args]) {
   const root = path.resolve(path.dirname(fs.realpathSync(fileURLToPath(import.meta.url))), '..');
-  if (command === 'resolve' && args.length === 1) {
+  if (command === 'resolve' && (args.length === 1 || (args.length === 3 && args[1] === '--slug'))) {
     try {
-      console.log(resolve(root, args[0]));
+      const file = resolve(root, args[0]);
+      console.log(file);
+      // --slug records the load in that run's ledger (`[skill] <name> @ <sha>`): goal.mjs next and tick read it, so a skill
+      // followed from memory, or loaded in an earlier run of the session, does not count as loaded.
+      if (args[2]) {
+        const sha = createHash('sha256').update(fs.readFileSync(file)).digest('hex').slice(0, 12);
+        event(process.cwd(), args[2], 'skill', `${args[0]} @ ${sha}`);
+      }
     } catch (error) {
       console.error(`error: ${error.message}`);
       process.exit(1);
@@ -233,7 +241,7 @@ function main([command, ...args]) {
     if (failures.length) process.exit(1);
     console.log('ok');
   } else {
-    console.error('usage: matt.mjs resolve <name> | link | pull | check [--vendored]');
+    console.error('usage: matt.mjs resolve <name> [--slug <slug>] | link | pull | check [--vendored]');
     process.exit(2);
   }
   // Exit 0 = ok, 1 = check found problems or a skill does not resolve, 2 = usage, 3 = runtime error.

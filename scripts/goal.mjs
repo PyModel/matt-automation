@@ -775,6 +775,26 @@ const decided = (control, slug, tags) => new RegExp(`^- D\\d+ \\[(?:${tags.join(
 /** The newest `[<slug>] tick <id>:` commit, or null. */
 const tickCommit = (control, slug, id) => runCommits(control, slug).find((c) => c.subject.startsWith(`[${slug}] tick ${id}: `) && !c.subject.includes('catch-up'))?.sha ?? null;
 
+// The skill each stage follows (SKILL.md § Loading skills). `next` lists the ones to load (again); the tick refuses a
+// stage whose skill this run never loaded. A run followed five of them from memory, 8 hours and three compactions after
+// it last read one.
+// ponytail: 5, 6 and 7 are listed by `next` but not refused by the tick: the ready-source and bug routes tick them without
+// the skill. Refuse them too once the route is a field the scripts can read.
+const STAGE_SKILLS = { 1: ['ask-matt'], 4: ['grill-with-docs', 'grilling', 'domain-modeling'], 5: ['to-spec'], 6: ['to-tickets'], 7: ['implement-spec'], 10: ['retro'] };
+const SKILLS_ENFORCED = new Set(['1', '4', '10']);
+
+/** Skills `matt.mjs resolve <name> --slug <slug>` recorded for the run: name → whether its last load is after the last compaction. */
+function skillLoads(control, slug) {
+  const lines = runText(control, slug, 'ledger.md').split('\n');
+  const compacted = lines.findLastIndex((l) => /^- \d\d:\d\d \[compact\] /.test(l));
+  const loads = new Map();
+  lines.forEach((l, i) => {
+    const name = l.match(/^- \d\d:\d\d \[skill\] (\S+)/)?.[1];
+    if (name) loads.set(name, i > compacted);
+  });
+  return loads;
+}
+
 /** The reconcile gate's notes, `notes/reconcile-<n>.md` in round order: each lists its open items as `- X<n>: …` lines, or none. */
 function reconcileRounds(control, slug) {
   const dir = path.join(control, 'runs', slug, 'notes');
@@ -910,6 +930,8 @@ export function tick(repo, slug, id, { skipped = null } = {}) {
     // A stage the registry already passed stood on its own gates when it moved; ticking it now only repairs todo.md.
     const passed = RUN_ORDER.includes(entry.status) && index < openStage(entry.status);
     const failed = !again && !passed && skipped === null ? STAGE_CHECKS[id]?.check({ repo, control, slug }) ?? [] : [];
+    const never = !again && !passed && skipped === null && SKILLS_ENFORCED.has(id) ? STAGE_SKILLS[id].filter((name) => !skillLoads(control, slug).has(name)) : [];
+    if (never.length) failed.unshift(`this run never loaded ${never.join(', ')}, which stage ${id} follows: \`node ${path.join(ROOT, 'scripts', 'matt.mjs')} resolve <name> --slug ${slug}\`, read the file it prints and follow it. A skill read in an earlier run of this session, or from memory, is not loaded`);
     if (failed.length) throw new Refusal(`stage ${id} is not finished: ${failed.join('; ')}`);
     // dry-run is a terminal label set after 6b; its stages tick without moving it.
     const moves = [];
@@ -1065,6 +1087,7 @@ export function recordModel(repo, slug, role, model) {
 /**
  * Where the run resumes (`resumePoint`), plus the registry's hand-back `mode` and `target` so stage 9 reads config, and
  * `warnings` for what `check` would flag that the orchestrator must act on: SCRIPTS_MOVED, TARGET_DIVERGED, TICKET_IDLE.
+ * `skills_to_load` names the stage's skills this run has not loaded since its last compaction (`matt.mjs resolve <name> --slug`).
  * `grants`, `guarded_changes`, `dismissed_bugs` and `replanned` (tickets whose criteria changed between two dispatches) are for the hand-back (CLOSE.md stage 9).
  */
 export function next(control, slug) {
@@ -1078,7 +1101,9 @@ export function next(control, slug) {
   const issues = path.join(control, 'tracker', slug, 'issues');
   const replanned = fs.existsSync(issues) ? [...readTickets(issues).tickets].flatMap(([id, t]) => fs.readFileSync(t.file, 'utf8').split('\n').filter((l) => l.startsWith('**Re-planned:** ')).map((l) => ({ id, change: l.slice(16) }))) : [];
   const checks = at.stage ? STAGE_CHECKS[at.stage]?.says : null;
-  return { ...at, ...(checks && { tick_checks: checks }), mode: runMode(control, entry), target: entry.target ?? runBranch(control, entry), ...(at.tickets?.['in-flight']?.length && { in_flight: flightRows(control, slug) }), ...(entry.grants?.length && { grants: entry.grants }), ...(changes.length && { guarded_changes: changes }), ...(dismissed.length && { dismissed_bugs: dismissed }), ...(replanned.length && { replanned }), ...(warnings.length && { warnings }) };
+  const loads = skillLoads(control, slug);
+  const toLoad = (STAGE_SKILLS[at.stage] ?? []).filter((name) => !loads.get(name));
+  return { ...at, ...(checks && { tick_checks: checks }), ...(toLoad.length && { skills_to_load: toLoad }), mode: runMode(control, entry), target: entry.target ?? runBranch(control, entry), ...(at.tickets?.['in-flight']?.length && { in_flight: flightRows(control, slug) }), ...(entry.grants?.length && { grants: entry.grants }), ...(changes.length && { guarded_changes: changes }), ...(dismissed.length && { dismissed_bugs: dismissed }), ...(replanned.length && { replanned }), ...(warnings.length && { warnings }) };
 }
 
 const HANDBACK_END = '<!-- end of what goal.mjs wrote; the orchestrator adds its judgment below this line, never above it -->';
@@ -1623,6 +1648,33 @@ export function keepGoing(root, agent, sessions) {
     };
   }
   return stop('no active run for this agent');
+}
+
+/**
+ * After a compaction (the harness's SessionStart hook, source `compact`): record it in the ledger of the run this session
+ * owns, so every skill counts as unloaded again, and return the re-entry packet to print into the session. The rule used
+ * to ask the model to save NOW before an event it cannot foresee and to remember the steps after it.
+ */
+export function reentry(root, agent) {
+  if (!AGENT_ID.test(agent ?? '')) return null;
+  const dirs = fs.existsSync(root) ? fs.readdirSync(root).map((d) => path.join(root, d)) : [];
+  if (process.env.TO_AUTO_HOME) dirs.push(path.resolve(process.env.TO_AUTO_HOME));
+  for (const dir of [...new Set(dirs)].filter(hasMarker).sort()) {
+    let run;
+    try { run = readRegistry(dir).find((r) => r.agent === agent && !['done', 'dry-run', 'stopped'].includes(r.status)); } catch { continue; }
+    if (!run || fs.existsSync(path.join(dir, 'runs', run.slug, 'STOP'))) continue;
+    event(dir, run.slug, 'compact', 'context compacted');
+    const at = next(dir, run.slug);
+    const goal = path.join(ROOT, 'scripts', 'goal.mjs');
+    return [
+      `to-auto run ${run.slug} is ${run.status} and this session's context was just compacted. Before any other action:`,
+      `1. Read ${path.join(ROOT, 'to-auto', 'CORE.md')}${at.phase ? ` and ${path.join(ROOT, 'to-auto', at.phase)}` : ''}.`,
+      `2. \`node ${goal} next ${run.slug}\` (${at.stage ? `stage ${at.stage} ${at.name}` : at.reason}), then the ledger's NOW block in ${path.join(dir, 'runs', run.slug, 'ledger.md')}.`,
+      ...(at.skills_to_load ? [`3. Load again by path, each with \`node ${path.join(ROOT, 'scripts', 'matt.mjs')} resolve <name> --slug ${run.slug}\`: ${at.skills_to_load.join(', ')}. What you remember of a skill is not the skill.`] : []),
+      `Then \`node ${goal} check ${run.slug}\` must exit 0.`,
+    ].join('\n');
+  }
+  return null;
 }
 
 // ------------------------------------------------------------- tickets

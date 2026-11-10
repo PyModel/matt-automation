@@ -255,6 +255,27 @@ test('Stop blocks the end of a turn while the session\'s run is active and movin
   assert.equal(stop(), null, 'removing the mark ends to-auto mode, nudges included');
 });
 
+// A session was compacted mid-run with nothing saved before and nothing re-read after: the rule asked the model to act
+// before an event it cannot foresee.
+test('SessionStart after a compaction records it in the run and prints the re-entry packet; other sessions and sources print nothing', () => {
+  const w = world();
+  const start = (source, session_id = 's1') => {
+    const r = spawnSync(process.execPath, [GUARD], { env: { ...w.env, HOME: path.dirname(w.env.TO_AUTO_HOME) }, input: JSON.stringify({ session_id, cwd: w.repo, hook_event_name: 'SessionStart', source }), encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout;
+  };
+  assert.equal(start('compact'), '', 'an unmarked session is never touched');
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto x' });
+  w.goal('control');
+  w.goal('init', 'x', 'X', '--agent', 's1', '--harness', 'test');
+  assert.equal(start('startup'), '');
+  assert.equal(start('compact', 's2'), '');
+  const packet = start('compact');
+  assert.match(packet, /^to-auto run x is bootstrapping and this session's context was just compacted\. Before any other action:\n1\. Read \S+to-auto\/CORE\.md and \S+to-auto\/BOOTSTRAP\.md\.\n2\. `node \S+goal\.mjs next x` \(stage 00 [^)]+\), then the ledger's NOW block in \S+ledger\.md/);
+  assert.match(packet, /Then `node \S+goal\.mjs check x` must exit 0\.\n$/);
+  assert.match(fs.readFileSync(path.join(w.env.TO_AUTO_HOME, 'runs/x/ledger.md'), 'utf8'), /\[compact\] context compacted/);
+});
+
 test('prose in a commit message, a branch listing and a sibling skill are not the commands they mention', () => {
   const w = world();
   assert.equal(w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto-ticket-lifecycle explain take' }), null, 'another skill does not mark the session');

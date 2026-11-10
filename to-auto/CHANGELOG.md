@@ -2,6 +2,8 @@
 
 Behavior that moved. The phase files are the spec; this list is the delta.
 
+- Live fixes of 2026-11-09 (found by watching a live run; each has a test that failed before it):
+  - TICKET_IDLE counts a `goal.mjs run` or `with-lock` in the ticket's worktree as a worker sign, for as long as it runs and when it ends. A worker that ran a 19-minute integration suite after its last commit, or queued behind another ticket's suite, was reported as orphaned. Each such process marks itself under the worktree's git dir (`goal-live/<pid>`, holding its start time, so a reused pid is not read as alive).
 - Review of 2026-11-09 (five read-only passes over the scripts; each fix has a test that failed before it):
   - Tickets: a `$` in a status reason is text (it spliced the old line or the rest of the ticket in); `status`, `claim` and `waive` put the ticket back when their commit is refused (the edit left behind made every later call refuse it as uncommitted); `exclusive: none` is no path, so two tickets that claim nothing no longer conflict; a bare `migrations` folder is guarded like `migrations/`.
   - `merge`: reads the diff with `--no-renames` (moving an unclaimed file into a claimed folder hid its deletion); refuses a run worktree that is on another branch; finds the suite before the rebase, so "no suite to run" no longer leaves a rebased head the receipt does not name.

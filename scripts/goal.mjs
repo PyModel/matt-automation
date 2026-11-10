@@ -127,7 +127,7 @@ export const MIN_FIX_BUDGET = 2;
 export const MAX_VERIFY_ROUNDS = 2;
 // How a run hands back (CLOSE.md stage 9): its own branch, commits on --target-branch, or a pull request.
 export const MODES = ['branch', 'supervisor', 'pr'];
-// An in-flight ticket with no worker sign (branch commit, heartbeat, to-orc status, ticket commit) for this long is orphaned.
+// An in-flight ticket with no worker sign (branch commit, heartbeat, to-orc status, ticket commit, `run` or `with-lock` in its worktree) for this long is orphaned.
 const TICKET_IDLE_MINUTES = 30;
 // gc returns the worktrees of a run with no goal.mjs commit for this long, as it does for a finished run's.
 const STALE_GC_HOURS = 72;
@@ -1134,9 +1134,9 @@ function newestMtime(dir) {
 
 /**
  * Per in-flight ticket of the local tracker: TICKET_IDLE when nothing shows a worker on it for `idleMinutes` (its branch's
- * commits, its status file, its to-orc run directory, its own control-plane commits), so a ticket a dead orchestrator left
- * in flight is seen without waiting for the run to go STALE; STATUS_COPY when the flight record carries a status line,
- * since the tracker's **Status:** is the one ticket state.
+ * commits, its status file, its to-orc run directory, its own control-plane commits, a `goal.mjs run` or `with-lock` in its
+ * worktree), so a ticket a dead orchestrator left in flight is seen without waiting for the run to go STALE; STATUS_COPY
+ * when the flight record carries a status line, since the tracker's **Status:** is the one ticket state.
  */
 function ticketProblems(control, entry, now, idleMinutes) {
   const issues = path.join(control, 'tracker', entry.slug, 'issues');
@@ -1162,13 +1162,60 @@ function ticketProblems(control, entry, now, idleMinutes) {
       newestMtime(t.file),
       ws && fs.existsSync(ws) ? lastCommitAt(ws, [`refs/heads/${branch}`, '--']) : 0,
       common ? newestMtime(path.join(common, 'to-orc', entry.slug, `t${id}`)) : 0,
+      records[`t${id}`]?.state === 'active' ? liveSign(records[`t${id}`].path, now) : 0,
     ];
     const idle = now / 1000 - Math.max(...signs);
     if (idle > idleMinutes * 60) {
-      out.push({ code: 'TICKET_IDLE', message: `ticket ${id} is in flight but nothing shows a worker on it for ${Math.round(idle / 60)}m (no commit on ${branch}, no heartbeat in tickets/${id}.status.md, no to-orc status, no ticket commit; limit ${idleMinutes}m): if no worker owns it, kill any recorded pid and re-dispatch it (BUILD.md § Stuck detection), or \`goal.mjs status ${entry.slug} ${id} stuck -- <why>\`` });
+      out.push({ code: 'TICKET_IDLE', message: `ticket ${id} is in flight but nothing shows a worker on it for ${Math.round(idle / 60)}m (no commit on ${branch}, no heartbeat in tickets/${id}.status.md, no to-orc status, no ticket commit, no goal.mjs run or with-lock in its worktree; limit ${idleMinutes}m): if no worker owns it, kill any recorded pid and re-dispatch it (BUILD.md § Stuck detection), or \`goal.mjs status ${entry.slug} ${id} stuck -- <why>\`` });
     }
   }
   return out;
+}
+
+/** Where the `goal.mjs run` and `with-lock` processes of `cwd`'s worktree mark themselves: its own git dir, so no worktree gets dirty and nothing is tracked. */
+function liveDir(cwd) {
+  const r = spawnSync('git', ['-C', cwd, 'rev-parse', '--absolute-git-dir'], { encoding: 'utf8' });
+  return r.status === 0 ? path.join(r.stdout.trim(), 'goal-live') : null;
+}
+
+/** A process's start time as `ps` prints it, '' when there is none: with the pid it names one process, even after the pid is reused. */
+const startedAt = (pid) => spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).stdout?.trim() ?? '';
+
+/** The marks in `dir`, each with whether the process that wrote it is still running. */
+function liveMarks(dir) {
+  return fs.readdirSync(dir).filter((name) => /^[1-9]\d*$/.test(name)).map((name) => {
+    let wrote = null;
+    try { wrote = fs.readFileSync(path.join(dir, name), 'utf8'); } catch { /* gone since the listing */ }
+    return { file: path.join(dir, name), alive: Boolean(wrote) && wrote === startedAt(name) };
+  });
+}
+
+/**
+ * Run `fn` with this process marked as at work in `cwd`'s worktree. A validation command can run, or wait on a lock, past
+ * the TICKET_IDLE limit with no commit and no heartbeat, so `check` reads the mark as a worker sign. A mark a killed
+ * process left is cleared by the next one. Failing to mark never fails the command.
+ */
+export function markedLive(cwd, fn) {
+  let mark = null;
+  try {
+    const dir = liveDir(cwd);
+    fs.mkdirSync(dir, { recursive: true });
+    for (const m of liveMarks(dir)) if (!m.alive) fs.rmSync(m.file, { force: true });
+    fs.writeFileSync(path.join(dir, String(process.pid)), startedAt(process.pid));
+    mark = path.join(dir, String(process.pid));
+  } catch { /* no git dir to write under: the command runs unmarked */ }
+  try {
+    return fn();
+  } finally {
+    if (mark) fs.rmSync(mark, { force: true });
+  }
+}
+
+/** When a `goal.mjs run` or `with-lock` last showed in the worktree at `wt` (seconds): `now` while one runs, else when the last one started or ended, else 0. Read-only. */
+function liveSign(wt, now) {
+  const dir = wt && fs.existsSync(wt) ? liveDir(wt) : null;
+  if (!dir || !fs.existsSync(dir)) return 0;
+  return liveMarks(dir).some((m) => m.alive) ? now / 1000 : fs.statSync(dir).mtimeMs / 1000;
 }
 
 /** Where every repo's control plane lives by default; `--state-root` and TO_AUTO_HOME name others. */
@@ -3501,7 +3548,7 @@ function main(argv) {
     // The first word is the shell command as written (`run -- 'npm test && npm run lint'`). Each later word the shell would
     // read as more than one plain word is quoted back, so `run -- sh -c 'a && b'` runs as typed instead of as `sh -c a && b`.
     const words = rest.slice(1);
-    const { exit, output, log } = runLogged(process.cwd(), words.map((w, i) => (i === 0 || /^[\w@%+=:,./-]+$/.test(w) ? w : shq(w))).join(' '));
+    const { exit, output, log } = markedLive(process.cwd(), () => runLogged(process.cwd(), words.map((w, i) => (i === 0 || /^[\w@%+=:,./-]+$/.test(w) ? w : shq(w))).join(' ')));
     // First and last: a harness that truncates long tool output keeps one end of it, and a receipt cannot cite a log without this line.
     console.log(`log: ${JSON.stringify(log)}`);
     process.stdout.write(output);
@@ -3594,12 +3641,13 @@ function main(argv) {
     return result.ok ? 0 : 1;
   }
   if (command === 'with-lock' && rest.length >= 3 && rest[1] === '--') {
-    return withLock(repo, rest[0], () => {
+    // Marked from before the wait: a worker queued behind another ticket's suite is still a worker.
+    return markedLive(process.cwd(), () => withLock(repo, rest[0], () => {
       const env = { ...process.env, GOAL_LOCKS_HELD: [...held].join(',') };
       const run = spawnSync(rest[2], rest.slice(3), { stdio: 'inherit', env });
       if (run.error) throw run.error;
       return run.status ?? 1;
-    });
+    }));
   }
   if (command === 'guard-staged' && rest.length === 0) {
     guardStaged(repo);

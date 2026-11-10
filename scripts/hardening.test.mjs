@@ -452,6 +452,51 @@ test('TARGET_DIVERGED: a supervisor run registered before init recorded its targ
   assert.deepEqual(codes(control), [], 'its run branch is its target');
 });
 
+test('TICKET_IDLE: a goal.mjs run or with-lock in the ticket worktree is a worker sign, while it runs and when it ends', () => {
+  const { repo, control } = setup();
+  init(repo, 'x', 'X', WHO);
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt'));
+  take(repo, 'x', 1);
+  const runWt = worktreeGet(repo, 'x');
+  const wt = worktreeGet(repo, 'x', '01');
+  const later = Date.now() + 45 * 60 * 1000;
+  const idle = () => codes(control, { now: later, staleHours: 24 });
+  const liveOf = (cwd) => path.join(git(cwd, 'rev-parse', '--absolute-git-dir'), 'goal-live');
+  const cli = (cwd, ...args) => spawnSync(process.execPath, [GOAL, ...args], { cwd, encoding: 'utf8' });
+  const aged = (dir, at) => fs.utimesSync(dir, at / 1000, at / 1000);
+  assert.deepEqual(idle(), ['TICKET_IDLE']);
+
+  // The run that tripped the alert on 2026-11-09: 19 minutes of integration tests, no commit, no heartbeat.
+  const during = cli(wt, 'run', '--', 'ls "$(git rev-parse --absolute-git-dir)/goal-live"');
+  assert.equal(during.status, 0, during.stderr);
+  assert.match(during.stdout, /^\d+$/m, 'a run marks its pid in the worktree git dir while the command runs');
+  assert.deepEqual(fs.readdirSync(liveOf(wt)), [], 'and takes the mark away when it ends');
+  assert.equal(git(wt, 'status', '--porcelain'), '', 'the mark never dirties the worktree');
+  assert.deepEqual(idle(), ['TICKET_IDLE'], 'a run that ended 45 minutes ago is no worker');
+  aged(liveOf(wt), later - 60 * 1000);
+  assert.deepEqual(idle(), [], 'a run that ended a minute ago is a worker');
+  aged(liveOf(wt), later - 45 * 60 * 1000);
+
+  const waiting = cli(wt, 'with-lock', 'integration', '--', 'ls', liveOf(wt));
+  assert.match(waiting.stdout, /^\d+$/m, 'a command waiting on or holding a lock is marked too');
+
+  // Alive: this test process, marked as a run in the ticket worktree would mark itself.
+  const started = (pid) => spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).stdout.trim();
+  write(path.join(liveOf(wt), String(process.pid)), started(process.pid));
+  aged(liveOf(wt), later - 45 * 60 * 1000);
+  assert.deepEqual(idle(), [], 'a run still going counts as now, however long it has run');
+  write(path.join(liveOf(wt), String(process.pid)), 'Thu Jan  1 00:00:00 1970');
+  assert.deepEqual(idle(), ['TICKET_IDLE'], 'a killed run whose pid another process took is no worker');
+  cli(wt, 'run', '--', 'true');
+  assert.deepEqual(fs.readdirSync(liveOf(wt)), [], 'the next run clears a dead mark');
+
+  // Attribution: activity in another worktree (the run worktree shares the ticket base) says nothing about this ticket.
+  cli(runWt, 'run', '--', 'true');
+  aged(liveOf(runWt), later - 60 * 1000);
+  aged(liveOf(wt), later - 45 * 60 * 1000);
+  assert.deepEqual(idle(), ['TICKET_IDLE']);
+});
+
 test('a worktree of the clone prepare made resolves to that state, and its to-orc runs count as a ticket worker', () => {
   const { repo, control } = setup();
   const clone = path.join(control, 'clone');

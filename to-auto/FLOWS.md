@@ -2,7 +2,7 @@
 
 `ask-matt` is the map. Stage 00 reads it (`node ROOT/scripts/matt.mjs resolve ask-matt`) at the vendored commit, and stage 1 takes the route it names for the objective. This file does not restate that map. It says what an autonomous run does at each point where ask-matt expects a human, and it adds the one situation ask-matt does not route: a refactor of a named area.
 
-If the vendored ask-matt contradicts this file, follow ask-matt. Record the contradiction in `bugs.md` and the retro proposes the fix to this file. Per-skill stages and substitutes are in [INTEGRATION.md](INTEGRATION.md).
+On a routing conflict, follow ask-matt and log it in `bugs.md`. CORE.md still governs execution; autonomy substitutions are in [INTEGRATION.md](INTEGRATION.md).
 
 ## Admission (before stage 0)
 
@@ -27,8 +27,8 @@ Test the rows in order; the first match sets the on-ramp. Every route then merge
 Main-flow branch points, answered the same way every run:
 
 - **"Can you settle every question in conversation?"** A question that needs runnable code gets no prototype. It is settled by a red test at the seam (`tdd`) or a `research` call, else the logged default.
-- **"Is this a multi-session build?"** Always yes: the run is autonomous and multi-context by construction (one fresh context per ticket), so the spec and tickets are always kept. That is the condition under which `to-spec` earns its step.
-- **Knowledge only a specific person has** → `to-questionnaire`; the questionnaire is a blocker in the report; continue with defaults.
+- **"Is this a multi-session build?"** Keep the spec and tickets even in solo mode so the run can resume.
+- **Knowledge only a specific person has** → draft a `to-questionnaire`; block affected work and use defaults only where the decision is routine and reversible.
 - **A step only a human can perform** → `wizard` where it bites (stage 7); its script is a blocker in the report.
 - **An objective that asks only for a plan** (investigate, plan, design, spec it) → run through 6b, then `goal.mjs stop <slug> "plan-only: build awaits the user's go"` and send the final report with the spec and ticket paths. On the user's go: `goal.mjs resume <slug>`, then invoke again; `next` resumes at stage 7.
 
@@ -58,7 +58,7 @@ Every external lookup, in every stage and subagent, goes through `research-stack
 
 ## On-ramp completion criteria (stage 2)
 
-- **triage**: the issue carries one of the five labels; if `ready-for-agent`, it has acceptance criteria.
+- **triage**: record one of the five labels and acceptance criteria if ready. Apply the label to the issue only with tracker-write permission; otherwise record the disposition locally.
 - **diagnosing-bugs**: one command goes red on the bug before any theory; a regression test is red then green; post-mortem written.
 - **wayfinder**: every decision ticket on the map is resolved with a logged answer; research tickets burned down via `research`; map issue identified for `to-spec`.
 - **improve-codebase-architecture**: candidate list produced; one chosen and logged as the idea.

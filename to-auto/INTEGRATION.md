@@ -17,8 +17,8 @@ One row per skill, grouped the way `ask-matt` groups them. **Touchpoint** is whe
 | code-review | 7 (per ticket), 8 (final) | "If they didn't specify a fixed point, ask"; "ask the user where the spec is" | Fixed point always passed (`<ticket-base>` or `review_base`); spec path always passed. Brief guards per PITFALLS.md (code-review rows). |
 | handoff | phase boundary only | Writes a portable doc | Only when the run must move harness or directory (e.g. a ticket needs a tool this harness lacks). Otherwise subagents carry context pointers. |
 | prototype | skipped | Produces an artifact for a human to react to; HITL by definition | A question that "needs runnable code" is answered by a red test at the seam (tdd) or a research call; if neither settles it, log the default and continue. |
-| implement-spec | 7 | "The goal is … a single integration branch"; nothing else human | Run as written; bindings in BUILD.md add seams, tiers, tracker closing, and the worktree layout from PIPELINE.md, and replace the implementer's merge of the integration tip with the merger's rebase. Draft PR (after the first merge) only on a GitHub tracker with push authorized. |
-| pr | 9 (GitHub tracker with push explicitly authorized only) | None; a PR-body template | The draft PR body from implement-spec step 3 and the ready-for-review body in stage 9 follow its template. Never used on the local tracker. |
+| implement-spec | 7 | "The goal is … a single integration branch"; nothing else human | BUILD.md adds seams, tiers, tracker closing and worktree isolation. The merger rebases; the implementer does not merge in the run branch. Draft PR only per BUILD.md step 3. |
+| pr | 9 (`pr` mode with push and PR authorized) | None; a PR-body template | Use for the draft and ready-for-review bodies. |
 | retro | 10 | "Present these candidates to the user" | Written to `<state>/runs/<slug>/retro.md`; nothing applied. |
 
 ## On-ramps (ask-matt § On-ramps)
@@ -43,12 +43,12 @@ One row per skill, grouped the way `ask-matt` groups them. **Touchpoint** is whe
 |---|---|---|---|
 | grilling | 4; 3 | Rounds wait for the user's answers; "do not act until the user confirms" | Rounds run in full, answered per KUN.md § Grilling rounds (the skill's recommended answer goes to kun as input); facts are found by sub-agents as the skill says. |
 | research | 3 (conditional, per open Q); 2 (wayfinder research tickets); 4, 7, 8 on demand | None (AFK) | Fires only per FLOWS.md § Research need; briefed per PITFALLS.md (research rows); findings kept in `runs/<slug>/findings.md`. |
-| to-questionnaire | 4 (a question only a named person can answer) | Two interview exchanges about the send | Answer the two exchanges from the decision log (recipient = repo owner unless the objective names someone); write `to-questionnaire-<slug>.md` in `<state>/runs/<slug>/`; continue with the default and list the file as a blocker. |
+| to-questionnaire | 4 (a question only a named person can answer) | Two interview exchanges about the send | Draft `to-questionnaire-<slug>.md` in the run directory; continue unaffected work per FLOWS.md. |
 | wizard | 7 (human-only step), 2 (wayfinder task ticket) | "Show the user the ordered list of stages and confirm" | Skip confirmation; author from repo evidence only, never invent UI steps; `bash -n` + shellcheck; script path is a named blocker in the report. |
 | writing-for-agents | 4 and 7 when the deliverable is a skill, `AGENTS.md`/`CLAUDE.md`, or agent-facing doc | None (reference) | Loaded as the standards source for those files; `code-review`'s Standards axis cites it. |
 | grill-me | not used | Stateless interview | Superseded by grill-with-docs; a run always has a working directory (the run worktree). |
 | teach | not used | Multi-session learning workspace | Off every flow. |
-| vector | not used | Everyday non-code delegation | Standalone; outside software delivery. |
+| vector | 1 (intake) | Designs a workflow with the person; a card by itself is not an execution request | [VECTOR intake](references/vector-intake.md) maps the objective or supplied card to existing run evidence without interviewing the user. |
 | wait-what | not used | Re-explains to a human | Nothing to re-explain autonomously. The final report uses `GLOSSARY.md` vocabulary instead. |
 
 ## Precondition (ask-matt § Precondition)
@@ -74,7 +74,7 @@ One row per skill, grouped the way `ask-matt` groups them. **Touchpoint** is whe
 
 | Skill | Stage in /to-auto | Touchpoint(s) | Autonomous substitute |
 |---|---|---|---|
-| kun | every question (KUN.md) | It is the user's voice | Cached per KUN.md § Cache once; never asked twice. |
+| kun | routine decisions (KUN.md) | Advises in a persona | Cached per KUN.md § Cache once; terminal authority stays with the actual owner. |
 | research-stack | 3 (first external need) and inside every subagent that looks outside the repo | None | Loaded per FLOWS.md § Research need; bounds and refunds applied per call. |
 | defensive-design | 4 (Design), 7 (Implement), 8 (Review) | Mode must be stated; "do not edit unless authorized" in Review | Mode passed explicitly per call; Implement authority comes from the ticket; evidence state recorded per control. Tier 3 findings that need authority the run lacks are blockers. |
 | zero-tech-debt | 2 (refactor on-ramp), 6 (prefactoring tickets) | "once a deletion is approved"; "stop and recommend a targeted change" for hotfix shapes | Self-approve after the pre-flight passes, log each deletion; hotfix shapes are re-routed to diagnosing-bugs. |

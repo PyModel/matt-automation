@@ -62,7 +62,7 @@ Already have a workflow card? Give one prompt, for example:
 /to-auto Implement the report export described in docs/report-workflow.md. Use it as a VECTOR card. Hand back a verified local branch.
 ```
 
-`/vector` on its own designs a workflow; it does not start a run. When you ask `/to-auto` to execute, the [VECTOR intake](to-auto/references/vector-intake.md) turns the brief into checks, evidence, and limits. The operator makes routine decisions; neither the card nor the persona can grant permission to publish, deploy, or spend. Add `--no-helpers` for solo execution. An inline review is not independent. Resume an interrupted run with `/to-auto --resume <slug>`.
+The standalone `/vector` skill is optional: it designs a card but does not start a run. When you ask `/to-auto` to execute, its built-in [VECTOR intake](to-auto/references/vector-intake.md) turns the brief into checks, evidence, and limits. The operator makes routine decisions; neither the card nor the persona can grant permission to publish, deploy, or spend. Add `--no-helpers` for solo execution. An inline review is not independent. Resume an interrupted run with `/to-auto --resume <slug>`.
 
 A run also needs four installed skills: `kun`, `research-stack`, `defensive-design`, `zero-tech-debt`. They are found in `$AGENT_SKILL_HOMES` (path-separated), else `~/.claude/skills` and `~/.agents/skills`; `check` names any that are missing. The agent harness executes `/to-auto`; the scripts own run state and checks. For unattended re-entry after a turn ends, use a [keep-going hook or a recurring runner](to-auto/PIPELINE.md#under-a-loop).
 

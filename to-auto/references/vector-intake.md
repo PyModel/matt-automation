@@ -1,8 +1,10 @@
 # VECTOR intake for the automation operator
 
-`/vector` designs; `/to-auto` executes only on request. When given a VECTOR
-card or asked to use VECTOR, read the skill (`node ROOT/scripts/matt.mjs resolve vector`).
-Use its six steps without the interview:
+`/vector` designs; `/to-auto` executes only on request. Apply this built-in
+intake to the objective or supplied card. If the user explicitly names VECTOR
+and `node ROOT/scripts/matt.mjs resolve vector` finds the optional standalone
+skill, read it for context. If not installed, continue with the six steps
+below. Neither path runs an interview:
 
 | Step | What the operator does |
 |---|---|

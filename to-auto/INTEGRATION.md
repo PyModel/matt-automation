@@ -39,6 +39,8 @@ One row per skill, grouped the way `ask-matt` groups them. **Touchpoint** is whe
 
 ## Standalone (ask-matt § Standalone)
 
+The built-in [VECTOR intake](references/vector-intake.md) accepts workflow cards without requiring the standalone `vector` skill.
+
 | Skill | Stage in /to-auto | Touchpoint(s) the skill has | Autonomous substitute |
 |---|---|---|---|
 | grilling | 4; 3 | Rounds wait for the user's answers; "do not act until the user confirms" | Rounds run in full, answered per KUN.md § Grilling rounds (the skill's recommended answer goes to kun as input); facts are found by sub-agents as the skill says. |
@@ -48,7 +50,6 @@ One row per skill, grouped the way `ask-matt` groups them. **Touchpoint** is whe
 | writing-for-agents | 4 and 7 when the deliverable is a skill, `AGENTS.md`/`CLAUDE.md`, or agent-facing doc | None (reference) | Loaded as the standards source for those files; `code-review`'s Standards axis cites it. |
 | grill-me | not used | Stateless interview | Superseded by grill-with-docs; a run always has a working directory (the run worktree). |
 | teach | not used | Multi-session learning workspace | Off every flow. |
-| vector | 1 (intake) | Designs a workflow with the person; a card by itself is not an execution request | [VECTOR intake](references/vector-intake.md) maps the objective or supplied card to existing run evidence without interviewing the user. |
 | wait-what | not used | Re-explains to a human | Nothing to re-explain autonomously. The final report uses `GLOSSARY.md` vocabulary instead. |
 
 ## Precondition (ask-matt § Precondition)

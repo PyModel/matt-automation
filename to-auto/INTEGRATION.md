@@ -2,7 +2,7 @@
 
 One row per skill, grouped the way `ask-matt` groups them. **Touchpoint** is where the skill expects a human; **Autonomous substitute** is what `/to-auto` does instead. Every skill is loaded the same way: `node ROOT/scripts/matt.mjs resolve <name>`, then read the file (SKILL.md § Loading skills).
 
-This table is checked: `node ROOT/scripts/matt.mjs check` fails when a vendored Matt skill has no row here, when a row names a skill that resolves nowhere, or when `ask-matt` routes to a skill that is not linked. Bumping the submodule pin is therefore a forced review of this file.
+`node ROOT/scripts/matt.mjs check` checks vendored skill coverage and ask-matt links. Review this table when upstream adds or moves a skill.
 
 ## Main flow (ask-matt § The main flow)
 
@@ -48,6 +48,7 @@ This table is checked: `node ROOT/scripts/matt.mjs check` fails when a vendored 
 | writing-for-agents | 4 and 7 when the deliverable is a skill, `AGENTS.md`/`CLAUDE.md`, or agent-facing doc | None (reference) | Loaded as the standards source for those files; `code-review`'s Standards axis cites it. |
 | grill-me | not used | Stateless interview | Superseded by grill-with-docs; a run always has a working directory (the run worktree). |
 | teach | not used | Multi-session learning workspace | Off every flow. |
+| vector | not used | Everyday non-code delegation | Standalone; outside software delivery. |
 | wait-what | not used | Re-explains to a human | Nothing to re-explain autonomously. The final report uses `GLOSSARY.md` vocabulary instead. |
 
 ## Precondition (ask-matt § Precondition)

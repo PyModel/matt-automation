@@ -858,8 +858,11 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   refused(ctx, /runs\/x\/findings\.md is missing/, '1');
   put(ctx, 'runs/x/findings.md', '# f\n');
   ticked(ctx, '1');
-  for (const id of ['2', '3', '4', '4b']) ticked(ctx, id, '--skipped', 'ready source');
-  assert.match(todoOf(ctx), /^- \[x\] 4b challenge \(skipped: ready source\)$/m);
+  ticked(ctx, '2', '--skipped', 'plain feature');
+  ticked(ctx, '3', '--skipped', 'no external unknown');
+  ticked(ctx, '4');
+  ticked(ctx, '4b', '--skipped', 'single-ticket-feature');
+  assert.match(todoOf(ctx), /^- \[x\] 4b challenge \(skipped: single-ticket-feature\)$/m);
   refused(ctx, /runs\/x\/spec\.md is missing/, '5');
   put(ctx, 'runs/x/spec.md', '# s\n');
   assert.equal(ticked(ctx, '5').registry, 'planning');

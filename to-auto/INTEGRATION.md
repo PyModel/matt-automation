@@ -9,9 +9,9 @@ This table is checked: `node ROOT/scripts/matt.mjs check` fails when a vendored 
 | Skill | Stage in /to-auto | Touchpoint(s) the skill has | Autonomous substitute |
 |---|---|---|---|
 | ask-matt | 1 | Recommends and stops; user types the next skill | The router. Stage 00 reads it; stage 1 takes the route it names (FLOWS.md § Routing tree). Any load-bearing claim about a skill is checked against that skill's file. |
-| grill-with-docs | 4 | Delegates to grilling + domain-modeling | Both loaded; `/to-auto` answers the rounds (see grilling). Verify `GLOSSARY.md` changed on disk. |
+| grill-with-docs | 4 | Delegates to grilling + domain-modeling | Both loaded; `/to-auto` answers the rounds (see grilling). Verify `GLOSSARY.md` changed on disk. For the single-ticket exception see PLAN.md. |
 | to-spec | 5 | "Check with the user that these seams match" | Seams were fixed in stage 4; carried into Testing Decisions; logged `(source: findings)`. Publish to the local tracker, `ready-for-agent`. |
-| to-tickets | 6 | "Quiz the user … iterate until the user approves" | Self-quiz (granularity, edges, merge/split) answered per KUN.md; PLAN.md stage 6 and the 6b gate. |
+| to-tickets | 6 | "Quiz the user … iterate until the user approves" | Self-quiz (granularity, edges, merge/split) answered per KUN.md, except for the single-ticket feature path. The 6b gate still runs. |
 | implement | 7 | None by design; but never closes the ticket | The implementer brief inside implement-spec (BUILD.md): a compiled contract in, a receipt out (CONTRACT.md); the merger checks the receipt against git with `goal.mjs receipt`, then merges; the orchestrator closes the ticket and ticks boxes. |
 | tdd | 7 (every slice, in the ticket subagent) | "Confirm seams with the user" | Seams agreed in PLAN.md stage 4 and passed in the brief; BUILD.md implementer brief, rule 2. |
 | code-review | 7 (per ticket), 8 (final) | "If they didn't specify a fixed point, ask"; "ask the user where the spec is" | Fixed point always passed (`<ticket-base>` or `review_base`); spec path always passed. Brief guards per PITFALLS.md (code-review rows). |

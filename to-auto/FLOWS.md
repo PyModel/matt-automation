@@ -22,7 +22,7 @@ Test the rows in order; the first match sets the on-ramp. Every route then merge
 | 5 | Upkeep with no target named | Codebase health: `/improve-codebase-architecture` | `upkeep` | Report written to the temp dir, not opened; its Top recommendation is the idea for the main flow. |
 | 6 | The objective creates a new project, package, service, or skill | On-ramps: `/wayfinder` (a greenfield project) | `greenfield` | The `to-new` overrides (`ROOT/to-new/SKILL.md`): repo initialized at stage 0, research up-front, then the wayfinder map; the scaffold is ticket 01. |
 | 7 | Too foggy or large for one session | On-ramps: `/wayfinder` | `fog` | Decision tickets self-answered; merge at stage 5 with `to-spec <map>`. Never loop the map straight into implement. |
-| 8 | Otherwise | The main flow | `feature` | grill-with-docs → to-spec → to-tickets → implement-spec (implement per ticket) → code-review. |
+| 8 | Otherwise | The main flow | `feature` | PLAN.md § Single-ticket feature if eligible; otherwise grill-with-docs → to-spec → to-tickets → implement-spec (implement per ticket) → code-review. |
 
 Main-flow branch points, answered the same way every run:
 

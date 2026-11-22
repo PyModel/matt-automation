@@ -2,6 +2,8 @@
 
 Context window: LEDGER.md § Compaction and context pressure. Each stage is done per PIPELINE.md § Completion criteria per stage. Finish each stage with `goal.mjs tick <slug> <id>`: ticking 5b moves the registry to `specced` (refused without `spec.md`), ticking 6b to `ticketed` and `building` (refused without tickets).
 
+For `feature`, check § Single-ticket feature before stage 4.
+
 1. **Route.** Explore the repo first, no external lookup: `GLOSSARY.md`, `docs/adr/`, `docs/agents/*.md`, seams, test conventions, the failing command if one is named, and the tracker and `tracker/` for overlapping work. Walk FLOWS.md § Routing tree over the ask-matt map read at stage 00 and classify the objective. Output the route, an adopted-patterns list (each line naming its skill; open a skill's file before adopting any load-bearing claim about it), and the research need per FLOWS.md § Research need. Write `findings.md`: repo-sourced facts, numbered requirements R1…, and open external questions Q1… (one API, one behaviour, one version claim each). A `greenfield` classification switches to the `to-new` overrides (`ROOT/to-new/SKILL.md`); a `bug` classification arms § Bug fast path below; a `ready` classification takes § Ready source below.
 2. **On-ramp (conditional).** Run what stage 1 chose, self-answered per KUN.md: `triage` (raw issues), `diagnosing-bugs` (something broken; runs in the run worktree; the loop goes red before any theory), `wayfinder` (fog; merges at stage 5 as `to-spec <map path>`; the local tracker template carries its "Wayfinding operations" section, verified; it spawns `research` per research ticket itself), `improve-codebase-architecture` (upkeep, no target), `zero-tech-debt` (refactor of a named area; its pre-flight and end-state paragraph seed the grilling). Skip for a plain feature. An external unknown an on-ramp meets becomes a Q<n> in `findings.md` and raises research per FLOWS.md § Research need.
 3. **Research (conditional).** When the research need is `none` and `findings.md` has no open Q, log `research: skipped (no external unknown)` and continue. Otherwise load `research-stack` and call `research` once per open Q, briefed per PITFALLS.md (research rows). Append sourced facts to `findings.md`, close each Q, promote settled facts to R<n>. Any later stage or subagent that hits an external unknown does the same on demand, with one line in `log.md`.
@@ -23,6 +25,17 @@ Stages exist to produce an agent-ready source; when the objective already names 
 - Any readiness box that fails turns this path off: log which one, and the run continues at stage 2 with the source as its first finding.
 
 The bug fast path below is the same move for a finished diagnosis.
+
+## Single-ticket feature (route `feature`)
+
+Require one specified observable behaviour (including relevant edges), an existing public test seam, available fixtures, and one Tier 0/1 claim set. Any open product or external question, new boundary, dependency, migration, or guarded path means full planning instead.
+
+- **4:** Replace the interview with the usual defensive-design check. In `log.md`, record `single-ticket feature`, the requirement, seam, tier, and claims.
+- **4b:** Read that decision; tick with `--skipped single-ticket-feature`.
+- **5/5b:** Use the normal spec template, briefly; reconcile as usual.
+- **6:** Write only ticket `01`, with no blockers. Skip the slicing quiz.
+
+Other rules and gates are unchanged. If later evidence rules this path out, use `goal.mjs stop <slug> <reason>`.
 
 ## Bug fast path (route `bug`)
 

@@ -64,7 +64,7 @@ A run also needs four installed skills: `kun`, `research-stack`, `defensive-desi
 1. **Route.** Stage `00` runs the wiring check and reads `ask-matt`; `to-auto/FLOWS.md` adds only the autonomy rules on top of its map.
 2. **Resume anywhere.** Every invocation, first run or fiftieth loop tick, asks `goal.mjs next <slug>` where it stands. A ticked stage whose artifact is missing is not trusted.
 3. **Build in parallel.** Tickets carry file claims and a capability tier; `goal.mjs take` hands out the frontier under a lock, and each ticket runs in its own worktree, on a subagent or a pi worker.
-4. **Contract in, receipt out.** Each implementer gets one contract, drafted from files by `goal.mjs prepare-ticket`, and returns one JSON receipt; `goal.mjs merge` checks it against git and the ticket, lands it, and runs the suite on the result ([`to-auto/CONTRACT.md`](to-auto/CONTRACT.md)). An objective that already names an agent-ready spec or ticket skips straight to tickets.
+4. **Contract in, receipt out.** Each implementer gets one contract, drafted from files by `goal.mjs prepare-ticket`, and returns one JSON receipt; `goal.mjs merge` checks it against git and the ticket, lands it, and runs the suite on the result ([`to-auto/CONTRACT.md`](to-auto/CONTRACT.md)). An agent-ready spec or ticket skips the planning on-ramp. A [clearly specified small feature](to-auto/PLAN.md#single-ticket-feature-route-feature) can skip the interview and use one ticket without skipping spec reconciliation, build checks, or review.
 5. **Halt cleanly.** Every stop, yours or the run's own, goes through `goal.mjs stop`; `goal.mjs resume` picks up after you fix the cause.
 
 ## 🧰 Commands

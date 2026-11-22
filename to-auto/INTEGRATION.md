@@ -2,23 +2,23 @@
 
 One row per skill, grouped the way `ask-matt` groups them. **Touchpoint** is where the skill expects a human; **Autonomous substitute** is what `/to-auto` does instead. Every skill is loaded the same way: `node ROOT/scripts/matt.mjs resolve <name>`, then read the file (SKILL.md § Loading skills).
 
-This table is checked: `node ROOT/scripts/matt.mjs check` fails when a vendored Matt skill has no row here, when a row names a skill that resolves nowhere, or when `ask-matt` routes to a skill that is not linked. Bumping the submodule pin is therefore a forced review of this file.
+`node ROOT/scripts/matt.mjs check` checks vendored skill coverage and ask-matt links. Review this table when upstream adds or moves a skill.
 
 ## Main flow (ask-matt § The main flow)
 
 | Skill | Stage in /to-auto | Touchpoint(s) the skill has | Autonomous substitute |
 |---|---|---|---|
 | ask-matt | 1 | Recommends and stops; user types the next skill | The router. Stage 00 reads it; stage 1 takes the route it names (FLOWS.md § Routing tree). Any load-bearing claim about a skill is checked against that skill's file. |
-| grill-with-docs | 4 | Delegates to grilling + domain-modeling | Both loaded; `/to-auto` answers the rounds (see grilling). Verify `GLOSSARY.md` changed on disk. |
+| grill-with-docs | 4 | Delegates to grilling + domain-modeling | Both loaded; `/to-auto` answers the rounds (see grilling). Verify `GLOSSARY.md` changed on disk. For the single-ticket exception see PLAN.md. |
 | to-spec | 5 | "Check with the user that these seams match" | Seams were fixed in stage 4; carried into Testing Decisions; logged `(source: findings)`. Publish to the local tracker, `ready-for-agent`. |
-| to-tickets | 6 | "Quiz the user … iterate until the user approves" | Self-quiz (granularity, edges, merge/split) answered per KUN.md; PLAN.md stage 6 and the 6b gate. |
+| to-tickets | 6 | "Quiz the user … iterate until the user approves" | Self-quiz (granularity, edges, merge/split) answered per KUN.md, except for the single-ticket feature path. The 6b gate still runs. |
 | implement | 7 | None by design; but never closes the ticket | The implementer brief inside implement-spec (BUILD.md): a compiled contract in, a receipt out (CONTRACT.md); the merger checks the receipt against git with `goal.mjs receipt`, then merges; the orchestrator closes the ticket and ticks boxes. |
 | tdd | 7 (every slice, in the ticket subagent) | "Confirm seams with the user" | Seams agreed in PLAN.md stage 4 and passed in the brief; BUILD.md implementer brief, rule 2. |
 | code-review | 7 (per ticket), 8 (final) | "If they didn't specify a fixed point, ask"; "ask the user where the spec is" | Fixed point always passed (`<ticket-base>` or `review_base`); spec path always passed. Brief guards per PITFALLS.md (code-review rows). |
 | handoff | phase boundary only | Writes a portable doc | Only when the run must move harness or directory (e.g. a ticket needs a tool this harness lacks). Otherwise subagents carry context pointers. |
 | prototype | skipped | Produces an artifact for a human to react to; HITL by definition | A question that "needs runnable code" is answered by a red test at the seam (tdd) or a research call; if neither settles it, log the default and continue. |
-| implement-spec | 7 | "The goal is … a single integration branch"; nothing else human | Run as written; bindings in BUILD.md add seams, tiers, tracker closing, and the worktree layout from PIPELINE.md, and replace the implementer's merge of the integration tip with the merger's rebase. Draft PR (after the first merge) only on a GitHub tracker with push authorized. |
-| pr | 9 (GitHub tracker with push explicitly authorized only) | None; a PR-body template | The draft PR body from implement-spec step 3 and the ready-for-review body in stage 9 follow its template. Never used on the local tracker. |
+| implement-spec | 7 | "The goal is … a single integration branch"; nothing else human | BUILD.md adds seams, tiers, tracker closing and worktree isolation. The merger rebases; the implementer does not merge in the run branch. Draft PR only per BUILD.md step 3. |
+| pr | 9 (`pr` mode with push and PR authorized) | None; a PR-body template | Use for the draft and ready-for-review bodies. |
 | retro | 10 | "Present these candidates to the user" | Written to `<state>/runs/<slug>/retro.md`; nothing applied. |
 
 ## On-ramps (ask-matt § On-ramps)
@@ -39,11 +39,13 @@ This table is checked: `node ROOT/scripts/matt.mjs check` fails when a vendored 
 
 ## Standalone (ask-matt § Standalone)
 
+The built-in [VECTOR intake](references/vector-intake.md) accepts workflow cards without requiring the standalone `vector` skill.
+
 | Skill | Stage in /to-auto | Touchpoint(s) the skill has | Autonomous substitute |
 |---|---|---|---|
 | grilling | 4; 3 | Rounds wait for the user's answers; "do not act until the user confirms" | Rounds run in full, answered per KUN.md § Grilling rounds (the skill's recommended answer goes to kun as input); facts are found by sub-agents as the skill says. |
 | research | 3 (conditional, per open Q); 2 (wayfinder research tickets); 4, 7, 8 on demand | None (AFK) | Fires only per FLOWS.md § Research need; briefed per PITFALLS.md (research rows); findings kept in `runs/<slug>/findings.md`. |
-| to-questionnaire | 4 (a question only a named person can answer) | Two interview exchanges about the send | Answer the two exchanges from the decision log (recipient = repo owner unless the objective names someone); write `to-questionnaire-<slug>.md` in `<state>/runs/<slug>/`; continue with the default and list the file as a blocker. |
+| to-questionnaire | 4 (a question only a named person can answer) | Two interview exchanges about the send | Draft `to-questionnaire-<slug>.md` in the run directory; continue unaffected work per FLOWS.md. |
 | wizard | 7 (human-only step), 2 (wayfinder task ticket) | "Show the user the ordered list of stages and confirm" | Skip confirmation; author from repo evidence only, never invent UI steps; `bash -n` + shellcheck; script path is a named blocker in the report. |
 | writing-for-agents | 4 and 7 when the deliverable is a skill, `AGENTS.md`/`CLAUDE.md`, or agent-facing doc | None (reference) | Loaded as the standards source for those files; `code-review`'s Standards axis cites it. |
 | grill-me | not used | Stateless interview | Superseded by grill-with-docs; a run always has a working directory (the run worktree). |
@@ -73,7 +75,7 @@ This table is checked: `node ROOT/scripts/matt.mjs check` fails when a vendored 
 
 | Skill | Stage in /to-auto | Touchpoint(s) | Autonomous substitute |
 |---|---|---|---|
-| kun | every question (KUN.md) | It is the user's voice | Cached per KUN.md § Cache once; never asked twice. |
+| kun | routine decisions (KUN.md) | Advises in a persona | Cached per KUN.md § Cache once; terminal authority stays with the actual owner. |
 | research-stack | 3 (first external need) and inside every subagent that looks outside the repo | None | Loaded per FLOWS.md § Research need; bounds and refunds applied per call. |
 | defensive-design | 4 (Design), 7 (Implement), 8 (Review) | Mode must be stated; "do not edit unless authorized" in Review | Mode passed explicitly per call; Implement authority comes from the ticket; evidence state recorded per control. Tier 3 findings that need authority the run lacks are blockers. |
 | zero-tech-debt | 2 (refactor on-ramp), 6 (prefactoring tickets) | "once a deletion is approved"; "stop and recommend a targeted change" for hotfix shapes | Self-approve after the pre-flight passes, log each deletion; hotfix shapes are re-routed to diagnosing-bugs. |

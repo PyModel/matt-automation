@@ -14,7 +14,22 @@ In order:
 
 ## 0. Register
 
-Check `runs.json` for a running objective that overlaps this one by ≥ 80 % of tokens (refuse and report unless `--force`). Then `node ROOT/scripts/goal.mjs init <slug> "<objective>" --agent <this session's id> --harness <harness name> [--mode branch|supervisor|pr] [--worker-model <model>] [--no-helpers]` registers the run with the next `run_id`, its hand-back mode (default `branch`; `supervisor` when `goal.mjs supervise` saved a `--target-branch`; `pr` only when the objective grants a pull request), its target branch, and a pin of the scripts it runs, and creates and commits `runs/<slug>/` with `ledger.md`, `todo.md` (every stage line, unticked), `log.md`, and `bugs.md`. `init` refuses without both. The session id is `$CLAUDE_CODE_SESSION_ID` on Claude Code, the UUID ending the newest `~/.pi/agent/sessions/<cwd>/<time>_<uuid>.jsonl` on pi, and the harness's own session or thread id elsewhere. `--worker-model` is the requested helper model; after each helper returns, `goal.mjs model <slug> <role> <model-used>` records the model that role actually used. `--no-helpers` records that none ran, and no helper is spawned. Write `run_id` and the check's `vendored:` commit into NOW; `goal.mjs tick <slug> 00`, then `goal.mjs tick <slug> 0`. Then:
+If `next` reports `registered: true`, adopt as needed per LEDGER.md and skip
+registration. At `00`, recheck wiring before recording its pin. For a new
+run, first check `runs.json` for ≥ 80% token overlap with an active objective;
+refuse unless `--force` was requested. Register before any dispatch:
+
+```sh
+node ROOT/scripts/goal.mjs init <slug> "<objective>" --agent <session-id> --harness <name> [--mode branch|supervisor|pr] [--worker-model <model>] [--no-helpers]
+```
+
+Pass `$CLAUDE_CODE_SESSION_ID` on Claude Code, the UUID of pi's current session
+file under `~/.pi/agent/sessions/`, or the host's session/thread id. Default
+mode is `branch` (or `supervisor` with a saved target); use `pr` only with
+permission. Apply CORE.md § Helpers when choosing flags.
+
+For either path, record `run_id` and `vendored:` in NOW. Run
+`goal.mjs tick <slug> 00`, then `goal.mjs tick <slug> 0`, for unticked stages only.
 
 1. If the user's checkout has uncommitted changes (`git status --porcelain` non-empty), write `dirty-checkout: yes (N files)` into NOW: the run builds from the base commit and will not see them; the report repeats it.
 2. `--gc` candidate sweep (report-only by default; § Kill switch and GC below).
@@ -28,7 +43,16 @@ KUN.md § Cache once, into `kun/<sha>/` in the control plane.
 The engineering skills need `docs/agents/issue-tracker.md`, `docs/agents/domain.md`, `docs/agents/triage-labels.md`, and an `## Agent skills` block in `CLAUDE.md`/`AGENTS.md`.
 
 - Present on the base commit: log "setup present", skip.
-- Otherwise: resolve the default branch head (`main` / the remote default head). Every command that creates or moves `goal/bootstrap` runs as one program under the lock, `goal.mjs with-lock bootstrap -- sh -c '<git commands>'` (with-lock runs one program, so a bare `a && b` leaves `b` outside the lock); the setup skill itself runs in the temporary worktree, outside it. If `goal/bootstrap` exists, rebase it onto that head so it never freezes on an outdated base; if not, create it from the head in a temporary worktree, load `setup-matt-pocock-skills` by path and run it non-interactively with PIPELINE.md § Setup defaults (a local tracker whose files live in the control plane: the tracker doc says so explicitly), commit `Add agent-skills config`, remove the temporary worktree. The report tells the user to fast-forward the default branch to `goal/bootstrap` once.
+- Otherwise resolve the default branch head (`main` / the remote default head).
+  Create or rebase `goal/bootstrap` there in a temporary worktree. Wrap branch
+  changes in `goal.mjs with-lock bootstrap -- sh -c '<git commands>'`.
+  Outside the lock, use `setup-matt-pocock-skills` templates and PIPELINE.md
+  defaults to fill **missing** files and sections only. Preserve any existing
+  tracker doc; do not run setup's remote label creation without a grant.
+  Commit `Add agent-skills config`, return the worktree, and report the pending
+  fast-forward to `goal/bootstrap`.
+
+Either way, record the effective write tracker under PIPELINE.md § Tracker rules.
 
 ## 0c. Isolate
 
@@ -39,14 +63,19 @@ The engineering skills need `docs/agents/issue-tracker.md`, `docs/agents/domain.
 
 ## 0d. Environment contract, baseline, capability probe
 
-1. **Commands.** Detect install, typecheck, lint, single-test, full-suite, and (if any) regenerate commands for shared files (lockfile, codegen, snapshots) from the environment. Read the hook setup too (`git config core.hooksPath`, `git rev-parse --git-path hooks`, `.husky/`, `lefthook.yml`, `simple-git-hooks` in package.json, `.pre-commit-config.yaml`): every check a hook runs becomes its own `commands:` entry, and the repo's hook-install command, when it has one, is recorded as `hooks=`. Hooks are shared across worktrees and any install can rewrite them (PIPELINE.md § Isolation), so a hook is never a gate. Run each lint and typecheck command once in the run worktree and confirm its output names files or tests checked; a command that reports nothing checked is not a gate until it does. Monorepo signals (`pnpm-workspace.yaml`, `workspaces`, `packages/*` with own `src/`) → detect per package and record a `packages:` map; claims and baselines are then per package.
+1. **Commands.** Discover install, typecheck, lint, single-test, suite,
+   and shared-file regeneration. Inspect `core.hooksPath` or the Git hooks
+   directory and repo hook config. Record every hook check as a separate
+   `commands:` entry and any hook installer as `hooks=` (PIPELINE.md §
+   Isolation). Run lint and typecheck; confirm they checked files. In a
+   monorepo, record commands, claims and baselines per package (`packages:`).
 2. **Per-worktree recipe, run-scoped.** Ports = `3000 + 100 * run_id + NN`; database/schema suffix `_<slug>_t<NN>`; compose project name `<slug>-t<NN>`; temp dirs under `<state>/tmp/<slug>/`, not the user repo. `.env` copied with the substitutions applied. Do not edit `.git/info/exclude` or `.gitignore`. A path the repo does not already ignore is created under `<state>/`, so the worktree stays clean (CONTRACT.md § The receipt check). Any resource with no override → `max_concurrent_tickets: 1`, logged why.
 3. **Baseline, three runs.** Install, then run the full suite 3× at base in the run worktree; record the per-test result set. Tests failing all 3× are pre-existing bugs (BUILD.md § Bugs found in flight); tests failing 1–2× are **flaky** and go into `quarantine.json` with an explicit owner, reason, and expiry, keyed by base commit. Quarantined tests keep running and being reported; an intermittent failure that turns persistent blocks approval. Baseline = the per-test set, not a count. Commit only that set, as `runs/<slug>/baseline.txt` (one `<test id> pass|fail|flaky|skip` line each); raw suite output goes to `<state>/logs/<slug>/`, which is outside the user repo and is never staged. The suite command is `goal.mjs check-command --objective "<objective>"` unless this step found a more specific one; the objective's `check:` wins.
-4. **Capability probe.** Preflight runtime tools, Node/Git versions, and subagent spawn capability: dispatch a trivial subagent that tries to spawn one and reports.
+4. **Capability probe.** Check runtime tools and Node/Git versions. If `next` reports `helpers: none` or the harness disallows delegation, skip the spawn probe and take the `nested: none` path below. Otherwise, dispatch a trivial subagent that tries to spawn one and reports.
    - `nested: yes` → implementers run `code-review` themselves.
    - `nested: no` → **flat mode**: implementers do a single-agent review inline (both axes, one pass) and the orchestrator runs `code-review` per ticket after merge; log `degraded: flat spawn`.
-   - No subagents at all → `nested: none`: every subagent role (answerer, challenger, reconciler, implementer, merger, reviewer, fixer) runs inline, one at a time, started from its brief and the ledger alone; the orchestrator rewrites NOW and compacts or clears context between roles where the harness allows; `max_concurrent_tickets: 1`; log `degraded: no subagents`.
-5. **Worker.** `worker: subagent` unless the objective or `/kun` names `pi[/<provider>/<model>]` (BUILD.md § Implementer backend). `tiers:` maps capability pairs to models (CONTRACT.md § Capability) only when the objective names models or the probe shows the worker takes a model choice; else `tiers: none`.
+   - No subagents → `nested: none`, `max_concurrent_tickets: 1`. Use the brief and ledger for each inline role (CORE.md § Helpers). Log `degraded: no subagents`.
+5. **Worker.** With `nested: none`, record `worker: inline` and `tiers: none`. Otherwise use `worker: subagent` unless the objective or `/kun` names `pi[/<provider>/<model>]` (BUILD.md § Implementer backend). `tiers:` maps capability pairs to models (CONTRACT.md § Capability) only when the objective names models or the probe shows the worker takes a model choice; else `tiers: none`.
 6. Write the environment contract and `budgets:` into NOW (fields: PIPELINE.md § Completion criteria per stage, 0d).
 
 ## Kill switch and GC

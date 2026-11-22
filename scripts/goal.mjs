@@ -617,7 +617,7 @@ export function adopt(repo, slug, { agent = null, harness = null } = {}) {
     if (['done', 'dry-run'].includes(entry.status)) throw new Refusal(`${slug} is ${entry.status}; there is nothing to take over`);
     if (entry.agent === agent && entry.harness === harness) return `${slug} already belongs to ${agent}`;
     const from = `${entry.agent ?? 'nobody'} (${entry.harness ?? '?'})`;
-    Object.assign(entry, { agent, harness });
+    Object.assign(entry, { agent, harness, adoptedAt: new Date().toISOString() });
     writeAndCommit(repo, control, `[${slug}] adopt: ${from} → ${agent} (${harness})`, { 'runs.json': `${JSON.stringify(runs, null, 2)}\n` }, { owner: 'registry' });
     return `${slug} now belongs to ${agent} (${harness}); was ${from}`;
   });
@@ -892,7 +892,7 @@ export function recordModel(repo, slug, role, model) {
 }
 
 /**
- * Where the run resumes (`resumePoint`), plus the registry's hand-back `mode` and `target` so stage 9 reads config, and
+ * Where the run resumes (`resumePoint`), plus the registry's hand-back `mode`, `target` and helper restriction, and
  * `warnings` for what `check` would flag that the orchestrator must act on: SCRIPTS_MOVED, TARGET_DIVERGED, TICKET_IDLE.
  * `grants`, `guarded_changes` and `dismissed_bugs` are for the hand-back (CLOSE.md stage 9).
  */
@@ -904,7 +904,18 @@ export function next(control, slug) {
   const changes = guardedChanges(control, entry);
   const bugsFile = path.join(control, 'runs', slug, 'bugs.md');
   const dismissed = fs.existsSync(bugsFile) ? dismissedBugs(fs.readFileSync(bugsFile, 'utf8')) : [];
-  return { ...at, mode: runMode(control, entry), target: entry.target ?? runBranch(control, entry), ...(at.tickets?.['in-flight']?.length && { in_flight: flightRows(control, slug) }), ...(entry.grants?.length && { grants: entry.grants }), ...(changes.length && { guarded_changes: changes }), ...(dismissed.length && { dismissed_bugs: dismissed }), ...(warnings.length && { warnings }) };
+  return {
+    ...at,
+    registered: true,
+    mode: runMode(control, entry),
+    target: entry.target ?? runBranch(control, entry),
+    ...(entry.helpers && { helpers: entry.helpers }),
+    ...(at.tickets?.['in-flight']?.length && { in_flight: flightRows(control, slug) }),
+    ...(entry.grants?.length && { grants: entry.grants }),
+    ...(changes.length && { guarded_changes: changes }),
+    ...(dismissed.length && { dismissed_bugs: dismissed }),
+    ...(warnings.length && { warnings }),
+  };
 }
 
 /** The hand-back mode: the registry's, or for a run from before it was recorded, supervisor when supervise saved a target. */
@@ -2131,6 +2142,9 @@ export function dispatch(repo, feature, id, worktree, orcArgs) {
   const runDir = orcRunDir(repo, feature, id);
   const poll = orcArgs.includes('--poll');
   if (!poll) {
+    if (readRegistry(control).find((r) => r.slug === feature)?.helpers === 'none') {
+      throw new Refusal(`${feature} was registered with --no-helpers; implement this ticket in the current session`);
+    }
     const { want, file } = ticketFile(path.join(control, 'tracker', feature, 'issues'), feature, id);
     const ticketText = fs.readFileSync(file, 'utf8');
     if (parseTicket(ticketText).status !== 'in-flight') throw new Refusal(`ticket ${want} is ${parseTicket(ticketText).status}; \`goal.mjs take\` puts it in flight first`);

@@ -7,7 +7,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   configure, controlDir, repoId, ensureControl, prepare, land, cleanup, preflight, discoverCheck,
-  init, recordModel, compact, supervise, remoteGuard, isLinkedWorktree, ROOT,
+  init, adopt, next, dispatch, recordModel, compact, supervise, remoteGuard, isLinkedWorktree, ROOT,
 } from './goal.mjs';
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
@@ -182,6 +182,19 @@ test('no helper agents are recorded, and a named worker model is logged per role
   assert.equal(used.workerModel, 'provider/model');
   assert.equal(used.roles.implementer, 'provider/model-used');
   assert.match(fs.readFileSync(path.join(state, 'runs/helped/ledger.md'), 'utf8'), /implementer used provider\/model-used/);
+});
+
+test('a resumed solo run still exposes its helper restriction and refuses worker dispatch', () => {
+  const repo = bareRepo();
+  useState();
+  const control = ensureControl(repo);
+  init(repo, 'solo', 'Solo', { ...WHO, noHelpers: true });
+  adopt(repo, 'solo', { ...WHO, agent: 'fresh-session' });
+  const at = next(control, 'solo');
+  assert.equal(at.stage, '00');
+  assert.equal(at.registered, true, 'interrupted bootstrap must adopt, not register again');
+  assert.equal(at.helpers, 'none');
+  assert.throws(() => dispatch(repo, 'solo', '01', repo, []), /registered with --no-helpers/);
 });
 
 test('--allow fails at startup when a planned write is outside the list', () => {

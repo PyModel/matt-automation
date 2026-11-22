@@ -80,6 +80,34 @@ test('an active run allows PRs and helpers but never a hand-typed worktree; a st
   assert.equal(w.decision('Agent', { prompt: 'x' }), 'deny');
 });
 
+test('a session cannot spawn a helper for a solo run it adopted without a slash command', () => {
+  const w = world();
+  w.goal('control');
+  w.goal('init', 'x', 'X', '--agent', 'old-session', '--harness', 'test', '--no-helpers');
+  assert.equal(w.decision('Agent', { prompt: 'review' }), 'allow', 'a peer run does not restrict this session');
+  w.goal('adopt', 'x', '--agent', 's1', '--harness', 'test');
+  assert.equal(w.decision('Agent', { prompt: 'review' }), 'deny');
+});
+
+test('a marked adopter is released when the older run finishes', () => {
+  const w = world();
+  w.goal('control');
+  w.goal('init', 'x', 'X', '--agent', 'old-session', '--harness', 'test');
+  const registry = path.join(w.env.TO_AUTO_HOME, 'runs.json');
+  const fixtureUpdate = (fields) => {
+    const runs = JSON.parse(fs.readFileSync(registry, 'utf8'));
+    Object.assign(runs[0], fields);
+    fs.writeFileSync(registry, JSON.stringify(runs));
+    execFileSync('git', ['-C', w.env.TO_AUTO_HOME, 'commit', '-qam', '[x] fixture update'], { env: { ...w.env, TO_AUTO_WRITER: '1' } });
+  };
+  fixtureUpdate({ started: '2020-01-01T00:00:00Z' });
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto x' });
+  w.goal('adopt', 'x', '--agent', 's1', '--harness', 'test');
+  assert.equal(w.bash(INCIDENT), 'deny');
+  fixtureUpdate({ status: 'done' });
+  assert.equal(w.bash(INCIDENT), 'allow');
+});
+
 test('stopping its own run does not release the session; only a done run with nothing active does', () => {
   const w = world();
   w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto x' });

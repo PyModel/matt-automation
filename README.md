@@ -13,7 +13,7 @@
 
 <p align="center">
   Give it an objective, walk away, come back to reviewed commits on a branch.<br>
-  Every run is routed by <code>ask-matt</code>, then driven through Matt's own skills with no human in the loop.
+  One automation operator routes through <code>ask-matt</code>, builds, and verifies without routine approval pauses.
 </p>
 
 ---
@@ -53,18 +53,25 @@ With autoharness installed, add `scripts/skill-create-guard.mjs` as a Claude Cod
 Then:
 
 ```text
-/to-auto add rate limiting to the public API
-/loop /to-auto add rate limiting to the public API   # or any recurring runner
+/to-auto Add JSON output to the report command. Keep the default text output unchanged.
 ```
 
-A run also needs four installed skills: `kun`, `research-stack`, `defensive-design`, `zero-tech-debt`. They are found in `$AGENT_SKILL_HOMES` (path-separated), else `~/.claude/skills` and `~/.agents/skills`; `check` names any that are missing.
+Already have a workflow card? Give one prompt, for example:
+
+```text
+/to-auto Implement the report export described in docs/report-workflow.md. Use it as a VECTOR card. Hand back a verified local branch.
+```
+
+The standalone `/vector` skill is optional: it designs a card but does not start a run. When you ask `/to-auto` to execute, its built-in [VECTOR intake](to-auto/references/vector-intake.md) turns the brief into checks, evidence, and limits. The operator makes routine decisions; neither the card nor the persona can grant permission to publish, deploy, or spend. Add `--no-helpers` for solo execution. An inline review is not independent. Resume an interrupted run with `/to-auto --resume <slug>`.
+
+A run also needs four installed skills: `kun`, `research-stack`, `defensive-design`, `zero-tech-debt`. They are found in `$AGENT_SKILL_HOMES` (path-separated), else `~/.claude/skills` and `~/.agents/skills`; `check` names any that are missing. The agent harness executes `/to-auto`; the scripts own run state and checks. For unattended re-entry after a turn ends, use a [keep-going hook or a recurring runner](to-auto/PIPELINE.md#under-a-loop).
 
 ## 🔁 How a run works
 
 1. **Route.** Stage `00` runs the wiring check and reads `ask-matt`; `to-auto/FLOWS.md` adds only the autonomy rules on top of its map.
 2. **Resume anywhere.** Every invocation, first run or fiftieth loop tick, asks `goal.mjs next <slug>` where it stands. A ticked stage whose artifact is missing is not trusted.
 3. **Build in parallel.** Tickets carry file claims and a capability tier; `goal.mjs take` hands out the frontier under a lock, and each ticket runs in its own worktree, on a subagent or a pi worker.
-4. **Contract in, receipt out.** Each implementer gets one contract, drafted from files by `goal.mjs prepare-ticket`, and returns one JSON receipt; `goal.mjs merge` checks it against git and the ticket, lands it, and runs the suite on the result ([`to-auto/CONTRACT.md`](to-auto/CONTRACT.md)). An objective that already names an agent-ready spec or ticket skips straight to tickets.
+4. **Contract in, receipt out.** Each implementer gets one contract, drafted from files by `goal.mjs prepare-ticket`, and returns one JSON receipt; `goal.mjs merge` checks it against git and the ticket, lands it, and runs the suite on the result ([`to-auto/CONTRACT.md`](to-auto/CONTRACT.md)). An agent-ready spec or ticket skips the planning on-ramp. A [clearly specified small feature](to-auto/PLAN.md#single-ticket-feature-route-feature) can skip the interview and use one ticket without skipping spec reconciliation, build checks, or review.
 5. **Halt cleanly.** Every stop, yours or the run's own, goes through `goal.mjs stop`; `goal.mjs resume` picks up after you fix the cause.
 
 ## 🧰 Commands

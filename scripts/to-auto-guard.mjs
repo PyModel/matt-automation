@@ -66,10 +66,10 @@ function mark(id) {
   return `to-auto session ${id}: pass \`--agent ${id} --harness claude-code\` to \`goal.mjs init\`. Work already in this session (earlier PRs, worktrees, plans) is not part of the run; follow the stage \`goal.mjs next\` names. Until \`init\` registers the run, branch, worktree, push, PR, tracker-write and helper-agent calls are denied by this guard.`;
 }
 
-/** True once a run this session registered after it was marked (`init --agent <session_id>`) is done and no run is active. */
+/** Release after a run acquired by this session since its mark finishes, with no run still active. */
 function finished(runs, id, markedAt) {
   // Only a finished run releases the session: stopping one ("objective does not fit") must not open a way around it.
-  const mine = (r) => r.agent === id && Date.parse(r.started) >= markedAt && (r.status === 'done' || r.status === 'dry-run');
+  const mine = (r) => r.agent === id && Date.parse(r.adoptedAt ?? r.started) >= markedAt && (r.status === 'done' || r.status === 'dry-run');
   return runs.some(mine) && !runs.some((r) => !INACTIVE.has(r.status));
 }
 
@@ -125,25 +125,33 @@ async function main() {
     return;
   }
   const marker = path.join(sessions(), id);
-  if (!fs.existsSync(marker)) return;
+  const marked = fs.existsSync(marker);
   const what = classify(input);
-  if (!what) return;
-  const deny = (reason) => out({ permissionDecision: 'deny', permissionDecisionReason: `${reason} (Guard: scripts/to-auto-guard.mjs. To end to-auto mode for this session, the user removes ${marker}.)` });
+  if (!what || (!marked && what !== 'helper agent')) return;
+  const deny = (reason) => out({ permissionDecision: 'deny', permissionDecisionReason: `${reason} (Guard: scripts/to-auto-guard.mjs.)` });
   const WORKTREE = 'to-auto: run and ticket worktrees come only from `goal.mjs worktree get <slug> [NN]`, never a hand-typed `git worktree add` (PIPELINE.md § Isolation).';
   let runs;
   try {
-    // Loaded only here, for a call a rule names: unmarked sessions and other calls never pay for it, and a broken goal.mjs fails closed below.
+    // Check helper ownership even for natural-language adoption without a slash-command mark.
     const { stateDir } = await import('./goal.mjs');
     try { runs = JSON.parse(fs.readFileSync(path.join(stateDir(input.cwd ?? process.cwd()), 'runs.json'), 'utf8')); } catch { runs = []; }
-    const markedAt = Date.parse(fs.readFileSync(marker, 'utf8').trim()) - 1000; // a hand-touched (empty) mark: any done run of this session releases it
-    if (finished(runs, id, Number.isNaN(markedAt) ? 0 : markedAt)) {
-      fs.rmSync(marker, { force: true });
-      return;
+    if (!Array.isArray(runs)) throw new Error('run registry is not a list');
+    if (marked) {
+      const markedAt = Date.parse(fs.readFileSync(marker, 'utf8').trim()) - 1000; // an empty mark accepts any finished run of this session
+      if (finished(runs, id, Number.isNaN(markedAt) ? 0 : markedAt)) {
+        fs.rmSync(marker, { force: true });
+        return;
+      }
     }
   } catch (e) {
-    deny(what === 'worktree' ? WORKTREE : `to-auto-guard could not read the run registry (${e.message}), so this ${what} is denied: a /to-auto session fails closed.`);
+    if (marked) deny(what === 'worktree' ? WORKTREE : `to-auto-guard could not read the run registry (${e.message}), so this ${what} is denied: a /to-auto session fails closed.`);
     return;
   }
+  if (what === 'helper agent' && runs.some((r) => r?.agent === id && r.helpers === 'none' && !INACTIVE.has(r.status))) {
+    deny('to-auto: this session owns an active --no-helpers run; perform the role in this session.');
+    return;
+  }
+  if (!marked) return;
   if (what === 'worktree') {
     deny(WORKTREE);
     return;

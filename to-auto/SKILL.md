@@ -1,19 +1,19 @@
 ---
 name: to-auto
-description: "Autonomous driver for Matt Pocock's skills: routes an objective through ask-matt, then runs on-ramp, conditional research, self-answered grilling, to-spec, to-tickets, an implement-spec task graph in parallel worktrees, code-review, and retro with no pauses, on any harness and model. Use on /to-auto <objective> or $to-auto, when the user wants a feature or skill delivered fully autonomously, or under a loop."
+description: "Run one software objective end to end as the automation operator. Use on /to-auto or when the user explicitly asks to use Matt automation to build, fix, or resume work autonomously, including from a VECTOR workflow card. Routes through ask-matt, builds on an isolated branch, verifies, and hands back locally by default. A request for a workflow card alone does not invoke it."
 user-invocable: true
-argument-hint: "<objective> [--force] [budget: …]   |   --gc   |   --stop [slug]   |   --dry-run <objective>"
+argument-hint: "<objective> [--no-helpers] [--force] [budget: …] | --resume <slug> | --gc | --stop [slug] | --dry-run <objective>"
 metadata:
   short-description: "ask-matt route → on-ramp → research (if needed) → grill → to-spec → to-tickets → build → review → retro, autonomously."
 ---
 
 # to-auto
 
-Drive one **objective** from question to reviewed commits in a single run, on any harness that speaks Agent Skills. The objective is the argument; if empty, take it from the last user message. `--gc`, `--stop` and `--dry-run` are maintenance verbs (BOOTSTRAP.md § Kill switch and GC).
+Act as the **automation operator**: own one software objective from intake to verified hand-back. Resolve reversible choices from evidence without approval pauses. [CORE.md](CORE.md) sets limits. Take the objective from the user's request, not a linked card. `--no-helpers` is a run option, not part of the objective. For `--gc`, `--stop` and `--dry-run`, see BOOTSTRAP.md.
 
 **Every invocation starts the same way**, first run or fiftieth loop tick (`ROOT` is § Loading skills):
 
-1. `node ROOT/scripts/goal.mjs slug "<objective>"` names the run (`--new` only on an explicit `--force` re-run of a finished objective).
+1. New objective or replay: `node ROOT/scripts/goal.mjs slug "<objective>"` (`--new` only on an explicit `--force` re-run of a finished objective). `--resume <slug>` or an explicit resume by run name: use the exact registered slug and its original objective from `runs.json`. If missing or ambiguous, report that; never turn resume wording into a new objective.
 2. Run LEDGER.md § Re-entry protocol, which starts with `node ROOT/scripts/goal.mjs next <slug>` and names the stage and phase file.
 3. Load that phase file and continue from that stage.
 
@@ -40,7 +40,7 @@ The user's shorthand maps as: `/ask matt` → ask-matt, `/to spec` → to-spec, 
 
 This skill lives in the matt-automations repo, which vendors Matt Pocock's skills from upstream `main` (stage 00's `matt.mjs check` fast-forwards them and prints the commit as `vendored:`; while any run is live, neither a check nor the hourly pull moves them, so a run keeps the skills it started on). `ROOT` is that repo: `node scripts/goal.mjs root` prints it from the script's own file path, from any working directory. The harness usually shows the symlinked install path, so `realpath` the skill folder before resolving relative links. `ROOT` is that real folder's parent, `$(dirname "$(realpath <skill folder>)")`: the scripts live in `ROOT/scripts/`, not inside the skill folder. `node ROOT/scripts/install.mjs` links these skills into a tool's skill folder (`--home` for one folder; unverified folders are skipped unless named).
 
-- **Resolve, then read.** For any skill, run `node ROOT/scripts/matt.mjs resolve <name>`. It prints the SKILL.md path: `ROOT/matt/<name>` (the vendored Matt copy) first, else the user's installed skills (`kun`, `research-stack`, `defensive-design`, `zero-tech-debt`). Read that file and follow it verbatim; relative links in it resolve against its directory. Nonzero exit: record the skill as a blocker and stop.
+- **Resolve, then read.** `node ROOT/scripts/matt.mjs resolve <name>` prints the SKILL.md path: vendored first, then installed. Follow it with this pipeline's phase rules and CORE.md limits; links resolve against the skill's directory. Nonzero exit: record the missing skill as a blocker.
 - **Every skill loads by path.** Reading the resolved file (rather than calling the harness's skill tool) gives one version per run (the vendored copy, not whatever copy is installed), makes `disable-model-invocation` irrelevant, and sidesteps name clashes (PITFALLS.md). When a loaded skill says "call the Skill tool with X", resolve X the same way and read it instead.
 - **Wiring is checked first.** BOOTSTRAP.md § 00 runs `matt.mjs check` before any run write; its `drift:` lines are informational (runs use the vendored copy).
 - Installed skills are looked up in `$AGENT_SKILL_HOMES` (path-separated) when set, else `~/.claude/skills` and `~/.agents/skills`. On a harness that keeps skills elsewhere, set it before stage 00.

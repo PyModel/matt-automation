@@ -31,6 +31,6 @@ In watch-only mode (observing, not fixing), stay read-only: no `goal.mjs` subcom
 
 - Watcher self-test: after every edit to the watch script, replay the run's recorded events through it and confirm a clean exit with zero benign hits before re-arming. A variable-expansion step that crashed on a backslash surfaced only as a watcher error mid-run.
 - Durable output: write the final watch report and its evidence log to a folder outside the repo and outside the scratchpad (for example `~/claude-tmp/<run>-<date>/`). The scratchpad is session temp and not durable.
-- Before delivering a watch report, check its load-bearing claims with `jev_verify` against raw excerpts. Replace run, project and branch names with placeholders first, then report the verified count (for example 6 of 6) and name any claim left unsupported.
+- Before delivering a watch report, check its load-bearing claims against raw excerpts. Replace run, project and branch names with placeholders first, then report the verified count (for example 6 of 6) and name any claim left unsupported.
 
 Details, status set and trouble patterns: [watch-pattern](references/watch-pattern.md).

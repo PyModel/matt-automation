@@ -205,6 +205,19 @@ test('a helper is on record at both ends: counted against max_agents, its prompt
   assert.match(cli.stderr, /helper start <slug> <role> <id> \[--brief <file\|->\] \| helper return <slug> <id>/);
 });
 
+test('a helper start whose commit fails leaves no record, so the same id starts again', () => {
+  const repo = bareRepo();
+  const state = useState();
+  ensureControl(repo);
+  init(repo, 'retry', 'Retry', WHO);
+  const lock = path.join(state, '.git', 'index.lock');
+  fs.writeFileSync(lock, '');
+  assert.throws(() => helper(repo, 'retry', 'start', 'a1', { role: 'implementer' }));
+  fs.rmSync(lock);
+  helper(repo, 'retry', 'start', 'a1', { role: 'implementer' });
+  assert.equal(next(state, 'retry').budget.agents_used, 1);
+});
+
 test('helper starts at once never pass the max_agents cap or share an id', async () => {
   const repo = bareRepo();
   const state = useState();

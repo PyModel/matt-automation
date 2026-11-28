@@ -560,10 +560,11 @@ export function event(repo, slug, stage, text) {
   const control = requireControl(repo);
   const rel = path.join('runs', slug, 'ledger.md');
   if (!fs.existsSync(path.join(control, rel))) throw new Error(`${slug} has no ledger at ${rel}`);
-  return withLock(repo, 'control', () => {
+  // A failed commit takes its line back out, so a retried event (a helper start among them) is not refused by a ghost.
+  return withLock(repo, 'control', () => restoringOnThrow([path.join(control, rel)], () => {
     appendEvent(path.join(control, rel), stage, text);
     return commit(repo, `[${slug}] [${stage}] ${text}`, [rel]);
-  });
+  }));
 }
 
 function appendEvent(file, stage, text) {
@@ -740,6 +741,7 @@ const NAMES_CI = /\b(?:ci|pipelines?|workflows?)\b/i;
 const NAMES_MIGRATION = /\b(?:migrations?|schema)\b/i;
 const NAMES_PUSH = /\b(?:push|pushed|pushing|publish)\b/i;
 const NAMES_PR = /\b(?:prs?|pull requests?|merge requests?)\b/i;
+const NAMES_ANY_REMOTE = /\b(?:any|every|all)\s+(?:of\s+the\s+)?remotes?\b|\banywhere\b|\bwherever\b/i;
 const GRANT_TARGET = /^(?:push:(?:\*|[\w.-]+)|pr)$/;
 const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -773,7 +775,9 @@ export function grantStands(entry, g) {
 function quoteNames(quote, target) {
   const q = norm(quote);
   if (target === 'pr') return NAMES_PR.test(q);
-  if (target.startsWith('push:')) return NAMES_PUSH.test(q) || (target !== 'push:*' && new RegExp(`(?<![\\w-])${reEscape(target.slice(5).toLowerCase())}(?![\\w-])`).test(q));
+  // A push grant names where: "push only to the lab remote" grants push:lab, never push:origin; push:* needs "any remote".
+  if (target === 'push:*') return NAMES_PUSH.test(q) && NAMES_ANY_REMOTE.test(q);
+  if (target.startsWith('push:')) return NAMES_PUSH.test(q) && new RegExp(`(?<![\\w-])${reEscape(target.slice(5).toLowerCase())}(?![\\w-])`).test(q);
   const root = claimRoot(target).replace(/\/$/, '').toLowerCase();
   const parts = root.split('/');
   const named = [root, parts.at(-1), ...parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('/'))].filter((n) => n.length > 2);
@@ -2013,9 +2017,13 @@ export function setStatus(repo, feature, id, status, { reason = '', landed = nul
       // ticket free while its tree is still handed out, the next dispatch cuts a fresh one from the run head, and a
       // failure here leaves the ticket in flight, so the same command can be run again.
       const wt = readJson(path.join(control, 'runs', feature, 'worktrees.json'))[`t${want}`];
-      if (wt?.state === 'active') worktreeReturn(repo, feature, want);
       const ws = workspaceOf(repo, control);
-      if (wt?.branch && spawnSync('git', ['-C', ws, 'rev-parse', '--verify', '--quiet', `refs/heads/${wt.branch}`]).status === 0) {
+      const tip = wt?.branch ? spawnSync('git', ['-C', ws, 'rev-parse', '--verify', '--quiet', `refs/heads/${wt.branch}`], { encoding: 'utf8' }).stdout.trim() : '';
+      // A tree already returned skips `touched`'s commit check: the branch itself must still sit at the ticket base.
+      const ticketBase = committedText(control, contract)?.match(TICKET_BASE)?.[1];
+      if (tip && tip !== ticketBase) throw new Refusal(`ticket ${want} cannot go back to ready-for-agent: its branch ${wt.branch} is at ${tip.slice(0, 12)}, not ${ticketBase ? `its ticket base ${ticketBase.slice(0, 12)}` : 'a ticket base any contract records'}, so a worker may have committed there. It leaves in-flight as done, stuck or needs-human`);
+      if (wt?.state === 'active') worktreeReturn(repo, feature, want);
+      if (tip) {
         const del = spawnSync('git', ['-C', ws, 'branch', '--quiet', '-D', wt.branch], { encoding: 'utf8' });
         if (del.status !== 0) throw new Refusal(`ticket ${want} stays in flight: its branch ${wt.branch} could not be deleted (${del.stderr.trim()}); free it (\`git -C ${ws} worktree prune\`), then run this again`);
       }
@@ -2141,7 +2149,8 @@ export function guardedKind(file) {
 }
 // The kinds no ticket changes without a grant, planned or not; a top-level file needs one only once planning is over.
 const NEEDS_GRANT = new Set(['ci', 'migration']);
-const grantFor = (entry, file) => (entry?.grants ?? []).find((g) => g.paths.some((p) => claimCovers(p, claimRoot(file))));
+// A grant counts only while it still quotes the owner naming the path: runs.json can be edited by hand.
+const grantFor = (entry, file) => (entry?.grants ?? []).find((g) => g.paths?.some((p) => claimCovers(p, claimRoot(file))) && grantStands(entry, g));
 const grantHint = (slug, paths) => `if the owner's own words name it, record them with \`goal.mjs grant ${slug} ${paths.join(' ')} -- "<their words>"\` (checked against what the owner wrote); if none do, it is a blocker`;
 
 /**
@@ -2187,7 +2196,7 @@ export function grant(repo, slug, targets, quote) {
     if (source && prohibited(quote, words)) throw new Refusal(`where the owner wrote "${quote}" they said not to (never, don't, no, without...): a prohibition is no grant. Quote words that ask for it; without them it is a blocker for the hand-back`);
     if (!source) throw new Refusal(`"${quote}" is not something the owner wrote: a grant quotes at least three words in a row (or a whole message) from ${words[0].source === 'objective' ? 'the objective, the only owner text this harness keeps' : 'a message the owner sent this session'}. A decision or a reading the orchestrator wrote is never a grant; a target nobody granted is a blocker for the hand-back`);
     const unnamed = targets.filter((t) => !quoteNames(quote, t));
-    if (unnamed.length) throw new Refusal(`the owner's words "${quote}" do not name ${unnamed.join(', ')}: a grant covers only what it names (the path, its file name or folder; CI, pipeline or workflow for CI files; migration or schema for migrations; push for \`push:<remote>\`; PR for \`pr\`). Unnamed, it is a blocker for the hand-back`);
+    if (unnamed.length) throw new Refusal(`the owner's words "${quote}" do not name ${unnamed.join(', ')}: a grant covers only what it names (the path, its file name or folder; CI, pipeline or workflow for CI files; migration or schema for migrations; push and the remote's name for \`push:<remote>\`, push and \"any remote\" for \`push:*\`; PR for \`pr\`). Unnamed, it is a blocker for the hand-back`);
     entry.grants = [...(entry.grants ?? []), { paths: targets, source, quote, at: new Date().toISOString() }];
     const writes = { 'runs.json': `${JSON.stringify(runs, null, 2)}\n` };
     const ledger = path.join('runs', slug, 'ledger.md');

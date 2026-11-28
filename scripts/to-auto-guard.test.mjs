@@ -135,21 +135,31 @@ test('with a run active, a push needs a push:<remote> grant and a PR write a pr 
 
 test('a grant is this session\'s own, names its remote, and never comes from a prohibition or a hand edit', () => {
   const w = world();
-  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto ship it. Never push to origin. Push the branch to the lab remote when green, no PR needed. Set up the label component.' });
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto ship it. Never push to origin. Push the branch to the lab remote when green, no PR needed. Set up the label component. For the docs job, open a draft PR.' });
   w.goal('control');
   w.goal('init', 'x', 'ship it', '--agent', 's1', '--harness', 'test');
   const grant = (...args) => spawnSync(process.execPath, [GOAL, '--repo', w.repo, 'grant', 'x', ...args], { env: w.env, encoding: 'utf8' });
   for (const quote of ['push to origin', 'Never push to origin']) assert.match(grant('push:origin', '--', quote).stderr, /said not to/, quote);
   assert.match(grant('push:lab', '--', 'Set up the label component').stderr, /do not name push:lab/, '"label" does not name the lab remote');
+  // A push grant names where: words for one remote grant no other, and push:* needs words for any remote.
+  for (const target of ['push:origin', 'push:*']) assert.match(grant(target, '--', 'Push the branch to the lab remote when green').stderr, new RegExp(`do not name ${target.replace('*', '\\*')}`), target);
   w.goal('grant', 'x', 'push:lab', '--', 'Push the branch to the lab remote when green');
   assert.equal(w.bash('git push lab HEAD'), 'allow');
   // Where a push goes without a named remote is git config the hook cannot see: only push:* covers it.
-  for (const command of ['git push', 'git push -u', 'git push --repo=origin', 'git push --repo origin HEAD']) assert.equal(w.bash(command), 'deny', command);
+  for (const command of ['git push', 'git push -u', 'git push --repo=origin', 'git push origin --repo=lab']) assert.equal(w.bash(command), 'deny', command);
+  assert.equal(w.bash('git push -o ci.skip lab HEAD'), 'allow', 'an option value is not the remote');
   // Every PR write needs the pr grant, through gh pr or gh api alike; reading does not.
   for (const command of ['gh pr edit 7 --title x', 'gh pr close 7', 'gh api repos/o/r/pulls -X POST -f title=x', 'gh api -X PUT repos/o/r/pulls/1/merge']) assert.equal(w.bash(command), 'deny', command);
-  for (const command of ['gh pr view 7', 'gh api repos/o/r/pulls/1']) assert.equal(w.bash(command), 'allow', command);
+  for (const command of ['gh api graphql -f query=\'mutation { mergePullRequest(input: {pullRequestId: "x"}) { clientMutationId } }\'', 'gh api graphql -F query=@q.graphql']) assert.equal(w.bash(command), 'deny', command);
+  for (const command of ['gh pr view 7', 'gh api repos/o/r/pulls/1', 'gh api graphql -f query=\'query { viewer { login } }\'']) assert.equal(w.bash(command), 'allow', command);
   const effects = fs.readFileSync(path.join(w.env.TO_AUTO_SESSIONS, 's1.effects.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-  assert.deepEqual(effects.map((e) => [e.targets.join(), e.runs.join(), e.state]), [['push:lab', 'x', fs.realpathSync(w.env.TO_AUTO_HOME)]], 'each effect names its run and control plane');
+  assert.deepEqual(effects.map((e) => [e.targets.join(), e.runs.join(), e.state]), [['push:lab', 'x', fs.realpathSync(w.env.TO_AUTO_HOME)], ['push:lab', 'x', fs.realpathSync(w.env.TO_AUTO_HOME)]], 'each effect names its run and control plane');
+  // A command whose targets two runs of the session granted is recorded once per target, under the run that granted it.
+  w.goal('init', 'y', 'docs job', '--agent', 's1', '--harness', 'test');
+  w.goal('grant', 'y', 'pr', '--', 'For the docs job, open a draft PR');
+  assert.equal(w.bash('git push lab HEAD && gh pr create --fill'), 'allow');
+  const split = fs.readFileSync(path.join(w.env.TO_AUTO_SESSIONS, 's1.effects.jsonl'), 'utf8').trim().split('\n').slice(-2).map((l) => JSON.parse(l));
+  assert.deepEqual(split.map((e) => [e.targets.join(), e.runs.join()]), [['push:lab', 'x'], ['pr', 'y']]);
   // A grant typed into runs.json is no owner's words.
   const runs = path.join(w.env.TO_AUTO_HOME, 'runs.json');
   const data = JSON.parse(fs.readFileSync(runs, 'utf8'));

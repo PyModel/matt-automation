@@ -550,6 +550,15 @@ test('a failed undispatch leaves the ticket in flight with its contract, and the
   assert.equal(git(control, 'status', '--porcelain'), '', 'nothing is left half-done in the control plane');
   setStatus(repo, 'x', '01', 'ready-for-agent', { reason: 'not dispatched' });
   assert.equal(fs.existsSync(contract), false);
+  // A worker's commit on the branch of a tree already returned keeps the ticket in flight: the branch is not deleted.
+  assert.deepEqual(take(repo, 'x', 1), ['01']);
+  prepareTicket(repo, 'x', '01');
+  const worked = JSON.parse(read('runs/x/worktrees.json')).t01;
+  write(path.join(worked.path, 'a.txt'), 'bye\n');
+  git(worked.path, 'commit', '-qam', 'Refs 01 work');
+  worktreeReturn(repo, 'x', '01');
+  assert.throws(() => setStatus(repo, 'x', '01', 'ready-for-agent', { reason: 'not dispatched' }), /its branch \S+ is at [0-9a-f]{12}, not its ticket base/);
+  assert.equal(spawnSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${worked.branch}`]).status, 0, 'the work is kept');
 });
 
 // Workers proved "green at an intermediate commit" and "the test kills this mutant" with hand-rolled exports and scripts in
@@ -885,6 +894,13 @@ test('grant: only words the owner wrote grant a target, and only a target those 
   assert.throws(() => grant(repo, 'x', ['push:origin'], 'jobs table with its migration'), /do not name push:origin/);
   assert.throws(() => grant(repo, 'x', ['../etc'], 'Build the jobs table'), /repo-relative/);
   assert.throws(() => grant(repo, 'x', ['.'], 'Build the jobs table'), /repo-relative/, 'the whole repo is no path to grant');
+  // A grant typed into runs.json quotes no owner: the planned migration stays held.
+  const registryFile = path.join(control, 'runs.json');
+  const handTyped = JSON.parse(fs.readFileSync(registryFile, 'utf8'));
+  handTyped[0].grants = [{ paths: ['db/migrations/'], source: 'owner', quote: 'migrations are fine', at: new Date().toISOString() }];
+  fs.writeFileSync(registryFile, JSON.stringify(handTyped));
+  assert.deepEqual(frontier(control, 'x').held.map((h) => h.id), ['01']);
+  git(control, 'checkout', '--', 'runs.json');
   assert.match(grant(repo, 'x', ['db/migrations/'], 'jobs table  with its Migration'), /granted db\/migrations\/ to x by "jobs table with its Migration" \(objective\)/);
   assert.deepEqual(registry(control)[0].grants.map((g) => [g.paths, g.source, g.quote]), [[['db/migrations/'], 'objective', 'jobs table with its Migration']]);
   assert.match(read('runs/x/ledger.md'), /\[grant\] db\/migrations\/ by "jobs table with its Migration" \(objective\)/);

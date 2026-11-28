@@ -62,11 +62,29 @@ function ghApiWrites(command, only = /(?:)/) {
 
 const sessions = () => process.env.TO_AUTO_SESSIONS || path.join(os.homedir(), '.local', 'state', 'to-auto-sessions');
 
-/** The remotes a command pushes to: `--repo`, else the first word after `push` that is no option. With neither, git picks
- *  one from config (pushRemote, pushDefault, the branch's remote) that the hook cannot see reliably: `(default)`, which
- *  only `push:*` covers, so a run names its remote. */
-// ponytail: an option that takes its value as the next word (`-o ci.skip`) reads that value as the remote, which no grant names, so it is denied.
-export const pushRemotes = (command) => [...plain(command).matchAll(PUSH)].map(([, rest]) => rest.match(/--repo[=\s]+(\S+)/)?.[1] ?? rest.trim().split(/\s+/).find((w) => w && !w.startsWith('-')) ?? '(default)');
+// git push options whose value is the next word.
+const PUSH_VALUE_OPTIONS = new Set(['-o', '--push-option', '--receive-pack', '--exec', '--repo']);
+/** The remotes a command pushes to, in git's order: the first positional word after `push`, else `--repo`. With neither,
+ *  git picks one from config (pushRemote, pushDefault, the branch's remote) that the hook cannot see reliably:
+ *  `(default)`, which only `push:*` covers, so a run names its remote. */
+// ponytail: an unknown option that takes its value as the next word reads that value as the remote, which no grant names, so it is denied.
+export const pushRemotes = (command) => [...plain(command).matchAll(PUSH)].map(([, rest]) => {
+  const words = rest.trim().split(/\s+/).filter(Boolean);
+  let repo = null;
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (w === '--') return words[i + 1] ?? repo ?? '(default)';
+    if (PUSH_VALUE_OPTIONS.has(w)) {
+      if (w === '--repo') repo = words[i + 1] ?? null;
+      i++;
+    } else if (w.startsWith('--repo=')) repo = w.slice('--repo='.length);
+    else if (!w.startsWith('-')) return w;
+  }
+  return repo ?? '(default)';
+});
+
+/** A `gh api graphql` call that can write a PR: a mutation on one, or a query the guard cannot read (a file, stdin). */
+const graphqlPrWrite = (command) => [...command.matchAll(GH_API)].some(([, args]) => /\bgraphql\b/.test(args) && ((/\bmutation\b/i.test(args) && /pullrequest/i.test(args)) || /=@|--input\b/.test(args)));
 
 /** Keep what the owner typed, for goal.mjs to check quotations against. Appended only here, by the harness's own hook. */
 function recordOwner(id, prompt) {
@@ -236,18 +254,21 @@ async function main() {
     // Only a run this session registered or adopted lends its grants: another session's run never does.
     const mine = active.filter((r) => r.agent === id);
     // A grant counts only while its quote is still the owner's words naming the target: runs.json can be edited by hand.
-    const granted = (target) => mine.some((r) => (r.grants ?? []).some((g) => g.paths?.includes(target) && stands(r, g)));
+    const covers = (r, target) => (r.grants ?? []).some((g) => (g.paths?.includes(target) || (target.startsWith('push:') && g.paths?.includes('push:*'))) && stands(r, g));
     const command = input.tool_name === 'Bash' ? String(input.tool_input?.command ?? '') : '';
-    const wanted = [...pushRemotes(command).map((remote) => `push:${remote}`), ...(PR_WRITE.test(plain(command)) || ghApiWrites(plain(command), /\/pulls\b/) ? ['pr'] : [])];
+    const wanted = [...pushRemotes(command).map((remote) => `push:${remote}`), ...(PR_WRITE.test(plain(command)) || ghApiWrites(plain(command), /\/pulls\b/) || graphqlPrWrite(plain(command)) ? ['pr'] : [])];
     if (wanted.length && !mine.length) {
       deny(`to-auto: this session owns no active run, so ${wanted.join(', ')} has no grant: register its run (\`goal.mjs init\`) or take one over (\`goal.mjs adopt <slug> --agent ${id} --harness <name>\`) first.`);
       return;
     }
-    const missing = wanted.filter((target) => !granted(target) && !(target.startsWith('push:') && granted('push:*')));
+    const missing = wanted.filter((target) => !mine.some((r) => covers(r, target)));
     // What the guard let through goes on record for the hand-back (`goal.mjs handback`).
-    // Each line names the runs whose grants allowed it and their control plane, so one run's hand-back shows only its own.
-    const by = mine.filter((r) => wanted.every((t) => (r.grants ?? []).some((g) => (g.paths?.includes(t) || (t.startsWith('push:') && g.paths?.includes('push:*'))) && stands(r, g)))).map((r) => r.slug);
-    if (wanted.length && !missing.length) fs.appendFileSync(`${marker}.effects.jsonl`, `${JSON.stringify({ at: new Date().toISOString(), targets: wanted, runs: by.length ? by : mine.map((r) => r.slug), state, command: command.replace(/\s+/g, ' ').slice(0, 200) })}\n`);
+    // One line per target, naming only the runs whose grants allowed it and their control plane: a run's hand-back shows its own.
+    if (wanted.length && !missing.length) {
+      const at = new Date().toISOString();
+      const line = command.replace(/\s+/g, ' ').slice(0, 200);
+      fs.appendFileSync(`${marker}.effects.jsonl`, wanted.map((t) => `${JSON.stringify({ at, targets: [t], runs: mine.filter((r) => covers(r, t)).map((r) => r.slug), state, command: line })}\n`).join(''));
+    }
     if (missing.length) deny(`to-auto: ${missing.join(', ')} has no grant in run ${mine[0].slug}. Pushing and opening or merging a PR need the owner's own words, whatever the run's mode: \`goal.mjs grant ${mine[0].slug} ${missing.join(' ')} -- "<their words>"\` records them (an owner side task is granted from the message that asked for it); without them it is a blocker for the hand-back (CORE.md, Autonomous).`);
     return;
   }

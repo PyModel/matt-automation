@@ -10,7 +10,7 @@ All under `<state>/runs/<slug>/` in the control plane (CONTROL.md), created at s
 |---|---|---|---|
 | `ledger.md` | **NOW** block followed by an append-only event stream | orchestrator | before and after every stage; on every subagent dispatch and return |
 | `todo.md` | The stage checklist and, from stage 6b, one line per ticket with status | orchestrator | whenever a box changes |
-| `log.md` | Decisions, one line each with an id: `- D<n> [stage] Q: <question> → A: <answer> (source: findings \| codebase \| kun \| owner \| default)`; one waiting on an answer is `- D<n> (open) [stage] Q: …`, and every `tick` refuses while one is open; `(source: owner)` lines ride in every contract `prepare-ticket` drafts, so a brief never restates them; ticket completions as `- [implement] <ticket path> done @ <commit>` | orchestrator and subagents | at the moment a decision is made |
+| `log.md` | Decisions, one line each with an id: `- D<n> [stage] Q: <question> → A: <answer> (source: findings \| codebase \| kun \| owner \| default)`; one waiting on an answer is `- D<n> (open) [stage] Q: …`, and every `tick` refuses while one is open; a `(source: owner)` line quotes the owner's words in double quotes (`tick` refuses one that quotes nothing they wrote) and rides in every contract `prepare-ticket` drafts; ticket completions as `- [implement] <ticket path> done @ <commit>` | orchestrator and subagents | at the moment a decision is made |
 | `findings.md` | Stage 1 repo facts, requirements R1…, open questions Q1…; stage 3 sourced answers | orchestrator / research agent | stages 1 to 3 |
 | `spec.md` | Working copy of the published spec (PLAN.md stage 5) | orchestrator | stage 5 |
 | `baseline.txt` | Stage 0d per-test result set, one `<test id> pass\|fail\|flaky\|skip` line each (raw suite output stays in `<state>/logs/<slug>/`, uncommitted) | orchestrator | stage 0d |
@@ -40,7 +40,7 @@ The tracker's ticket files stay the source of truth for *what to build*; `ticket
 - commands: install=`pnpm i` hooks=`pnpm lefthook install` typecheck=`pnpm tsc` lint=`pnpm lint` test1=`pnpm vitest run <file>` suite=`pnpm test`
 - packages: none
 - per-worktree: PORT=3000+100*run_id+NN, DATABASE_URL suffix _<slug>_tNN, copy .env with suffix
-- budgets: concurrent 3 (used 2), agents 40 (used 9), per-ticket 12 slices / 90 min, wall-clock 8h (used 1h07), bug-tickets 3 (used 0)
+- budgets: concurrent 3, agents 40, per-ticket 12 slices / 90 min, wall-clock 8h, bug-tickets 3 (limits only)
 - baseline: suite green @ base (412 tests)
 - active: t03 → <path from goal.mjs worktree get> (started 14:02, slice 2/4) ; t05 → …
 - blockers: wizard script <state>/runs/<slug>/wizard-stripe.sh (t06 waits)
@@ -59,7 +59,7 @@ The tracker's ticket files stay the source of truth for *what to build*; `ticket
 Rules:
 
 - **NOW is rewritten, Events are appended.** NOW is what a fresh context reads first; Events are how it verifies NOW.
-- One event per stage transition, subagent dispatch, subagent return, merge, blocker, bug noticed (`[bug]`), and compaction. Appended only with `goal.mjs event <slug> <stage> "<text>"`, which stamps the real local time; never typed by hand, so no time is guessed.
+- One event per stage transition, merge, blocker, bug noticed (`[bug]`) and compaction; helper dispatches and returns are `goal.mjs helper`'s. Appended only with `goal.mjs event <slug> <stage> "<text>"`, which stamps the real local time.
 - Never paste artifacts into the ledger: point at files, commits, ticket ids.
 - Every command output written here, or to a status, bug, or notes file, is redacted first (CORE.md, Redaction).
 
@@ -104,8 +104,8 @@ Every invocation runs this, first run or fiftieth loop tick, and so does a subag
 
 ## Compaction and context pressure
 
-- Stages 1 to 6b stay in one window when they can: grilling, spec, and tickets build on the same thinking, and to-tickets truncates a large spec after a break (PITFALLS.md). If the window must be compacted, do it only at a stage boundary outside 5–6b, never between to-spec and to-tickets. Stage 7 gets a fresh context per ticket (a subagent). `/clear` never mid-run.
-- Before any compaction (harness-triggered or chosen), rewrite NOW so it is sufficient on its own, then `goal.mjs compact <slug>` (it refuses an empty NOW, appends a `[compact]` event, and commits). The compaction summary is seeded with: "resume from `<state>/runs/<slug>/ledger.md`".
+- Stages 1 to 6b stay in one window when they can: grilling, spec, and tickets build on the same thinking, and to-tickets truncates a large spec after a break (PITFALLS.md). A chosen compaction happens only at a stage boundary outside 5–6b. Stage 7 gets a fresh context per ticket (a subagent). `/clear` never mid-run.
+- Before a chosen one, rewrite NOW so it stands alone, then `goal.mjs compact <slug>` (refuses an empty NOW, appends a `[compact]` event, commits). One the harness triggers gives no warning: on Claude Code the guard's SessionStart hook appends the event and prints the re-entry steps; elsewhere run `compact` on noticing it. A skill read before the last `[compact]` event is not loaded.
 - Subagent briefs never carry state that the ledger holds; they carry the path to it.
 
 ## Subagent contract

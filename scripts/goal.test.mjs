@@ -9,6 +9,8 @@ import { STAGES, verdict, init, next, tick, stop, resume, setRegistry, slugFor, 
 
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const WHO = { agent: 'test-session', harness: 'test' };
+// The owner's words are read from here (ownerWords); never the real sessions folder.
+process.env.TO_AUTO_SESSIONS = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-words-'));
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 
 function write(file, text) {
@@ -350,7 +352,7 @@ test('since dispatch: claims and criteria changed by a raw git commit are caught
   const problems = sinceDispatch(t02).join(' | ');
   assert.match(problems, /src\/hand\.ts.*goal\.mjs claim/);
   assert.match(problems, /criteria changed since dispatch.*\+"a finding folded in by hand"/);
-  assert.throws(() => setStatus(repo, 'f', '02', 'ready-for-agent'), /cannot go from in-flight to ready-for-agent/, 'no bounce back to the frontier');
+  assert.throws(() => setStatus(repo, 'f', '02', 'ready-for-agent'), /needs its reason/, 'no silent bounce back to the frontier');
   setStatus(repo, 'f', '02', 'stuck', { reason: 'mis-scoped; re-plan' });
   setStatus(repo, 'f', '02', 'ready-for-agent');
   setStatus(repo, 'f', '02', 'in-flight');
@@ -575,7 +577,7 @@ test('CLI exit codes: 2 for usage, 3 for runtime errors', () => {
   // One command per line: an agent greps the usage for a command, and a one-line usage is cut by long-output truncation.
   const help = spawnSync(process.execPath, [GOAL, '--help'], { encoding: 'utf8' }).stdout;
   assert.match(help, /^ {2}commit -m <msg> <file>\.\.\.$/m);
-  assert.match(help, /^ {2}run -- <command>$/m);
+  assert.match(help, /^ {2}run \[--at <commit>\] \[--mutation <patch file>\] \[--script <file>\] -- <command>$/m);
 });
 
 test('duplicate ticket numbers are malformed and status refuses to guess', () => {

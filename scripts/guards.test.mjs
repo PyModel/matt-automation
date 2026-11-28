@@ -10,6 +10,8 @@ import { STAGES, nowStage, ignoreAllAncestors, unresolvedBugs } from './goal.mjs
 const GOAL = path.join(path.dirname(fileURLToPath(import.meta.url)), 'goal.mjs');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 const WHO_ARGS = ['--agent', 'test-session', '--harness', 'test'];
+// The owner's words are read from here (ownerWords); never the real sessions folder.
+process.env.TO_AUTO_SESSIONS = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-words-'));
 const tmp = (prefix) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 
 function bareRepo(repo = tmp('guards-repo-')) {
@@ -186,6 +188,15 @@ test('worktree get without treehouse makes git worktrees under the state dir, ru
   assert.equal(git(twt, 'rev-parse', 'HEAD'), git(wt, 'rev-parse', 'HEAD'), 'ticket branch starts at the run branch head');
   const status = JSON.parse(goal(ctx, ['worktree', 'status', 'x']).stdout);
   assert.deepEqual(Object.keys(status).sort(), ['run', 't01']);
+  assert.equal(status.run.parent, undefined, 'a run cut from the repo\'s own line is stacked on nothing');
+  // A run cut from another run's unmerged branch is stacked on it: the registry of worktrees says so, and `next` reports it.
+  assert.equal(goal(ctx, ['init', 'y', 'Y', ...WHO_ARGS]).status, 0);
+  const stacked = goal(ctx, ['--base', 'goal/x', 'worktree', 'get', 'y']);
+  assert.equal(stacked.status, 0, stacked.stderr);
+  const y = JSON.parse(goal(ctx, ['next', 'y']).stdout);
+  assert.deepEqual(y.stacked_on, { run: 'x', status: 'bootstrapping', branch: 'goal/x' });
+  assert.equal(y.base, `goal/x @ ${git(wt, 'rev-parse', 'HEAD').slice(0, 12)}`);
+  assert.equal(JSON.parse(goal(ctx, ['next', 'x']).stdout).stacked_on, undefined);
   assert.equal(status.t01.backend, 'git');
   assert.equal(status.t01.state, 'active');
   assert.match(fs.readFileSync(path.join(ctx.state, '.gitignore'), 'utf8'), /^worktrees\/$/m);
@@ -826,6 +837,11 @@ const reviewBase = (ctx) => {
   const ledger = path.join(ctx.state, 'runs/x/ledger.md');
   fs.writeFileSync(ledger, fs.readFileSync(ledger, 'utf8').replace('## NOW\n', '## NOW\n- review_base: 1234567\n'));
 };
+const nowAdd = (ctx, lines) => {
+  const ledger = path.join(ctx.state, 'runs/x/ledger.md');
+  fs.writeFileSync(ledger, fs.readFileSync(ledger, 'utf8').replace('## NOW\n', `## NOW\n${lines}`));
+};
+const logAdd = (ctx, line) => fs.appendFileSync(path.join(ctx.state, 'runs/x/log.md'), `${line}\n`);
 const tick = (ctx, ...args) => goal(ctx, ['tick', 'x', ...args]);
 const ticked = (ctx, ...args) => {
   const r = tick(ctx, ...args);
@@ -854,23 +870,74 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   assert.deepEqual([planned.registry, planned.next], ['planning', '0d']);
   assert.equal(nowOf(ctx), '0d');
   assert.equal(git(ctx.state, 'log', '-1', '--format=%s'), '[x] tick 0c: done; status planning');
+  assert.match(JSON.parse(goal(ctx, ['next', 'x']).stdout).tick_checks, /baseline\.txt is committed, NOW carries commands:/, 'next prints what the tick will check');
+  // A tick checks what its stage must leave behind, not only that the stage before it was ticked.
+  refused(ctx, /stage 0d is not finished: runs\/x\/baseline\.txt is missing.*NOW has no commands:, budgets:, baseline:, nested:, worker:/, '0d');
+  put(ctx, 'runs/x/baseline.txt', 't1 pass\n');
+  // NOW holds limits only: what is used is computed by `next`. A run's hand-typed clock read 2h30 at 1h19.
+  nowAdd(ctx, '- budgets: concurrent 3 (used 2), wall-clock 8h (used 2h30)\n');
+  const typed = goal(ctx, ['commit', '-m', '[x] now', path.join(ctx.state, 'runs/x/ledger.md')]);
+  assert.equal(typed.status, 1);
+  assert.match(typed.stderr, /NOW's budgets: line holds limits only; `goal\.mjs next x` prints what is used/);
+  const ledgerFile = path.join(ctx.state, 'runs/x/ledger.md');
+  fs.writeFileSync(ledgerFile, fs.readFileSync(ledgerFile, 'utf8').replace(/^- budgets:.*\n/m, ''));
+  // A limit that is not the default names who set it: a run's concurrency went from 3 to 2 with no line saying why.
+  nowAdd(ctx, '- commands: suite=`true`\n- budgets: concurrent 2\n- baseline: suite green\n- env: nested: yes   worker: subagent\n');
+  refused(ctx, /NOW budgets: sets concurrent 2 \(default 3\) and log\.md has no `budget: <old> -> <new> \(source: <who>\)` line/, '0d');
+  logAdd(ctx, '- budget: concurrent 3 -> 2 (source: findings, the suite binds one port)');
   ticked(ctx, '0d');
+  assert.match(JSON.parse(goal(ctx, ['next', 'x']).stdout).budget.wall_clock_used, /^0h0\d$/);
   refused(ctx, /runs\/x\/findings\.md is missing/, '1');
   put(ctx, 'runs/x/findings.md', '# f\n');
+  refused(ctx, /log\.md has no decision tagged \[1\]/, '1');
+  logAdd(ctx, '- D1 [1] Q: route? → A: feature (source: findings)');
+  // The stage's skill is loaded in this run, by path, on record: what an earlier run of the session read does not count.
+  assert.deepEqual(JSON.parse(goal(ctx, ['next', 'x']).stdout).skills_to_load, ['ask-matt']);
+  refused(ctx, /this run never loaded ask-matt, which stage 1 follows: `node \S+matt\.mjs resolve <name> --slug x`/, '1');
+  const MATT = path.join(path.dirname(GOAL), 'matt.mjs');
+  const loaded = spawnSync(process.execPath, [MATT, 'resolve', 'ask-matt', '--slug', 'x'], { cwd: ctx.repo, encoding: 'utf8', env: { ...process.env, TO_AUTO_HOME: ctx.state } });
+  assert.equal(loaded.status, 0, loaded.stderr);
+  assert.match(loaded.stdout, /ask-matt\/SKILL\.md\n$/);
+  assert.match(fs.readFileSync(path.join(ctx.state, 'runs/x/ledger.md'), 'utf8'), /^- \d\d:\d\d \[skill\] ask-matt @ [0-9a-f]{12}$/m);
+  assert.equal(JSON.parse(goal(ctx, ['next', 'x']).stdout).skills_to_load, undefined);
+  // A compaction empties the session's memory of it: the skill is to load again.
+  assert.equal(goal(ctx, ['event', 'x', 'compact', 'context compacted']).status, 0);
+  assert.deepEqual(JSON.parse(goal(ctx, ['next', 'x']).stdout).skills_to_load, ['ask-matt']);
   ticked(ctx, '1');
   ticked(ctx, '2', '--skipped', 'plain feature');
   ticked(ctx, '3', '--skipped', 'no external unknown');
+  // A single-ticket feature replaces the interview with the defensive-design check, so that is the skill stage 4 needs.
+  logAdd(ctx, '- D2 [4] Q: planning path? → A: single-ticket feature: R1, seam cli test, tier 1, claims src/report.js (source: findings)');
+  assert.deepEqual(JSON.parse(goal(ctx, ['next', 'x']).stdout).skills_to_load, ['defensive-design']);
+  refused(ctx, /this run never loaded defensive-design, which stage 4 follows/, '4');
+  const homes = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-homes-'));
+  fs.mkdirSync(path.join(homes, 'defensive-design'));
+  fs.writeFileSync(path.join(homes, 'defensive-design', 'SKILL.md'), '# defensive-design\n');
+  const designed = spawnSync(process.execPath, [MATT, 'resolve', 'defensive-design', '--slug', 'x'], { cwd: ctx.repo, encoding: 'utf8', env: { ...process.env, TO_AUTO_HOME: ctx.state, AGENT_SKILL_HOMES: homes } });
+  assert.equal(designed.status, 0, designed.stderr);
   ticked(ctx, '4');
   ticked(ctx, '4b', '--skipped', 'single-ticket-feature');
   assert.match(todoOf(ctx), /^- \[x\] 4b challenge \(skipped: single-ticket-feature\)$/m);
   refused(ctx, /runs\/x\/spec\.md is missing/, '5');
   put(ctx, 'runs/x/spec.md', '# s\n');
   assert.equal(ticked(ctx, '5').registry, 'planning');
+  // The reconcile gate closes on its own last note: no item open, or each one ruled on by kun. Never on the orchestrator's word.
+  refused(ctx, /stage 5b is not finished: runs\/x\/notes\/ has no reconcile-<n>\.md/, '5b');
+  put(ctx, 'runs/x/notes/reconcile-1.md', '- X1: the 30 s timeout became "reasonable"\n- X2: the ordering guarantee is gone\n');
+  put(ctx, 'runs/x/notes/reconcile-2.md', '- X2: the ordering guarantee is gone\n');
+  refused(ctx, /reconcile-2\.md still lists X2 with no `\(source: kun\)` ruling/, '5b');
+  logAdd(ctx, '- D2 [5b] Q: X2, ordering dropped? → A: fixed it myself (source: findings)');
+  refused(ctx, /reconcile-2\.md still lists X2/, '5b');
+  logAdd(ctx, '- D3 [5b] Q: X2, ordering dropped? → A: accepted divergence, the queue is single-consumer (source: kun)');
   assert.equal(ticked(ctx, '5b').registry, 'specced');
   ticked(ctx, '6');
   refused(ctx, /no tickets in tracker\/x\/issues/, '6b');
-  const ticket = (status) => put(ctx, 'tracker/x/issues/01-a.md', `# a\n\n**Status:** ${status}\n**Blocked by:** none\n**Claims:** a.txt (exclusive)\n\n- [ ] works\n`);
+  const ticket = (status, claims = 'exclusive: a.txt') => put(ctx, 'tracker/x/issues/01-a.md', `# a\n\n**Status:** ${status}\n**Blocked by:** none\n**Claims:** ${claims}\n\n- [ ] works\n`);
+  ticket('in-flight', 'a.txt (exclusive)');
+  refused(ctx, /stage 6b is not finished: `goal\.mjs frontier x` reports 1 malformed ticket\(s\) and 0 overlap\(s\); todo\.md has no ticket table/, '6b');
   ticket('in-flight');
+  const todo = path.join(ctx.state, 'runs/x/todo.md');
+  fs.writeFileSync(todo, `${fs.readFileSync(todo, 'utf8')}| 01 | none | a.txt | in-flight |\n`);
   assert.equal(ticked(ctx, '6b').registry, 'building');
   assert.match(git(ctx.state, 'log', '-1', '--format=%s'), /status ticketed → building$/);
   assert.equal(goal(ctx, ['check', 'x']).status, 0, 'a ticked run is in step with its registry');
@@ -891,9 +958,14 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   assert.equal(v.status, 0, v.stderr);
   assert.equal(JSON.parse(v.stdout).review_head, tip);
   ticked(ctx, '8');
+  refused(ctx, /stage 9 is not finished: runs\/x\/handback\.md is not committed: `goal\.mjs handback x` writes it/, '9');
+  assert.equal(goal(ctx, ['handback', 'x']).status, 0);
+  assert.match(fs.readFileSync(path.join(ctx.state, 'runs/x/handback.md'), 'utf8'), /^# Hand-back: X\n\n- mode: branch .*\n- used: 0h0\d wall-clock, 0 helpers \(none\)\n- verdict: ship @ [0-9a-f]{12}/);
   ticked(ctx, '9');
   refused(ctx, /runs\/x\/retro\.md is missing/, '10');
   put(ctx, 'runs/x/retro.md', '# r\n');
+  refused(ctx, /this run never loaded retro, which stage 10 follows/, '10');
+  assert.equal(goal(ctx, ['event', 'x', 'skill', 'retro @ fixture']).status, 0);
   git(ctx.repo, 'commit', '-q', '--allow-empty', '-m', 'landed after the review');
   refused(ctx, /main is at .* but the final review saw/, '10');
   git(ctx.repo, 'reset', '-q', '--hard', 'HEAD~1');
@@ -912,8 +984,43 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   assert.equal(fs.existsSync(wt), false);
   assert.equal(git(ctx.repo, 'branch', '--list', 'goal/x'), 'goal/x');
   assert.equal(nowOf(ctx), 'done');
+  assert.match(fs.readFileSync(path.join(ctx.state, 'runs/x/ledger.md'), 'utf8'), /^- next: nothing; the hand-back is runs\/x\/handback\.md$/m, 'a closed run points at its hand-back, not at a stage 8 step');
   assert.equal(JSON.parse(goal(ctx, ['next', 'x']).stdout).done, true);
   refused(ctx, /x is done/, '10');
+});
+
+// A run's per-ticket review in flat mode was one diff of the source paths read by the session that wrote the tickets,
+// logged as "review clean", and its tickets were drafted while the spec was still being reconciled.
+test('tick 7 needs a review on record per dispatched ticket in flat mode; tick 6b refuses tickets older than the reconciled spec', () => {
+  const ctx = run();
+  forceStatus(ctx, 'building');
+  tickBefore(ctx, 'x', '7');
+  put(ctx, 'tracker/x/issues/01-a.md', '# a\n\n**Status:** done\n**Blocked by:** none\n**Claims:** exclusive: a.txt\n\n- [x] works\n');
+  put(ctx, 'runs/x/tickets/01.goal.md', '# Goal: 01\n');
+  setNow(ctx, 'x', '7 build');
+  fixtureCommit(ctx, '[x] fixture: ticket landed');
+  refused(ctx, /stage 7 is not finished: ticket\(s\) 01 are done with no review on record.*tickets\/<NN>\.review\.md.*A diff the orchestrator read is not a review/, '7');
+  put(ctx, 'runs/x/tickets/01.review.md', 'range abc..def; files read: a.txt, a.test.txt; findings: none\n');
+  fixtureCommit(ctx, '[x] fixture: review saved');
+  assert.equal(ticked(ctx, '7').registry, 'reviewing');
+
+  const early = run();
+  forceStatus(early, 'planning');
+  tickBefore(early, 'x', '5b');
+  put(early, 'runs/x/spec.md', '# s\n');
+  put(early, 'runs/x/notes/reconcile-1.md', 'none\n');
+  put(early, 'tracker/x/issues/01-a.md', '# a\n\n**Status:** ready-for-agent\n**Blocked by:** none\n**Claims:** exclusive: a.txt\n\n- [ ] works\n');
+  const todo = path.join(early.state, 'runs/x/todo.md');
+  fs.writeFileSync(todo, `${fs.readFileSync(todo, 'utf8')}| 01 | none | a.txt | ready-for-agent |\n`);
+  setNow(early, 'x', '5b reconcile');
+  fixtureCommit(early, '[x] fixture: a ticket drafted during the reconcile rounds');
+  const tickOf = (...args) => goal(early, ['tick', 'x', ...args]);
+  assert.equal(tickOf('5b').status, 0, tickOf('5b').stderr);
+  assert.equal(tickOf('6').status, 0);
+  assert.match(tickOf('6b').stderr, /ticket\(s\) 01 were last committed before the spec was reconciled \(the tick of 5b\)/);
+  put(early, 'tracker/x/issues/01-a.md', '# a\n\n**Status:** ready-for-agent\n**Blocked by:** none\n**Claims:** exclusive: a.txt\n\n- [ ] works as the final spec says\n');
+  fixtureCommit(early, '[x] fixture: ticket checked against the final spec');
+  assert.equal(tickOf('6b').status, 0, tickOf('6b').stderr);
 });
 
 test('re-ticking a ticked stage commits nothing; bad input is a usage error', () => {

@@ -1,10 +1,11 @@
 # VECTOR intake for the automation operator
 
 `/vector` designs; `/to-auto` executes only on request. Apply this built-in
-intake to the objective or supplied card. If the user explicitly names VECTOR
-and `node ROOT/scripts/matt.mjs resolve vector` finds the optional standalone
-skill, read it for context. If not installed, continue with the six steps
-below. Neither path runs an interview:
+intake to the objective or supplied card. If the user explicitly names VECTOR,
+read `ROOT/vector/SKILL.md` for context; the six steps below stand on their
+own when it is absent. Neither path runs an interview. A card's numbered
+checks (`V1…`) become requirements, its Assumptions stay assumptions, and each
+Unknown becomes an open Q or a blocker; a card marked Draft grants nothing:
 
 | Step | What the operator does |
 |---|---|

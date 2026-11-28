@@ -82,7 +82,10 @@ test('no doc tells the orchestrator to write the verdict or a landing script by 
 // A run read the owner's "merge all to main" as lifting the owner's separate review of two changes "unless the owner
 // objects"; only the project's own merge rule stopped it.
 test('CORE.md says owner words grant only what they name, and every citation of a core rule names CORE.md', () => {
-  assert.ok(doc('CORE.md').includes('Either grants only what it names: a blanket instruction ("merge all") lifts no hold the owner set (an owner-only merge, a separate review), and silence grants nothing, so no plan reads "unless the owner objects".'));
+  assert.ok(doc('CORE.md').includes('A grant covers only what it names: a blanket instruction ("merge all") lifts no hold the owner set (an owner-only merge, a separate review), and silence grants nothing, so no plan reads "unless the owner objects".'));
+  // A run tagged its own reading of the owner `(source: owner)` and was granted four guarded files on it.
+  assert.ok(doc('CORE.md').includes('A decision the orchestrator writes is never a grant, whatever it cites.'));
+  for (const name of PHASE_DOCS) assert.doesNotMatch(doc(name), /-- objective\b|-- D<n>/, `${name} still cites a grant by source instead of quoting the owner`);
   const dangling = PHASE_DOCS.filter((f) => doc(f).includes('SKILL.md § Rules,'));
   assert.deepEqual(dangling, [], 'SKILL.md § Rules only points at CORE.md; it holds no Autonomous or Redaction rule');
 });

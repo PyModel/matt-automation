@@ -25,6 +25,7 @@
 | 🎯 | [`to-auto/`](to-auto/SKILL.md) | The pipeline: **ask-matt → on-ramp → research → grill → spec → tickets → build → review → retro**. |
 | 🐛 | [`to-bug/`](to-bug/SKILL.md) | `to-auto` with the route pinned to `diagnosing-bugs` and the bug fast path armed. |
 | 🌱 | [`to-new/`](to-new/SKILL.md) | `to-auto` for a greenfield repo, package, service, or skill. |
+| 🧭 | [`vector/`](vector/SKILL.md) | Designs a VECTOR workflow card: with a person, one question at a time; for an agent or bot, unattended, as a numbered draft with owner questions. Never starts a run. |
 | 🛰️ | [`to-orc/`](to-orc/SKILL.md) | Delegation-only orchestrator: pi workers on any model, gated evidence, a raw-JSON verdict. Also `to-auto`'s optional pi implementer backend. |
 | 📌 | `vendor/mattpocock-skills/` | Gitignored symlink to a local clone of upstream Matt skills on `main`; every `check` fast-forwards it. |
 | 🔗 | `matt/<name>` | Committed symlinks into the vendored checkout: the only place runs load Matt skills from. |
@@ -41,7 +42,7 @@ cd matt-automation
 node scripts/matt.mjs check        # prints "ok"
 ```
 
-Link `to-auto`, `to-bug`, `to-new` and `to-orc` into your harnesses' skills folders (`~/.agents/skills`, `~/.pi/agent/skills`, `~/.claude/skills`; `--home <dir>` for another):
+Link `to-auto`, `to-bug`, `to-new`, `to-orc` and `vector` into your harnesses' skills folders (`~/.agents/skills`, `~/.pi/agent/skills`, `~/.claude/skills`; `--home <dir>` for another):
 
 ```sh
 node scripts/install.mjs           # replaces its own links, refuses a real folder
@@ -62,7 +63,7 @@ Already have a workflow card? Give one prompt, for example:
 /to-auto Implement the report export described in docs/report-workflow.md. Use it as a VECTOR card. Hand back a verified local branch.
 ```
 
-The standalone `/vector` skill is optional: it designs a card but does not start a run. When you ask `/to-auto` to execute, its built-in [VECTOR intake](to-auto/references/vector-intake.md) turns the brief into checks, evidence, and limits. The operator makes routine decisions; neither the card nor the persona can grant permission to publish, deploy, or spend. Add `--no-helpers` for solo execution. An inline review is not independent. Resume an interrupted run with `/to-auto --resume <slug>`.
+`/vector` designs a card but does not start a run. When you ask `/to-auto` to execute, its built-in [VECTOR intake](to-auto/references/vector-intake.md) turns the brief into checks, evidence, and limits. The operator makes routine decisions; neither the card nor the persona can grant permission to publish, deploy, or spend. Add `--no-helpers` for solo execution. An inline review is not independent. Resume an interrupted run with `/to-auto --resume <slug>`.
 
 A run also needs four installed skills: `kun`, `research-stack`, `defensive-design`, `zero-tech-debt`. They are found in `$AGENT_SKILL_HOMES` (path-separated), else `~/.claude/skills` and `~/.agents/skills`; `check` names any that are missing. The agent harness executes `/to-auto`; the scripts own run state and checks. For unattended re-entry after a turn ends, use a [keep-going hook or a recurring runner](to-auto/PIPELINE.md#under-a-loop).
 

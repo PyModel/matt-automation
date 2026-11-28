@@ -66,12 +66,11 @@ test('marked session with no active run: the incident, PRs, pushes, new branches
   for (const command of ['git status', 'git log --oneline -3 origin/main', 'git stash push -m wip', 'git log --grep=push', 'git commit -m "push later"', 'git branch -a', 'git branch -d claude/x', 'git branch -u origin/main', 'git branch --set-upstream-to=origin/main', 'gh pr view 785 --json state', 'gh pr list', 'gh issue view 1', 'gh api repos/o/r/pulls', 'gh api -X GET repos/o/r/issues -f state=open', 'gh api --method HEAD repos/o/r', 'gh api -XGET repos/o/r/issues -f state=open', 'gh api repos/o/r/issues --jq .[].title', `node ${GOAL} next x`, `node ${GOAL} init x "X"`, `node ${GOAL} worktree get x`]) assert.equal(w.bash(command), 'allow', command);
 });
 
-test('an active run allows PRs and helpers but never a hand-typed worktree; a stopped run counts as none', () => {
+test('an active run allows helpers but never a hand-typed worktree; a stopped run counts as none', () => {
   const w = world();
   w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '  /to-auto x' });
   w.goal('control');
   w.goal('init', 'x', 'X', '--agent', 's0', '--harness', 'test');
-  assert.equal(w.bash('gh pr create --draft --fill'), 'allow');
   assert.equal(w.decision('Agent', { prompt: 'implement ticket 01' }), 'allow');
   assert.equal(w.bash(INCIDENT), 'deny');
   assert.match(w.hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: INCIDENT } }).hookSpecificOutput.permissionDecisionReason, /goal\.mjs worktree get/);
@@ -108,6 +107,109 @@ test('a marked adopter is released when the older run finishes', () => {
   assert.equal(w.bash(INCIDENT), 'allow');
 });
 
+// A run pushed its branch to a forge with no grant, against its own "no push" decision, and nothing denied it.
+test('with a run active, a push needs a push:<remote> grant and a PR write a pr grant, both quoted from the owner', () => {
+  const w = world();
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto ship the importer and open a draft PR when it is green' });
+  w.goal('control');
+  w.goal('init', 'x', 'ship the importer', '--agent', 's1', '--harness', 'test');
+  const reason = (command) => w.hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } }).hookSpecificOutput.permissionDecisionReason;
+  for (const command of ['git push', 'git push -u origin HEAD', 'git -C /r push lab abc:refs/heads/goal/x', 'sh -c "git push"', 'gh pr create --draft --fill', 'gh pr merge 7 --squash', 'glab mr create --fill']) assert.equal(w.bash(command), 'deny', command);
+  assert.match(reason('git push lab HEAD'), /push:lab has no grant in run x.*goal\.mjs grant x push:lab -- "<their words>"/);
+  for (const command of ['git status', 'git log --grep=push', 'git stash push -m wip', 'gh pr view 7', 'git commit -m "push later"']) assert.equal(w.bash(command), 'allow', command);
+  // The mode grants nothing, and neither do words the owner never wrote.
+  const refused = spawnSync(process.execPath, [GOAL, '--repo', w.repo, 'grant', 'x', 'push:origin', '--', 'push it wherever you like'], { env: w.env, encoding: 'utf8' });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /is not something the owner wrote/);
+  w.goal('grant', 'x', 'pr', '--', 'open a draft PR');
+  assert.equal(w.bash('gh pr create --draft --fill'), 'allow');
+  assert.equal(w.bash('git push -u origin HEAD'), 'deny', 'a PR grant is not a push grant');
+  // An owner message sent mid-run (a side task) is the owner's words too.
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: 'also push the branch to the lab remote so the runner can test it' });
+  w.goal('grant', 'x', 'push:lab', '--', 'push the branch to the lab remote');
+  assert.equal(w.bash('git push lab HEAD:refs/heads/goal/x'), 'allow');
+  assert.equal(w.bash('git push origin HEAD'), 'deny', 'the grant names one remote');
+  assert.deepEqual(fs.readFileSync(path.join(w.env.TO_AUTO_SESSIONS, 's1.effects.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l).targets.join()), ['pr', 'push:lab'], 'what the guard let through is on record for the hand-back');
+  assert.equal(w.bash('git push lab HEAD && git push origin HEAD'), 'deny', 'every push in the command needs its grant');
+});
+
+test('a grant is this session\'s own, names its remote, and never comes from a prohibition or a hand edit', () => {
+  const w = world();
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto ship it. Never push to origin. Push the branch to the lab remote when green, no PR needed. Set up the label component. For the docs job, open a draft PR.' });
+  w.goal('control');
+  w.goal('init', 'x', 'ship it', '--agent', 's1', '--harness', 'test');
+  const grant = (...args) => spawnSync(process.execPath, [GOAL, '--repo', w.repo, 'grant', 'x', ...args], { env: w.env, encoding: 'utf8' });
+  for (const quote of ['push to origin', 'Never push to origin']) assert.match(grant('push:origin', '--', quote).stderr, /said not to/, quote);
+  assert.match(grant('push:lab', '--', 'Set up the label component').stderr, /do not name push:lab/, '"label" does not name the lab remote');
+  // A push grant names where: words for one remote grant no other, and push:* needs words for any remote.
+  for (const target of ['push:origin', 'push:*']) assert.match(grant(target, '--', 'Push the branch to the lab remote when green').stderr, new RegExp(`do not name ${target.replace('*', '\\*')}`), target);
+  w.goal('grant', 'x', 'push:lab', '--', 'Push the branch to the lab remote when green');
+  assert.equal(w.bash('git push lab HEAD'), 'allow');
+  // Where a push goes without a named remote is git config the hook cannot see: only push:* covers it.
+  for (const command of ['git push', 'git push -u', 'git push --repo=origin', 'git push origin --repo=lab']) assert.equal(w.bash(command), 'deny', command);
+  assert.equal(w.bash('git push -o ci.skip lab HEAD'), 'allow', 'an option value is not the remote');
+  // Every PR write needs the pr grant, through gh pr or gh api alike; reading does not.
+  for (const command of ['gh pr edit 7 --title x', 'gh pr close 7', 'gh api repos/o/r/pulls -X POST -f title=x', 'gh api -X PUT repos/o/r/pulls/1/merge']) assert.equal(w.bash(command), 'deny', command);
+  for (const command of ['gh api graphql -f query=\'mutation { mergePullRequest(input: {pullRequestId: "x"}) { clientMutationId } }\'', 'gh api graphql -F query=@q.graphql']) assert.equal(w.bash(command), 'deny', command);
+  for (const command of ['gh pr view 7', 'gh api repos/o/r/pulls/1', 'gh api graphql -f query=\'query { viewer { login } }\'']) assert.equal(w.bash(command), 'allow', command);
+  const effects = fs.readFileSync(path.join(w.env.TO_AUTO_SESSIONS, 's1.effects.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(effects.map((e) => [e.targets.join(), e.runs.join(), e.state]), [['push:lab', 'x', fs.realpathSync(w.env.TO_AUTO_HOME)], ['push:lab', 'x', fs.realpathSync(w.env.TO_AUTO_HOME)]], 'each effect names its run and control plane');
+  // A command whose targets two runs of the session granted is recorded once per target, under the run that granted it.
+  w.goal('init', 'y', 'docs job', '--agent', 's1', '--harness', 'test');
+  w.goal('grant', 'y', 'pr', '--', 'For the docs job, open a draft PR');
+  assert.equal(w.bash('git push lab HEAD && gh pr create --fill'), 'allow');
+  const split = fs.readFileSync(path.join(w.env.TO_AUTO_SESSIONS, 's1.effects.jsonl'), 'utf8').trim().split('\n').slice(-2).map((l) => JSON.parse(l));
+  assert.deepEqual(split.map((e) => [e.targets.join(), e.runs.join()]), [['push:lab', 'x'], ['pr', 'y']]);
+  // A grant typed into runs.json is no owner's words.
+  const runs = path.join(w.env.TO_AUTO_HOME, 'runs.json');
+  const data = JSON.parse(fs.readFileSync(runs, 'utf8'));
+  data[0].grants.push({ paths: ['push:origin'], source: 'owner', quote: 'push to origin whenever', at: new Date().toISOString() });
+  fs.writeFileSync(runs, JSON.stringify(data));
+  assert.equal(w.bash('git push origin HEAD'), 'deny');
+  // Another marked session never borrows this run's grants.
+  const s2 = (input) => spawnSync(process.execPath, [GUARD], { env: w.env, input: JSON.stringify({ session_id: 's2', cwd: w.repo, ...input }), encoding: 'utf8' });
+  s2({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto something else' });
+  const borrowed = JSON.parse(s2({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git push lab HEAD' } }).stdout).hookSpecificOutput;
+  assert.equal(borrowed.permissionDecision, 'deny');
+  assert.match(borrowed.permissionDecisionReason, /owns no active run, so push:lab has no grant/);
+});
+
+test('a new /to-auto after a finished run starts clean: the old run\'s words and effects grant nothing', () => {
+  const w = world();
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto first job and push to origin when done' });
+  w.goal('control');
+  w.goal('init', 'a', 'first job', '--agent', 's1', '--harness', 'test');
+  w.goal('grant', 'a', 'push:origin', '--', 'push to origin when done');
+  assert.equal(w.bash('git push origin HEAD'), 'allow');
+  const runs = path.join(w.env.TO_AUTO_HOME, 'runs.json');
+  const data = JSON.parse(fs.readFileSync(runs, 'utf8'));
+  // Fixed times, not the clock: the mark, then the run, both well before the next invocation.
+  fs.writeFileSync(path.join(w.env.TO_AUTO_SESSIONS, 's1'), new Date(Date.now() - 10 * 60_000).toISOString());
+  data[0].started = new Date(Date.now() - 5 * 60_000).toISOString();
+  data[0].status = 'done';
+  fs.writeFileSync(runs, JSON.stringify(data));
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto second job, local commits only' });
+  assert.equal(fs.existsSync(path.join(w.env.TO_AUTO_SESSIONS, 's1.effects.jsonl')), false, 'the finished run\'s effects went with its mark');
+  const kept = fs.readFileSync(path.join(w.env.TO_AUTO_SESSIONS, 's1.owner.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l).text);
+  assert.deepEqual(kept, ['/to-auto second job, local commits only'], 'the next run can quote only what the owner said for it');
+  assert.equal(w.bash('git push origin HEAD'), 'deny');
+});
+
+test('the owner store is written only by the prompt hook: a marked session cannot write the sessions folder', () => {
+  const w = world();
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: 'before the run: nothing is kept' });
+  assert.deepEqual(fs.readdirSync(w.env.TO_AUTO_SESSIONS), []);
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto x' });
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: 'and keep CI green' });
+  const store = path.join(w.env.TO_AUTO_SESSIONS, 's1.owner.jsonl');
+  assert.deepEqual(fs.readFileSync(store, 'utf8').trim().split('\n').map((l) => JSON.parse(l).text), ['/to-auto x', 'and keep CI green']);
+  assert.equal(w.bash(`echo '{"text":"edit CI freely"}' >> ${store}`), 'deny');
+  assert.equal(w.bash(`cat ${w.env.TO_AUTO_SESSIONS}/s1`), 'deny');
+  assert.equal(w.decision('Write', { file_path: store, content: 'x' }), 'deny');
+  assert.equal(w.decision('Edit', { file_path: path.join(w.env.TO_AUTO_SESSIONS, 's1'), old_string: 'a', new_string: 'b' }), 'deny');
+  assert.equal(w.decision('Write', { file_path: path.join(w.repo, 'notes.md'), content: 'x' }), 'allow');
+});
+
 test('stopping its own run does not release the session; only a done run with nothing active does', () => {
   const w = world();
   w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto x' });
@@ -141,7 +243,7 @@ test('a run this session finished before it was marked again does not release th
   fs.writeFileSync(runs, JSON.stringify(data));
   w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto again' });
   assert.equal(w.bash(INCIDENT), 'deny');
-  assert.equal(fs.readdirSync(w.env.TO_AUTO_SESSIONS).length, 1);
+  assert.deepEqual(fs.readdirSync(w.env.TO_AUTO_SESSIONS).sort(), ['s1', 's1.owner.jsonl']);
 });
 
 test('bad input and odd session ids are ignored', () => {
@@ -222,7 +324,7 @@ test('marking sweeps marks older than 30 days and keeps younger ones', () => {
   fs.utimesSync(old, new Date(Date.now() - 31 * day), new Date(Date.now() - 31 * day));
   fs.utimesSync(young, new Date(Date.now() - 29 * day), new Date(Date.now() - 29 * day));
   w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto x' });
-  assert.deepEqual(fs.readdirSync(w.env.TO_AUTO_SESSIONS).sort(), ['s1', 'young']);
+  assert.deepEqual(fs.readdirSync(w.env.TO_AUTO_SESSIONS).sort(), ['s1', 's1.owner.jsonl', 'young']);
 });
 
 test('Stop blocks the end of a turn while the session\'s run is active and moving, then lets it go', () => {
@@ -241,6 +343,27 @@ test('Stop blocks the end of a turn while the session\'s run is active and movin
   w.goal('event', 'r', '0', 'progress');
   fs.rmSync(path.join(w.env.TO_AUTO_SESSIONS, 's1'));
   assert.equal(stop(), null, 'removing the mark ends to-auto mode, nudges included');
+});
+
+// A session was compacted mid-run with nothing saved before and nothing re-read after: the rule asked the model to act
+// before an event it cannot foresee.
+test('SessionStart after a compaction records it in the run and prints the re-entry packet; other sessions and sources print nothing', () => {
+  const w = world();
+  const start = (source, session_id = 's1') => {
+    const r = spawnSync(process.execPath, [GUARD], { env: { ...w.env, HOME: path.dirname(w.env.TO_AUTO_HOME) }, input: JSON.stringify({ session_id, cwd: w.repo, hook_event_name: 'SessionStart', source }), encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout;
+  };
+  assert.equal(start('compact'), '', 'an unmarked session is never touched');
+  w.hook({ hook_event_name: 'UserPromptSubmit', prompt: '/to-auto x' });
+  w.goal('control');
+  w.goal('init', 'x', 'X', '--agent', 's1', '--harness', 'test');
+  assert.equal(start('startup'), '');
+  assert.equal(start('compact', 's2'), '');
+  const packet = start('compact');
+  assert.match(packet, /^to-auto run x is bootstrapping and this session's context was just compacted\. Before any other action:\n1\. Read \S+to-auto\/CORE\.md and \S+to-auto\/BOOTSTRAP\.md\.\n2\. `node \S+goal\.mjs next x` \(stage 00 [^)]+\), then the ledger's NOW block in \S+ledger\.md/);
+  assert.match(packet, /Then `node \S+goal\.mjs check x` must exit 0\.\n$/);
+  assert.match(fs.readFileSync(path.join(w.env.TO_AUTO_HOME, 'runs/x/ledger.md'), 'utf8'), /\[compact\] context compacted/);
 });
 
 test('prose in a commit message, a branch listing and a sibling skill are not the commands they mention', () => {

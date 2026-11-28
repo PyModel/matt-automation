@@ -6,8 +6,6 @@
 - zsh does not word-split unquoted variables: call goal.mjs via `g(){ node <path>/goal.mjs "$@"; }` and pass file lists as arrays (`"${rel[@]}"`).
 - Read each `goal.mjs` result before writing a file from it; `no such file or directory: node …` means nothing ran. Never pipe it through `tail` first.
 - Get worktrees only from `goal.mjs worktree get` or `goal.mjs prepare-ticket`; never `git worktree add`.
-- Draft contracts with `goal.mjs prepare-ticket <feature> <NN>`, fill every `<fill: …>`, pass `goal.mjs contract`; build briefs only with `goal.mjs brief`.
-- Land only with `goal.mjs merge <feature> <NN> --check <suite>`.
 - If the isolation guard denies a write, reword and retry once; never route around it.
 - Write other files with a quoted heredoc (`<<'EOF'`); then grep for one distinctive line of each snippet.
 
@@ -23,7 +21,7 @@
 
 ## Criteria, before dispatch
 - Scope each grep criterion to the ticket's claimed files.
-- `contract` does not probe criteria that count compiler or test output: compile the tests at base yourself, never with `-q`, and claim every file named plus fixtures they import. Brief "no `-q`" beside the command.
+- `goal.mjs probe <feature>` must exit 0 before the first take. It does not probe criteria that count compiler or test output: compile the tests at base yourself, never with `-q`, and claim every file named plus fixtures they import. Brief "no `-q`" beside the command.
 - Check each numeric floor against the product of the axes it enumerates.
 - Red at base: run each bug probe at base, save failure lines under `runs/<slug>/notes/`, delete the probe, confirm `git status --porcelain` is clean. A pass or compile error is not red; quote the assertion line with its test count.
 - Grep each new test name at base and print the hit count per name; a hit means its red is not new.
@@ -33,10 +31,9 @@
 
 ## Environment
 - Payload dirs in pool worktrees (`node_modules`, `.cache`, build output) must be real directories: pre-clone with `cp -cR`, then `diff -rq` against the owner checkout.
-- Probe nesting before fan-out. With no Agent tool, run flat: implementers review inline, the orchestrator reviews after merge, and reviewer briefs run agent-spawning skill passes inline.
-- Carry helper scripts from the prior run's `notes/scripts/` into this run's `notes/`, `sed -i ''` every run value, and require `grep -n '<old-slug>\|pool/<old>/'` to print nothing.
+- Probe nesting before fan-out. With no Agent tool, run flat: implementers review inline, a fresh subagent reviews each ticket after merge, and reviewer briefs run agent-spawning skill passes inline.
 - Copy the baseline's counting scope from the prior ledger `- baseline:` line.
-- Write each Agent prompt to `runs/<slug>/notes/dispatch-<NN>.txt` before sending it.
+- Bracket every helper with `goal.mjs helper start … --brief <prompt file>` and `helper return … --final <file|->`; never parse the harness's transcripts.
 
 ## Briefs and returns
 - Implementer briefs: one heredoc or file write per Bash call.

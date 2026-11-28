@@ -19,7 +19,7 @@ Act as the **automation operator**: own one software objective from intake to ve
 
 The stage `next` names is the only work this invocation may do. Until `init` has registered the run, touch nothing in the repo: no worktree, branch, PR, tracker write or helper agent. Work already in flight in this session or repo (earlier PRs, worktrees, a plan from before this invocation) is not resumed outside the pipeline: it is either part of a registered run that `next` names, or it is reported in the ledger as pre-existing and left alone. An objective that `init` refuses ends the invocation with the refusal reported; it is never worked around. On Claude Code a tool call denied by `to-auto-guard` is this rule enforced: the fix is `init` or `goal.mjs worktree get`, never another route to the same effect.
 
-This file is an index. Read [CORE.md](CORE.md) once; it is the only always-on file besides this one. Load a phase file **only when entering that phase**, and a reference only when that phase file cites it:
+This file is an index. Load a phase file **only when entering that phase**, and a reference only when that phase file cites it:
 
 | Phase | Stages | File | Load when |
 |---|---|---|---|
@@ -38,11 +38,11 @@ The user's shorthand maps as: `/ask matt` → ask-matt, `/to spec` → to-spec, 
 
 ## Loading skills
 
-This skill lives in the matt-automations repo, which vendors Matt Pocock's skills from upstream `main` (stage 00's `matt.mjs check` fast-forwards them and prints the commit as `vendored:`; while any run is live, neither a check nor the hourly pull moves them, so a run keeps the skills it started on). `ROOT` is that repo: `node scripts/goal.mjs root` prints it from the script's own file path, from any working directory. The harness usually shows the symlinked install path, so `realpath` the skill folder before resolving relative links. `ROOT` is that real folder's parent, `$(dirname "$(realpath <skill folder>)")`: the scripts live in `ROOT/scripts/`, not inside the skill folder. `node ROOT/scripts/install.mjs` links these skills into a tool's skill folder (`--home` for one folder; unverified folders are skipped unless named).
+This skill lives in the matt-automations repo, which vendors Matt Pocock's skills from upstream `main` (stage 00's `matt.mjs check` fast-forwards them and prints the commit as `vendored:`; while any run is live, neither a check nor the hourly pull moves them, so a run keeps the skills it started on). `ROOT` is that repo, `$(dirname "$(realpath <skill folder>)")`: the harness usually shows the symlinked install path, so `realpath` it before resolving relative links (`node "$(realpath <skill folder>)/../scripts/goal.mjs" root` prints it from any working directory). The scripts live in `ROOT/scripts/`, not inside the skill folder. `node ROOT/scripts/install.mjs` links these skills into a tool's skill folder (`--home` for one folder; unverified folders are skipped unless named).
 
-- **Resolve, then read.** `node ROOT/scripts/matt.mjs resolve <name>` prints the SKILL.md path: vendored first, then installed. Follow it with this pipeline's phase rules and CORE.md limits; links resolve against the skill's directory. Nonzero exit: record the missing skill as a blocker.
+- **Resolve, then read.** `node ROOT/scripts/matt.mjs resolve <name> --slug <slug>` (`--slug` once the run is registered: it records the load, and the ticks of stages 1, 4 and 10 refuse a stage whose skill this run has not loaded since its last compaction; one read in an earlier run or before the last compaction is not loaded) prints the SKILL.md path: vendored first, then installed. Follow it with this pipeline's phase rules and CORE.md limits; links resolve against the skill's directory. Nonzero exit: record the missing skill as a blocker.
 - **Every skill loads by path.** Reading the resolved file (rather than calling the harness's skill tool) gives one version per run (the vendored copy, not whatever copy is installed), makes `disable-model-invocation` irrelevant, and sidesteps name clashes (PITFALLS.md). When a loaded skill says "call the Skill tool with X", resolve X the same way and read it instead.
-- **Wiring is checked first.** BOOTSTRAP.md § 00 runs `matt.mjs check` before any run write; its `drift:` lines are informational (runs use the vendored copy).
+- **Wiring is checked first**, by stage 00's `matt.mjs check`; its `drift:` lines are informational.
 - Installed skills are looked up in `$AGENT_SKILL_HOMES` (path-separated) when set, else `~/.claude/skills` and `~/.agents/skills`. On a harness that keeps skills elsewhere, set it before stage 00.
 
 ## Rule skills
@@ -50,7 +50,7 @@ This skill lives in the matt-automations repo, which vendors Matt Pocock's skill
 Each rule set has one copy, loaded by path when its cue matches:
 
 - **Run budgets and stop conditions** ([references/run-budget.md](references/run-budget.md)): log `budget: <old> -> <new> (source: <who>)` and commit it with the ledger's wall-clock line in one `goal.mjs commit` before any ticket runs under the new limit; never cut a registered item — the stop conditions decide what stays open.
-- **Build dispatch** ([references/build-dispatch.md](references/build-dispatch.md)): pass absolute paths to `goal.mjs`; get worktrees only from `goal.mjs worktree get` or `prepare-ticket`; `test -e` every claimed path before dispatch; `goal.mjs contract` runs every grep criterion at the ticket base.
+- **Build dispatch** ([references/build-dispatch.md](references/build-dispatch.md)): pass absolute paths to `goal.mjs`; get worktrees only from `goal.mjs worktree get` or `prepare-ticket`; `test -e` every claimed path before dispatch; `goal.mjs probe` runs every grep criterion before any take.
 - **Grilling rounds via kun** ([references/grilling-rounds.md](references/grilling-rounds.md)): the answerer gets bare questions and options; recommendations go only to the challenger. Accepting every recommendation is a failure signal: re-ask blind.
 - **Ticket lifecycle** (the `to-auto-ticket-lifecycle` skill, which autoharness maintains outside git): load it when goal.mjs refuses a transition, a ticket returns claims-breach, a run goes STALE or a ticket TICKET_IDLE, or a Stop hook blocks ending a turn.
 
@@ -66,4 +66,4 @@ Each rule set has one copy, loaded by path when its cue matches:
 
 ## Final report
 
-One message, outcome first: what shipped, the run branch and worktree path (or PR URL), commit hashes, review_base, where the spec and tickets live, the ledger path, budget used, blockers in one sentence each, review leads left unacted, any `wizard` script awaiting the user, and the retro path.
+One message, outcome first: what shipped, the run branch and worktree path (or PR URL), commit hashes, review_base, where the spec and tickets live, the ledger path, budget used, the hand-back (`runs/<slug>/handback.md`), blockers in one sentence each, review leads left unacted, any `wizard` script awaiting the user, and the retro path.

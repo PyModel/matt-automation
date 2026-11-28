@@ -39,7 +39,7 @@ One row per skill, grouped the way `ask-matt` groups them. **Touchpoint** is whe
 
 ## Standalone (ask-matt § Standalone)
 
-The built-in [VECTOR intake](references/vector-intake.md) accepts workflow cards without requiring the standalone `vector` skill.
+The built-in [VECTOR intake](references/vector-intake.md) accepts workflow cards; this repo's [`vector`](../vector/SKILL.md) skill drafts them, unattended when an agent asks, and never starts a run.
 
 | Skill | Stage in /to-auto | Touchpoint(s) the skill has | Autonomous substitute |
 |---|---|---|---|

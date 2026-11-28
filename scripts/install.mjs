@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // to-auto-ticket-lifecycle is autoharness's (gitignored here), so a clone has none to link.
-export const SKILLS = ['to-auto', 'to-bug', 'to-new', 'to-orc'];
+export const SKILLS = ['to-auto', 'to-bug', 'to-new', 'to-orc', 'vector'];
 
 export const VERIFIED_HOMES = [
   { path: path.join(os.homedir(), '.agents', 'skills'), source: 'Pi docs/skills.md', verified: true },

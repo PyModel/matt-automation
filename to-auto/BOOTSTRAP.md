@@ -25,8 +25,9 @@ node ROOT/scripts/goal.mjs init <slug> "<objective>" --agent <session-id> --harn
 
 Pass `$CLAUDE_CODE_SESSION_ID` on Claude Code, the UUID of pi's current session
 file under `~/.pi/agent/sessions/`, or the host's session/thread id. Default
-mode is `branch` (or `supervisor` with a saved target); use `pr` only with
-permission. Apply CORE.md § Helpers when choosing flags.
+mode is `branch` (or `supervisor` with a saved target); use `pr` only when the
+owner asked for a pull request, and pushing and the PR still need their grants
+(CORE.md). Apply CORE.md § Helpers when choosing flags.
 
 For either path, record `run_id` and `vendored:` in NOW. Run
 `goal.mjs tick <slug> 00`, then `goal.mjs tick <slug> 0`, for unticked stages only.

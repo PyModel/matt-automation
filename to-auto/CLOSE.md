@@ -32,11 +32,20 @@ against the new snapshot before completion.
 
 Use `goal.mjs next`'s registered mode: `branch` leaves local commits;
 `supervisor` runs `goal.mjs land <slug>` for the item-to-commit map; `pr`
-pushes and marks ready only with the grants required by CORE.md.
-Return ticket worktrees; report all `guarded_changes`, `grants`,
-`dismissed_bugs`, waivers and stuck reasons. Include any `goal/bootstrap`
+pushes and marks the draft ready only under `push:<remote>` and `pr` grants
+(CORE.md, Autonomous); the mode and the tracker configuration grant neither.
+Return ticket worktrees. `node ROOT/scripts/goal.mjs handback <slug>` writes
+`runs/<slug>/handback.md` from the run's state: branch and bases, verdict,
+every guarded file changed and every grant with the owner's quoted words, the
+pushes and PR writes the guard allowed, tickets not done with their reasons,
+re-planned tickets, waived criteria, blockers, `bugs.md` entries closed as not
+a bug, gates the owner's environment added and owner side tasks
+(`goal.mjs event <slug> gate|side "<what>"` records each when it happens). The
+owner judges whether the quoted words mean what the run took them to mean. Add
+your judgment below its last line, never above it: any `goal/bootstrap`
 fast-forward needed, glossary delta, quarantine, dirty-checkout warning, and
-`frontier` overlaps (`cross_run`, BUILD.md § Merge conflicts).
+`frontier` overlaps (`cross_run`, BUILD.md § Merge conflicts). The tick of 9
+refuses without the file, or when the run's state moved after it was written.
 
 ## 10. Retro
 

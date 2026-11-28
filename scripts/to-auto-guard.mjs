@@ -42,7 +42,7 @@ const plain = (command) => command.replace(/(\s(?:-m|--message)[=\s]\s*)(?:"(?:[
 const GIT = String.raw`\bgit\s+(?:(?:-[Cc]|--(?:git-dir|work-tree|namespace))\s+\S+\s+|--?\S+\s+)*`;
 const RAW_WORKTREE = new RegExp(GIT + String.raw`worktree\s+add\b`);
 const PUSH = new RegExp(GIT + String.raw`push\b([^;&|\n]*)`, 'g');
-const PR_WRITE = /\b(?:gh\s+pr\s+(?:create|merge|ready)|glab\s+mr\s+(?:create|merge))\b/;
+const PR_WRITE = /\b(?:gh\s+pr\s+(?:create|merge|ready|edit|close|reopen|comment|review|update-branch)|glab\s+mr\s+(?:create|merge|update|close|reopen|approve|note))\b/;
 const BRANCH_OR_PUSH = new RegExp(GIT + String.raw`(?:push\b|switch\s+(?:-c|-C|--create|--orphan)\b|checkout\s+(?:-[bBt]|--orphan|--track)\b|branch\s+(?:-[cCt]\s+|--(?:copy|track|no-track)\s+)?(?![|&;<>]|\d*[<>])[^-\s])`);
 const GH_WRITE = /\bgh\s+(?:pr\s+(?:create|merge|ready|edit|close|reopen|comment|review|checkout|update-branch)|issue\s+(?:create|edit|comment|close|reopen|delete|transfer|pin|unpin|lock|unlock|develop))\b/;
 const GH_API = /\bgh\s+api\b([^;&|\n]*)/g;
@@ -51,8 +51,9 @@ const GH_API_METHOD = /(?:^|\s)(?:-X|--method)[=\s]*(\w+)/;
 const GH_API_PARAMS = /(?:^|\s)(?:-[fF]|--(?:field|raw-field|input)\b)/;
 
 /** `gh api` writes with an explicit non-GET method, or implicitly (POST) when it carries parameters. */
-function ghApiWrites(command) {
+function ghApiWrites(command, only = /(?:)/) {
   for (const [, args] of command.matchAll(GH_API)) {
+    if (!only.test(args)) continue;
     const method = GH_API_METHOD.exec(args)?.[1]?.toUpperCase();
     if (method ? method !== 'GET' && method !== 'HEAD' : GH_API_PARAMS.test(args)) return true;
   }
@@ -61,9 +62,11 @@ function ghApiWrites(command) {
 
 const sessions = () => process.env.TO_AUTO_SESSIONS || path.join(os.homedir(), '.local', 'state', 'to-auto-sessions');
 
-/** The remotes a command pushes to: the first word after `push` that is no option, `origin` when there is none. */
+/** The remotes a command pushes to: `--repo`, else the first word after `push` that is no option. With neither, git picks
+ *  one from config (pushRemote, pushDefault, the branch's remote) that the hook cannot see reliably: `(default)`, which
+ *  only `push:*` covers, so a run names its remote. */
 // ponytail: an option that takes its value as the next word (`-o ci.skip`) reads that value as the remote, which no grant names, so it is denied.
-export const pushRemotes = (command) => [...plain(command).matchAll(PUSH)].map(([, rest]) => rest.trim().split(/\s+/).find((w) => w && !w.startsWith('-')) ?? 'origin');
+export const pushRemotes = (command) => [...plain(command).matchAll(PUSH)].map(([, rest]) => rest.match(/--repo[=\s]+(\S+)/)?.[1] ?? rest.trim().split(/\s+/).find((w) => w && !w.startsWith('-')) ?? '(default)');
 
 /** Keep what the owner typed, for goal.mjs to check quotations against. Appended only here, by the harness's own hook. */
 function recordOwner(id, prompt) {
@@ -80,6 +83,20 @@ function touchesSessions(input) {
   return ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(tool) && target !== '' && !path.relative(dir, path.resolve(target)).startsWith('..');
 }
 const skillName = (name) => String(name ?? '').replace(/^.*:/, '');
+
+/** A new /to-auto after a finished run starts clean: the old mark goes with its words and effects, which grant nothing
+ *  to the next run. Best effort: on any error the mark stays, and the PreToolUse path still judges it. */
+async function releaseIfFinished(id, cwd) {
+  const marker = path.join(sessions(), id);
+  try {
+    if (!fs.existsSync(marker)) return;
+    const { stateDir } = await import('./goal.mjs');
+    const runs = JSON.parse(fs.readFileSync(path.join(stateDir(cwd), 'runs.json'), 'utf8'));
+    const markedAt = Date.parse(fs.readFileSync(marker, 'utf8').trim()) - 1000;
+    if (!Array.isArray(runs) || !finished(runs, id, Number.isNaN(markedAt) ? 0 : markedAt)) return;
+    for (const file of [marker, `${marker}.owner.jsonl`, `${marker}.effects.jsonl`]) fs.rmSync(file, { force: true });
+  } catch {}
+}
 
 function mark(id) {
   const dir = sessions();
@@ -123,12 +140,18 @@ async function main() {
   const event = input.hook_event_name;
   try {
     if (event === 'UserPromptSubmit') {
-      if (INVOKED.test(String(input.prompt ?? ''))) console.log(mark(id));
+      if (INVOKED.test(String(input.prompt ?? ''))) {
+        await releaseIfFinished(id, input.cwd ?? process.cwd());
+        console.log(mark(id));
+      }
       if (fs.existsSync(path.join(sessions(), id))) recordOwner(id, String(input.prompt ?? ''));
       return;
     }
     if (event === 'UserPromptExpansion') {
-      if (skillName(input.command_name) === 'to-auto') mark(id);
+      if (skillName(input.command_name) === 'to-auto') {
+        await releaseIfFinished(id, input.cwd ?? process.cwd());
+        mark(id);
+      }
       return;
     }
     if (event === 'Stop') {
@@ -154,6 +177,7 @@ async function main() {
     }
     if (event !== 'PreToolUse') return;
     if (input.tool_name === 'Skill' && skillName(input.tool_input?.skill) === 'to-auto') {
+      await releaseIfFinished(id, input.cwd ?? process.cwd());
       out({ additionalContext: mark(id) });
       return;
     }
@@ -174,10 +198,14 @@ async function main() {
   if (!what || (!marked && what !== 'helper agent')) return;
   const WORKTREE = 'to-auto: run and ticket worktrees come only from `goal.mjs worktree get <slug> [NN]`, never a hand-typed `git worktree add` (PIPELINE.md § Isolation).';
   let runs;
+  let state = null;
+  let stands = () => false;
   try {
     // Check helper ownership even for natural-language adoption without a slash-command mark.
-    const { stateDir } = await import('./goal.mjs');
-    try { runs = JSON.parse(fs.readFileSync(path.join(stateDir(input.cwd ?? process.cwd()), 'runs.json'), 'utf8')); } catch { runs = []; }
+    const { stateDir, grantStands } = await import('./goal.mjs');
+    stands = grantStands;
+    state = stateDir(input.cwd ?? process.cwd());
+    try { runs = JSON.parse(fs.readFileSync(path.join(state, 'runs.json'), 'utf8')); } catch { runs = []; }
     if (!Array.isArray(runs)) throw new Error('run registry is not a list');
     if (marked) {
       const markedAt = Date.parse(fs.readFileSync(marker, 'utf8').trim()) - 1000; // a hand-touched (empty) mark: any done run of this session releases it
@@ -205,13 +233,21 @@ async function main() {
   const active = runs.filter((r) => !INACTIVE.has(r.status));
   if (active.length) {
     // Push and PR authority is the owner's words, recorded as a grant: the run's mode and the tracker's configuration grant neither.
-    const mine = active.some((r) => r.agent === id) ? active.filter((r) => r.agent === id) : active;
-    const granted = (target) => mine.some((r) => (r.grants ?? []).some((g) => g.paths.includes(target)));
+    // Only a run this session registered or adopted lends its grants: another session's run never does.
+    const mine = active.filter((r) => r.agent === id);
+    // A grant counts only while its quote is still the owner's words naming the target: runs.json can be edited by hand.
+    const granted = (target) => mine.some((r) => (r.grants ?? []).some((g) => g.paths?.includes(target) && stands(r, g)));
     const command = input.tool_name === 'Bash' ? String(input.tool_input?.command ?? '') : '';
-    const wanted = [...pushRemotes(command).map((remote) => `push:${remote}`), ...(PR_WRITE.test(plain(command)) ? ['pr'] : [])];
+    const wanted = [...pushRemotes(command).map((remote) => `push:${remote}`), ...(PR_WRITE.test(plain(command)) || ghApiWrites(plain(command), /\/pulls\b/) ? ['pr'] : [])];
+    if (wanted.length && !mine.length) {
+      deny(`to-auto: this session owns no active run, so ${wanted.join(', ')} has no grant: register its run (\`goal.mjs init\`) or take one over (\`goal.mjs adopt <slug> --agent ${id} --harness <name>\`) first.`);
+      return;
+    }
     const missing = wanted.filter((target) => !granted(target) && !(target.startsWith('push:') && granted('push:*')));
     // What the guard let through goes on record for the hand-back (`goal.mjs handback`).
-    if (wanted.length && !missing.length) fs.appendFileSync(`${marker}.effects.jsonl`, `${JSON.stringify({ at: new Date().toISOString(), targets: wanted, command: command.replace(/\s+/g, ' ').slice(0, 200) })}\n`);
+    // Each line names the runs whose grants allowed it and their control plane, so one run's hand-back shows only its own.
+    const by = mine.filter((r) => wanted.every((t) => (r.grants ?? []).some((g) => (g.paths?.includes(t) || (t.startsWith('push:') && g.paths?.includes('push:*'))) && stands(r, g)))).map((r) => r.slug);
+    if (wanted.length && !missing.length) fs.appendFileSync(`${marker}.effects.jsonl`, `${JSON.stringify({ at: new Date().toISOString(), targets: wanted, runs: by.length ? by : mine.map((r) => r.slug), state, command: command.replace(/\s+/g, ' ').slice(0, 200) })}\n`);
     if (missing.length) deny(`to-auto: ${missing.join(', ')} has no grant in run ${mine[0].slug}. Pushing and opening or merging a PR need the owner's own words, whatever the run's mode: \`goal.mjs grant ${mine[0].slug} ${missing.join(' ')} -- "<their words>"\` records them (an owner side task is granted from the message that asked for it); without them it is a blocker for the hand-back (CORE.md, Autonomous).`);
     return;
   }

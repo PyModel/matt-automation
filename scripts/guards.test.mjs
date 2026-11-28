@@ -197,6 +197,11 @@ test('worktree get without treehouse makes git worktrees under the state dir, ru
   assert.deepEqual(y.stacked_on, { run: 'x', status: 'bootstrapping', branch: 'goal/x' });
   assert.equal(y.base, `goal/x @ ${git(wt, 'rev-parse', 'HEAD').slice(0, 12)}`);
   assert.equal(JSON.parse(goal(ctx, ['next', 'x']).stdout).stacked_on, undefined);
+  // Reopening the same branch after a return keeps where it was cut.
+  assert.equal(goal(ctx, ['worktree', 'return', 'y']).status, 0);
+  assert.equal(goal(ctx, ['worktree', 'get', 'y']).status, 0);
+  const reopened = JSON.parse(goal(ctx, ['next', 'y']).stdout);
+  assert.deepEqual([reopened.stacked_on, reopened.base], [y.stacked_on, y.base]);
   assert.equal(status.t01.backend, 'git');
   assert.equal(status.t01.state, 'active');
   assert.match(fs.readFileSync(path.join(ctx.state, '.gitignore'), 'utf8'), /^worktrees\/$/m);
@@ -872,8 +877,10 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   assert.equal(git(ctx.state, 'log', '-1', '--format=%s'), '[x] tick 0c: done; status planning');
   assert.match(JSON.parse(goal(ctx, ['next', 'x']).stdout).tick_checks, /baseline\.txt is committed, NOW carries commands:/, 'next prints what the tick will check');
   // A tick checks what its stage must leave behind, not only that the stage before it was ticked.
-  refused(ctx, /stage 0d is not finished: runs\/x\/baseline\.txt is missing.*NOW has no commands:, budgets:, baseline:, nested:, worker:/, '0d');
+  refused(ctx, /stage 0d is not finished: runs\/x\/baseline\.txt is not committed.*NOW has no commands:, budgets:, baseline:, nested:, worker:/, '0d');
   put(ctx, 'runs/x/baseline.txt', 't1 pass\n');
+  refused(ctx, /baseline\.txt is not committed/, '0d');
+  assert.equal(goal(ctx, ['commit', '-m', '[x] baseline', 'runs/x/baseline.txt']).status, 0);
   // NOW holds limits only: what is used is computed by `next`. A run's hand-typed clock read 2h30 at 1h19.
   nowAdd(ctx, '- budgets: concurrent 3 (used 2), wall-clock 8h (used 2h30)\n');
   const typed = goal(ctx, ['commit', '-m', '[x] now', path.join(ctx.state, 'runs/x/ledger.md')]);
@@ -893,7 +900,7 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   logAdd(ctx, '- D1 [1] Q: route? → A: feature (source: findings)');
   // The stage's skill is loaded in this run, by path, on record: what an earlier run of the session read does not count.
   assert.deepEqual(JSON.parse(goal(ctx, ['next', 'x']).stdout).skills_to_load, ['ask-matt']);
-  refused(ctx, /this run never loaded ask-matt, which stage 1 follows: `node \S+matt\.mjs resolve <name> --slug x`/, '1');
+  refused(ctx, /this run has not loaded ask-matt since its last compaction, which stage 1 follows: `node \S+matt\.mjs resolve <name> --slug x --state-dir \S+`/, '1');
   const MATT = path.join(path.dirname(GOAL), 'matt.mjs');
   const loaded = spawnSync(process.execPath, [MATT, 'resolve', 'ask-matt', '--slug', 'x'], { cwd: ctx.repo, encoding: 'utf8', env: { ...process.env, TO_AUTO_HOME: ctx.state } });
   assert.equal(loaded.status, 0, loaded.stderr);
@@ -903,13 +910,18 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   // A compaction empties the session's memory of it: the skill is to load again.
   assert.equal(goal(ctx, ['event', 'x', 'compact', 'context compacted']).status, 0);
   assert.deepEqual(JSON.parse(goal(ctx, ['next', 'x']).stdout).skills_to_load, ['ask-matt']);
+  refused(ctx, /has not loaded ask-matt since its last compaction/, '1');
+  // A run under --state-dir records the load there with the same flag, no TO_AUTO_HOME needed.
+  const { TO_AUTO_HOME: _home, ...bare } = process.env;
+  const again = spawnSync(process.execPath, [MATT, 'resolve', 'ask-matt', '--slug', 'x', '--state-dir', ctx.state], { cwd: ctx.repo, encoding: 'utf8', env: bare });
+  assert.equal(again.status, 0, again.stderr);
   ticked(ctx, '1');
   ticked(ctx, '2', '--skipped', 'plain feature');
   ticked(ctx, '3', '--skipped', 'no external unknown');
   // A single-ticket feature replaces the interview with the defensive-design check, so that is the skill stage 4 needs.
   logAdd(ctx, '- D2 [4] Q: planning path? → A: single-ticket feature: R1, seam cli test, tier 1, claims src/report.js (source: findings)');
   assert.deepEqual(JSON.parse(goal(ctx, ['next', 'x']).stdout).skills_to_load, ['defensive-design']);
-  refused(ctx, /this run never loaded defensive-design, which stage 4 follows/, '4');
+  refused(ctx, /this run has not loaded defensive-design since its last compaction, which stage 4 follows/, '4');
   const homes = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-homes-'));
   fs.mkdirSync(path.join(homes, 'defensive-design'));
   fs.writeFileSync(path.join(homes, 'defensive-design', 'SKILL.md'), '# defensive-design\n');
@@ -938,11 +950,11 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   ticket('in-flight');
   const todo = path.join(ctx.state, 'runs/x/todo.md');
   fs.writeFileSync(todo, `${fs.readFileSync(todo, 'utf8')}| 01 | none | a.txt | in-flight |\n`);
+  refused(ctx, /ticket\(s\) 01 are not committed as they stand/, '6b');
+  fixtureCommit(ctx, '[x] fixture: ticket in flight');
   assert.equal(ticked(ctx, '6b').registry, 'building');
   assert.match(git(ctx.state, 'log', '-1', '--format=%s'), /status ticketed → building$/);
   assert.equal(goal(ctx, ['check', 'x']).status, 0, 'a ticked run is in step with its registry');
-  refused(ctx, /build is not complete: 01 \(uncommitted\)/, '7');
-  fixtureCommit(ctx, '[x] fixture: ticket in flight');
   refused(ctx, /build is not complete: 01 \(in-flight\)/, '7');
   ticket('done');
   refused(ctx, /build is not complete: 01 \(in-flight\)/, '7'); // the gate reads the ticket as committed
@@ -964,8 +976,12 @@ test('tick walks a run end to end: todo.md, NOW and the registry move together, 
   ticked(ctx, '9');
   refused(ctx, /runs\/x\/retro\.md is missing/, '10');
   put(ctx, 'runs/x/retro.md', '# r\n');
-  refused(ctx, /this run never loaded retro, which stage 10 follows/, '10');
-  assert.equal(goal(ctx, ['event', 'x', 'skill', 'retro @ fixture']).status, 0);
+  refused(ctx, /this run has not loaded retro since its last compaction, which stage 10 follows/, '10');
+  assert.equal(goal(ctx, ['event', 'x', 'skill', 'retro @ fixture']).status, 2, 'a skill load is recorded only by resolving it');
+  fs.mkdirSync(path.join(homes, 'retro'));
+  fs.writeFileSync(path.join(homes, 'retro', 'SKILL.md'), '# retro\n');
+  const retro = spawnSync(process.execPath, [MATT, 'resolve', 'retro', '--slug', 'x'], { cwd: ctx.repo, encoding: 'utf8', env: { ...process.env, TO_AUTO_HOME: ctx.state, AGENT_SKILL_HOMES: homes } });
+  assert.equal(retro.status, 0, retro.stderr);
   git(ctx.repo, 'commit', '-q', '--allow-empty', '-m', 'landed after the review');
   refused(ctx, /main is at .* but the final review saw/, '10');
   git(ctx.repo, 'reset', '-q', '--hard', 'HEAD~1');

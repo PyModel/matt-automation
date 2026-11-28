@@ -357,6 +357,14 @@ test('since dispatch: claims and criteria changed by a raw git commit are caught
   setStatus(repo, 'f', '02', 'ready-for-agent');
   setStatus(repo, 'f', '02', 'in-flight');
   assert.deepEqual(sinceDispatch(t02), [], 'a dispatch after the re-plan is the new baseline');
+  // An amendment from an earlier dispatch is history: a re-plan that drops its path is the next baseline too.
+  setStatus(repo, 'f', '02', 'stuck', { reason: 'drop the fake' });
+  setStatus(repo, 'f', '02', 'ready-for-agent');
+  fs.writeFileSync(t02, read(rel).replace(/^(\*\*Claims:\*\*.*?)src\/b\.fake\.ts, /m, '$1'));
+  commit(repo, '[f] 02 re-plan drops the fake', [rel]);
+  assert.doesNotMatch(read(rel).match(/^\*\*Claims:\*\*.*$/m)[0], /b\.fake/);
+  setStatus(repo, 'f', '02', 'in-flight');
+  assert.deepEqual(sinceDispatch(t02), [], 'the old amendment is not applied to the new Claims line');
 });
 
 test('since dispatch: an in-flight ticket with no dispatch commit was never dispatched by goal.mjs', () => {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   configure, controlDir, repoId, ensureControl, prepare, land, cleanup, preflight, discoverCheck,
@@ -203,6 +203,20 @@ test('a helper is on record at both ends: counted against max_agents, its prompt
   const cli = spawnSync(process.execPath, [GOAL, '--repo', repo, 'helper', 'start', 'helped', 'reviewer'], { encoding: 'utf8' });
   assert.equal(cli.status, 2);
   assert.match(cli.stderr, /helper start <slug> <role> <id> \[--brief <file\|->\] \| helper return <slug> <id>/);
+});
+
+test('helper starts at once never pass the max_agents cap or share an id', async () => {
+  const repo = bareRepo();
+  const state = useState();
+  ensureControl(repo);
+  init(repo, 'cap', 'Cap', WHO);
+  const ledger = path.join(state, 'runs/cap/ledger.md');
+  fs.writeFileSync(ledger, fs.readFileSync(ledger, 'utf8').replace('## NOW\n', '## NOW\n- budgets: concurrent 3, agents 1, wall-clock 8h\n'));
+  assert.equal(spawnSync(process.execPath, [GOAL, '--repo', repo, 'commit', '-m', '[cap] budget', ledger], { encoding: 'utf8' }).status, 0);
+  const start = (id) => new Promise((resolve) => spawn(process.execPath, [GOAL, '--repo', repo, 'helper', 'start', 'cap', 'reviewer', id], { stdio: 'ignore' }).on('close', resolve));
+  const codes = await Promise.all(['b1', 'b2', 'b3', 'b2', 'b1', 'b4'].map(start));
+  assert.equal(codes.filter((c) => c === 0).length, 1, `exit codes ${codes.join(' ')}`);
+  assert.equal(fs.readFileSync(ledger, 'utf8').match(/\[helper\] start /g)?.length, 1);
 });
 
 test('a resumed solo run still exposes its helper restriction and refuses worker dispatch', () => {

@@ -9,7 +9,9 @@ grants permissions beyond the owner's stated scope.
 ## Pick one task
 
 If no task is named, ask for these together in one numbered message, using
-anything the owner already supplied:
+anything the owner already supplied. In an
+[unattended run](../SKILL.md#unattended-runs), ask nothing: answer them from
+the supplied material and record the recommended task as an Assumption.
 
 1. Which three tasks take most of your time each week?
 2. How long does each take by hand, and how often do you do it?
@@ -20,7 +22,8 @@ Recommend one in two lines: likely time saved and why errors are cheap to
 catch. Favor a recurring task taking 20 minutes or more with a clear result
 and low risk. A smaller slice is a useful first trial when the larger task
 needs judgment or approval. If the owner named a task, skip the shortlist.
-Otherwise confirm the pick unless they delegated that decision.
+Otherwise confirm the pick unless they delegated that decision or the run
+is unattended.
 
 ## Map the six steps in order
 

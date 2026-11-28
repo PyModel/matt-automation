@@ -22,7 +22,7 @@ Keep the report simple: what is ready, what needs correction or a decision, and 
 - If a result fails a check, correct it and check again, at most twice. Return a problem that survives both corrections to the person.
 - If a tool has a temporary problem, retry at most three times with a growing wait (for example 10, 30, then 90 seconds). Invalid input, denied access, and a missing human decision are not temporary: report them on the first failure.
 - If a send, purchase, or other change has an uncertain outcome, check whether it actually happened before attempting it again. If you cannot establish the outcome, explain the uncertainty and hand it over; avoid duplicate actions.
-- Record each completed send, order, or change in the run notes as it happens, with whatever identifies it (a message link, order number, or file path). If interrupted, retain the completed work and identify the next unfinished step. Recheck changeable information and those records before resuming, so a restart never repeats a completed action.
+- Note each send, order, or change in the run notes as started before doing it, then add whatever identifies it once done (a message link, order number, or file path). If interrupted, retain the completed work and identify the next unfinished step. Before resuming, recheck changeable information and those notes: a started entry with no identifier has an uncertain outcome, so check it as above before any retry. A restart never repeats a completed action.
 
 Keep detailed operational notes only where they are needed. Explain problems to a non-technical person in terms of the work and its effect.
 

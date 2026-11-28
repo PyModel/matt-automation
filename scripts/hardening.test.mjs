@@ -12,7 +12,7 @@ import {
   checkReceipt, commit, configure, prepare, worktreeGet, runLogged, scriptsPin, ownerDecisions, gc, MAX_BRIEF_BYTES,
   adopt, controlDir, firstStageArgv, gcAll, stateDir, setStatus, amendClaims, discoverCheck, land, preflight,
   ensureControl, cleanup, worktreeReturn, grant, flightRows, markedLive, parseTodo, dismissedBugs, unresolvedBugs,
-  probe, sinceDispatch, handback, handbackText, event, ROOT,
+  probe, sinceDispatch, handback, handbackText, handbackFresh, event, ROOT,
 } from './goal.mjs';
 
 const GOAL = path.join(import.meta.dirname, 'goal.mjs');
@@ -488,6 +488,15 @@ test('probe runs before any take; an untouched ticket goes back to ready-for-age
   // The note decides, never the wording.
   seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt', `\n${first.replace('totals 0', 'totals 0 (Absent: the marker is gone)')}`));
   assert.equal(probe(repo, 'x', '01').ok, true);
+  assert.throws(() => probe(repo, 'x', 'typo'), /ticket number must be digits, got typo/, 'a typo never probes every ticket');
+  // Tickets are cut from the run branch: an uncommitted edit or another branch in the run worktree proves nothing.
+  const runTree = JSON.parse(read('runs/x/worktrees.json')).run;
+  write(path.join(runTree.path, 'a.txt'), 'nosuch\n');
+  assert.throws(() => probe(repo, 'x', '01'), /has uncommitted changes/);
+  git(runTree.path, 'checkout', '--', 'a.txt');
+  git(runTree.path, 'switch', '-q', '-c', 'side');
+  assert.throws(() => probe(repo, 'x', '01'), new RegExp(`is on side, not ${runTree.branch}`));
+  git(runTree.path, 'switch', '-q', runTree.branch);
 
   assert.deepEqual(take(repo, 'x', 1), ['01']);
   prepareTicket(repo, 'x', '01');
@@ -507,6 +516,40 @@ test('probe runs before any take; an untouched ticket goes back to ready-for-age
   write(path.join(control, 'runs/x/tickets/01.status.md'), 'heartbeat: now\n');
   commit(repo, '[x] t01 status', ['runs/x/tickets/01.status.md']);
   assert.throws(() => setStatus(repo, 'x', '01', 'ready-for-agent', { reason: 'not dispatched' }), /it has a status file.*a worker has been on it/);
+});
+
+test('a failed undispatch leaves the ticket in flight with its contract, and the same command runs again', () => {
+  const { repo, control, read } = setup();
+  init(repo, 'x', 'X', WHO);
+  worktreeGet(repo, 'x');
+  seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt', '\n- [ ] a.txt says bye (Red at base)\n'));
+  const contract = path.join(control, 'runs/x/tickets/01.goal.md');
+  const status = () => read('tracker/x/issues/01-a.md').match(/^\*\*Status:\*\* (\S+)/m)[1];
+  assert.deepEqual(take(repo, 'x', 1), ['01']);
+  prepareTicket(repo, 'x', '01');
+  const { path: tree, branch } = JSON.parse(read('runs/x/worktrees.json')).t01;
+  // The tree goes back before ready-for-agent is published: a tree that cannot go back keeps the ticket in flight.
+  git(repo, 'worktree', 'lock', tree);
+  assert.throws(() => setStatus(repo, 'x', '01', 'ready-for-agent', { reason: 'not dispatched' }));
+  assert.equal(status(), 'in-flight');
+  assert.equal(fs.existsSync(contract), true, 'the contract stays with the ticket in flight');
+  git(repo, 'worktree', 'unlock', tree);
+  setStatus(repo, 'x', '01', 'ready-for-agent', { reason: 'not dispatched' });
+  assert.equal(status(), 'ready-for-agent');
+  assert.equal(JSON.parse(read('runs/x/worktrees.json')).t01.state, 'returned');
+  assert.equal(spawnSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).status, 1, 'its branch is gone, so the next dispatch cuts a fresh one');
+  // A status commit that fails puts the deleted contract back.
+  assert.deepEqual(take(repo, 'x', 1), ['01']);
+  prepareTicket(repo, 'x', '01');
+  worktreeReturn(repo, 'x', '01');
+  const lock = path.join(control, '.git', 'index.lock');
+  write(lock, '');
+  assert.throws(() => setStatus(repo, 'x', '01', 'ready-for-agent', { reason: 'not dispatched' }));
+  fs.rmSync(lock);
+  assert.equal(fs.existsSync(contract), true, 'the rollback restored the contract');
+  assert.equal(git(control, 'status', '--porcelain'), '', 'nothing is left half-done in the control plane');
+  setStatus(repo, 'x', '01', 'ready-for-agent', { reason: 'not dispatched' });
+  assert.equal(fs.existsSync(contract), false);
 });
 
 // Workers proved "green at an intermediate commit" and "the test kills this mutant" with hand-rolled exports and scripts in
@@ -547,15 +590,37 @@ test('run --at, --mutation and --script make that evidence without a dirty tree 
   assert.throws(() => runLogged(wt, 'true', { at: 'nosuch' }), /is no commit of this branch/);
   assert.throws(() => runLogged(wt, 'true', { mutation: path.join(wt, 'b.txt') }), /does not apply/);
   assert.equal(checked(plain, mutant, early), '');
+  // A mutant the check does not fail on survived: that log proves nothing.
+  write(path.join(wt, 'a.txt'), 'bye\nbye again\nextra\n');
+  const kept = path.join(tmp('hard-patch-'), 'keep.patch');
+  write(kept, `${git(wt, 'diff')}\n`);
+  git(wt, 'checkout', '--', 'a.txt');
+  const survived = ['grep -c bye a.txt', runLogged(wt, 'grep -c bye a.txt', { mutation: kept })];
+  assert.equal(survived[1].exit, 0);
+  assert.match(checked(plain, survived, early), /`\(Mutation: …\)` criterion but no validation is a `goal\.mjs run --mutation <patch> -- <command>` log that failed/);
+  // A scratch tree whose checkout fails is removed all the same.
+  const hooks = tmp('hard-hooks-');
+  write(path.join(hooks, 'post-checkout'), '#!/bin/sh\nexit 1\n');
+  fs.chmodSync(path.join(hooks, 'post-checkout'), 0o755);
+  git(wt, 'config', 'core.hooksPath', hooks);
+  try {
+    assert.throws(() => runLogged(wt, 'true', { at: 'HEAD' }));
+  } finally {
+    git(wt, 'config', '--unset', 'core.hooksPath');
+  }
   assert.equal(git(wt, 'worktree', 'list').split('\n').some((l) => l.includes('goal-run-')), false, 'no scratch worktree is left behind');
   // A proof script under the run's tmp folder is evidence only when the log keeps its text.
   const script = path.join(control, 'tmp', 'x', 'proof.sh');
   write(script, 'grep -c bye a.txt\n');
   const bare = [`sh ${script}`, runLogged(wt, `sh ${script}`)];
   assert.match(checked(plain, mutant, early, bare), /runs a script under .*tmp.*`goal\.mjs run --script <file> -- <command>`/);
-  const kept = [`sh ${script}`, runLogged(wt, `sh ${script}`, { script })];
-  assert.match(fs.readFileSync(kept[1].log.path, 'utf8'), /^goal\.mjs run --script proof\.sh \(sha256 [0-9a-f]{64}\):\ngrep -c bye a\.txt\n/);
-  assert.equal(checked(plain, mutant, early, kept), '');
+  const saved = [`sh ${script}`, runLogged(wt, `sh ${script}`, { script })];
+  assert.match(fs.readFileSync(saved[1].log.path, 'utf8'), /^goal\.mjs run --script proof\.sh \(sha256 [0-9a-f]{64}\):\ngrep -c bye a\.txt\n/);
+  assert.equal(checked(plain, mutant, early, saved), '');
+  // --script keeps the file the command runs, never another one.
+  const decoy = path.join(control, 'tmp', 'x', 'decoy.sh');
+  write(decoy, 'true\n');
+  assert.throws(() => runLogged(wt, `sh ${script}`, { script: decoy }), /--script .*decoy\.sh is not in the command/);
 });
 
 // A run's hand-back was one free-text event line: it left out the two pushes the run had made and cited its grant by id.
@@ -564,7 +629,11 @@ test('the hand-back is written from state: grants with the owner\'s words, pushe
   ownerSays('/to-auto X and push the branch to the lab remote');
   init(repo, 'x', 'X', WHO);
   grant(repo, 'x', ['push:lab'], 'push the branch to the lab remote');
-  fs.writeFileSync(path.join(process.env.TO_AUTO_SESSIONS, `${WHO.agent}.effects.jsonl`), `${JSON.stringify({ at: '2026-01-01T00:00:00.000Z', targets: ['push:lab'], command: 'git push lab HEAD' })}\n`);
+  // Effects name the run whose grant allowed them: another run of the session, or a torn line, never reaches this hand-back.
+  fs.writeFileSync(path.join(process.env.TO_AUTO_SESSIONS, `${WHO.agent}.effects.jsonl`), [
+    { at: '2026-01-01T00:00:00.000Z', targets: ['push:lab'], runs: ['x'], state: control, command: 'git push lab HEAD' },
+    { at: '2026-01-01T00:00:01.000Z', targets: ['push:origin'], runs: ['other'], state: control, command: 'git push origin other' },
+  ].map((e) => JSON.stringify(e)).join('\n') + '\n{torn\n');
   seedTicket(repo, control, '01-a.md', ticketText('ready-for-agent', 'exclusive: a.txt'));
   setStatus(repo, 'x', '01', 'stuck', { reason: 'parked for the next run' });
   event(repo, 'x', 'gate', 'external review: escalate, no defect named');
@@ -573,7 +642,7 @@ test('the hand-back is written from state: grants with the owner\'s words, pushe
   const text = read('runs/x/handback.md');
   assert.match(text, /^# Hand-back: X\n\n- mode: branch /);
   assert.match(text, /## Grants[^\n]*\n- push:lab: "push the branch to the lab remote" \(owner 2026-01-01T00:00:00\.000Z\)/);
-  assert.match(text, /## Pushes and PR writes the guard allowed\n- 2026-01-01T00:00:00\.000Z push:lab: `git push lab HEAD`/);
+  assert.match(text, /## Pushes and PR writes the guard allowed\n- 2026-01-01T00:00:00\.000Z push:lab: `git push lab HEAD`\n\n/);
   assert.match(text, /## Tickets not done\n- 01 stuck: parked for the next run/);
   assert.match(text, /## Guarded files changed[^\n]*\n- none/);
   assert.match(text, /\[gate\] external review: escalate, no defect named/);
@@ -581,9 +650,16 @@ test('the hand-back is written from state: grants with the owner\'s words, pushe
   // The orchestrator's judgment goes below the line and survives a refresh; state that moved makes the file stale.
   fs.appendFileSync(path.join(control, 'runs/x/handback.md'), 'Judgment: the stuck ticket is safe to leave.\n');
   commit(repo, '[x] hand-back notes', ['runs/x/handback.md']);
-  assert.equal(read('runs/x/handback.md').startsWith(handbackText(repo, control, 'x')), true);
+  assert.equal(handbackFresh(read('runs/x/handback.md'), handbackText(repo, control, 'x')), true);
+  // The wall clock moving is no change of state.
+  const registry = path.join(control, 'runs.json');
+  const runs = JSON.parse(fs.readFileSync(registry, 'utf8'));
+  runs.find((r) => r.slug === 'x').started = new Date(Date.parse(runs.find((r) => r.slug === 'x').started) - 5 * 60_000).toISOString();
+  fs.writeFileSync(registry, `${JSON.stringify(runs, null, 2)}\n`);
+  assert.notEqual(read('runs/x/handback.md').startsWith(handbackText(repo, control, 'x')), true, 'the used: line moved');
+  assert.equal(handbackFresh(read('runs/x/handback.md'), handbackText(repo, control, 'x')), true);
   event(repo, 'x', 'gate', 'second gate: pass');
-  assert.equal(read('runs/x/handback.md').startsWith(handbackText(repo, control, 'x')), false, 'stale: the tick of 9 refuses it');
+  assert.equal(handbackFresh(read('runs/x/handback.md'), handbackText(repo, control, 'x')), false, 'stale: the tick of 9 refuses it');
   handback(repo, 'x');
   assert.match(read('runs/x/handback.md'), /second gate: pass[\s\S]*Judgment: the stuck ticket is safe to leave\.\n$/);
   fs.rmSync(path.join(process.env.TO_AUTO_SESSIONS, `${WHO.agent}.effects.jsonl`));

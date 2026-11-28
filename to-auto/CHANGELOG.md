@@ -2,6 +2,7 @@
 
 Behavior that moved. The phase files are the spec; this list is the delta.
 
+- The `vector` skill lives in this repo and `install.mjs` links it. It runs unattended when an agent or bot invokes it with no person to answer: it asks nothing, labels each gap Assumption or Unknown, numbers checks and steps, defaults unplaced steps to ASK FIRST, and returns a draft that grants nothing. Retry and correction limits are numbers, and completed external actions are recorded before a resume. The VECTOR intake reads `ROOT/vector/SKILL.md`, carries a card's Unknowns into open Qs or blockers, and treats a Draft card as granting nothing.
 - `/to-auto` uses VECTOR for execution intake without an interview. Workflow cards and persona answers do not grant permission. Tracker writes default to the local control plane.
 - `goal.mjs next` distinguishes unregistered stage 00 from an interrupted bootstrap. Solo runs retain `helpers: none`; `dispatch` and the Claude Code guard refuse helpers, including after adoption. A marked adopter is released when the run finishes.
 

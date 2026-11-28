@@ -604,7 +604,7 @@ test('todo.md behind the registry is TODO_BEHIND, and next resumes at the stage 
   const data = JSON.parse(fs.readFileSync(runs, 'utf8'));
   data[0].status = 'building';
   fs.writeFileSync(runs, JSON.stringify(data));
-  tickBefore(ctx, 'x', '5b'); // the niblet run: nine tickets built, todo.md still at 5b
+  tickBefore(ctx, 'x', '5b'); // a live run: nine tickets built, todo.md still at 5b
   setNow(ctx, 'x', '5b reconcile');
   const c = goal(ctx, ['check', 'x']);
   assert.equal(c.status, 1);
@@ -951,7 +951,7 @@ test('a stopped run cannot tick until resumed', () => {
 });
 
 test('the drifted live runs repair through tick: the registry stays, todo.md and NOW catch up, check goes clean', () => {
-  // niblet workstream-b: building with nine tickets dispatched, todo.md and NOW still at 5b.
+  // a live run: building with nine tickets dispatched, todo.md and NOW still at 5b.
   const ctx = run();
   forceStatus(ctx, 'building');
   tickBefore(ctx, 'x', '5b');

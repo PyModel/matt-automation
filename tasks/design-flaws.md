@@ -1,6 +1,6 @@
 # to-auto / matt-automations design flaws (2026-11-02)
 
-Evidence comes from this session: the P1 pythinker-bot run (state `6e023dd72797368c`), archived run 2 (`goal/refine-the-to-auto-skill-and-scripts-goa-final`), and measurements of the repo and the state dir.
+Evidence comes from this session: a live P1 run, archived run 2 (`goal/refine-the-to-auto-skill-and-scripts-goa-final`), and measurements of the repo and the state dir.
 
 | # | Sev | Flaw | Evidence | Fix direction |
 |---|---|---|---|---|

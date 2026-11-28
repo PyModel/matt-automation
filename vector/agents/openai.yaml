@@ -1,0 +1,6 @@
+interface:
+  display_name: "VECTOR"
+  short_description: "Delegate everyday work to AI in six simple steps"
+  default_prompt: "Use $vector to help me choose a task and build a simple, trustworthy AI workflow in six steps."
+  icon_small: "assets/icon.svg"
+  icon_large: "assets/icon.svg"

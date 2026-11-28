@@ -1,6 +1,6 @@
 # Fix the to-auto design flaws (tasks/design-flaws.md)
 
-Branch `df-fixes`, built in a separate worktree so the live P1 run (pythinker-bot, `reviewing`) kept running main's scripts.
+Branch `df-fixes`, built in a separate worktree so the live P1 run (`reviewing`) kept running main's scripts.
 
 - [x] DF1 target drift: `check` TARGET_DIVERGED (target changed files the run changed or an open ticket claims, since the merge base); `take` refuses; merging the target in clears it. `init` records `target`.
 - [x] DF2 orphaned tickets: `check` TICKET_IDLE when an in-flight ticket has no branch commit, heartbeat, to-orc status or ticket commit for 30 min (`--idle-minutes`). Independent of the run-level STALE clock.
